@@ -39,19 +39,25 @@ export interface Promo { icon: LucideIcon; title: string; body: string; cta: str
 
 const upgrade = (body: string): Promo => ({ icon: Crown, title: "Upgrade to Pro", body, cta: "Upgrade Now", href: "/settings/billing", gradient: true });
 
-/** Sidebar promo card per section, copied from each mockup. */
-export function promoFor(p: string): Promo {
+/** Sidebar promo card per section, adapted to the workspace's active subscription plan. */
+export function promoFor(p: string, planId: "free" | "pro" | "business" = "free"): Promo {
+  if (p.startsWith("/ai")) return { icon: Zap, title: "AI Agents", body: "Build intelligent Telegram agents with AI models, tools and your own knowledge.", cta: "Create AI Agent", href: "/bots/new?type=ai" };
+  if (p.startsWith("/settings/notifications")) return { icon: Bell, title: "Stay in the Loop", body: "Get important updates, security alerts, and product news from RelayNest.", cta: "Manage Notifications", href: "/settings/notifications" };
+  if (p.startsWith("/settings/security")) return { icon: ShieldCheck, title: "Keep Your Account More Secure", body: "Enable 2FA and security alerts for stronger protection.", cta: "Enable 2FA", href: "/settings/security" };
+  if (p.startsWith("/settings/api-keys")) return { icon: Code2, title: "Build with RelayNest", body: "Use our REST APIs & Swagger UI to build custom integrations and automated workflows.", cta: "Open Swagger UI", href: "/api-docs" };
+  if (p.startsWith("/settings/preferences")) return { icon: Settings, title: "Customize Your Experience", body: "Tailor RelayNest to fit your workflow, style, and productivity needs.", cta: "Learn More", href: "/docs" };
+  if (planId === "business") {
+    return { icon: Crown, title: "Business Plan Active", body: "All workspace limits unlocked: up to 100 bots, unlimited executions, and priority support.", cta: "Manage Billing", href: "/settings/billing" };
+  }
+  if (planId === "pro") {
+    return { icon: Crown, title: "Pro Plan Active", body: "Need up to 100 bots, unlimited executions, and unlimited team members? Scale to Business anytime.", cta: "View Business Plan", href: "/settings/billing", gradient: true };
+  }
   if (p.startsWith("/analytics")) return upgrade("Unlock advanced analytics, longer data retention, and detailed execution logs.");
   if (p.startsWith("/bots/templates")) return upgrade("Unlock more templates, automations and premium features.");
   if (p.startsWith("/knowledge-base")) return upgrade("Get more storage, larger knowledge bases, and early access to AI features like RAG and Semantic Search.");
   if (p.startsWith("/workflows") || p.startsWith("/agents")) return upgrade("Unlock advanced automations, more executions and premium features.");
-  if (p.startsWith("/ai")) return { icon: Zap, title: "AI Agents", body: "Build intelligent Telegram agents with AI models, tools and your own knowledge.", cta: "Create AI Agent", href: "/bots/new?type=ai" };
-  if (p.startsWith("/settings/notifications")) return { icon: Bell, title: "Stay in the Loop", body: "Get important updates, security alerts, and product news from RelayNest.", cta: "Manage Notifications", href: "/settings/notifications" };
   if (p.startsWith("/settings/workspace")) return { icon: Layers, title: "Upgrade Workspace", body: "Unlock more members, workspaces, and advanced features.", cta: "Upgrade Now", href: "/settings/billing" };
-  if (p.startsWith("/settings/security")) return { icon: ShieldCheck, title: "Keep Your Account More Secure", body: "Enable 2FA and security alerts for stronger protection.", cta: "Enable 2FA", href: "/settings/security" };
-  if (p.startsWith("/settings/api-keys")) return { icon: Code2, title: "Build with RelayNest", body: "Use our REST APIs & Swagger UI to build custom integrations and automated workflows.", cta: "Open Swagger UI", href: "/api-docs" };
   if (p.startsWith("/settings/billing")) return { icon: Crown, title: "Unlock More with RelayNest Pro", body: "Get more bots, higher limits, advanced automation, and powerful analytics.", cta: "Upgrade Plan", href: "/settings/billing" };
-  if (p.startsWith("/settings/preferences")) return { icon: Settings, title: "Customize Your Experience", body: "Tailor RelayNest to fit your workflow, style, and productivity needs.", cta: "Learn More", href: "/docs" };
   if (p.startsWith("/settings")) return { icon: Layers, title: "Upgrade Workspace", body: "Unlock more members, workspaces, and advanced features.", cta: "Upgrade Now", href: "/settings/billing" };
   return upgrade("Unlock more bots, automations and premium features.");
 }

@@ -53,12 +53,11 @@ export function BillingPanel({ initial }: { initial: BillingOverview }) {
   const router = useRouter();
   const [data, setData] = React.useState(initial);
   const [cycle, setCycle] = React.useState<Cycle>(initial.subscription?.billing_cycle ?? "monthly");
-  const [currency, setCurrency] = React.useState<Currency>(initial.subscription?.currency ?? "USD");
+  const currency: Currency = "INR";
   const [mode, setMode] = React.useState<"subscription" | "one_time">("subscription");
   React.useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const c = q.get("cycle"); if (c === "monthly" || c === "annual") setCycle(c);
-    const cur = q.get("currency"); if (cur === "USD" || cur === "INR") setCurrency(cur);
     const m = q.get("mode"); if (m === "subscription" || m === "one_time") setMode(m);
   }, []);
   const [busy, setBusy] = React.useState<PlanId | "cancel" | null>(null);
@@ -67,7 +66,7 @@ export function BillingPanel({ initial }: { initial: BillingOverview }) {
   const sub = data.subscription;
   const paid = data.planId !== "free";
   const recurring = paid && sub?.mode === "recurring" && sub.razorpay_subscription_id;
-  const canCancel = Boolean(recurring && data.canManage && !sub?.cancel_at_period_end && sub?.status === "active");
+  const canCancel = Boolean(recurring && data.canManage && !sub?.cancel_at_period_end && (sub?.status === "active" || sub?.status === "authenticated"));
   const [qr, setQr] = React.useState<{ qrId: string; imageUrl: string; amount: number; expiresAt: string; plan: PlanId; state: "pending" | "expired" } | null>(null);
   async function startQr(plan: "pro" | "business", _price: number) {
     setMessage(null); setBusy(plan);
@@ -92,27 +91,42 @@ export function BillingPanel({ initial }: { initial: BillingOverview }) {
   }, [qr, router]);
   async function pay(plan: "pro" | "business") {
     setMessage(null); setBusy(plan);
+    let verifying = false;
     try {
       const res = await api<CheckoutResponse>("/api/v1/billing/checkout", { body: { plan, cycle, currency, mode } });
-      if (!res.ok) { setMessage({ tone: "bad", text: res.message }); return; }
+      if (!res.ok) { setMessage({ tone: "bad", text: res.message }); setBusy(null); return; }
       const c = res.data;
-      if (!(await loadRazorpay()) || !window.Razorpay) { setMessage({ tone: "bad", text: "Could not load Razorpay Checkout. Check your connection and try again." }); return; }
+      if (!(await loadRazorpay()) || !window.Razorpay) { setMessage({ tone: "bad", text: "Could not load Razorpay Checkout. Check your connection and try again." }); setBusy(null); return; }
       const rzp = new window.Razorpay({
         key: c.keyId, name: c.name, description: c.description, theme: { color: "#6C47FF" }, prefill: { email: c.email ?? undefined },
         ...(c.kind === "order" ? { order_id: c.orderId, amount: c.amount, currency: c.currency } : { subscription_id: c.subscriptionId }),
         handler: async (r: RazorpaySuccess) => {
-          const v = await api<BillingOverview>("/api/v1/billing/verify", { body: r });
-          if (v.ok) { setData(v.data); setMessage({ tone: "ok", text: `You are now on the ${v.data.planName} plan. A receipt was sent to your email.` }); router.refresh(); }
-          else setMessage({ tone: "bad", text: `Payment received, but activation is pending: ${v.message} It will activate automatically within a minute.` });
-          setBusy(null);
+          verifying = true;
+          const toastId = toast.loading("Verifying payment and activating plan...");
+          try {
+            const v = await api<BillingOverview>("/api/v1/billing/verify", { body: r });
+            if (v.ok) {
+              setData(v.data);
+              toast.success(`You are now on the ${v.data.planName} plan.`, { id: toastId, description: "Your subscription, payment record, and invoice are updated." });
+              router.refresh();
+            } else {
+              toast.error("Payment received, activation pending", { id: toastId, description: `${v.message} It will activate automatically via webhook within a minute.` });
+            }
+          } finally {
+            verifying = false;
+            setBusy(null);
+          }
         },
-        modal: { ondismiss: () => setBusy(null) },
+        modal: { ondismiss: () => { if (!verifying) setBusy(null); } },
       });
       rzp.on("payment.failed", (r) => { setMessage({ tone: "bad", text: r.error?.description ?? "The payment failed. Please try again." }); setBusy(null); });
       rzp.open();
+    } catch {
+      setMessage({ tone: "bad", text: "Could not start Razorpay Checkout. Please try again." });
+      setBusy(null);
     } finally {
       // The Checkout window keeps its own state; only unlock the buttons if it never opened.
-      setTimeout(() => setBusy((b) => (b && b !== "cancel" && !document.querySelector(".razorpay-container") ? null : b)), 1500);
+      setTimeout(() => setBusy((b) => (b && b !== "cancel" && !verifying && !document.querySelector(".razorpay-container") ? null : b)), 2500);
     }
   }
   async function cancel() {
@@ -144,7 +158,7 @@ export function BillingPanel({ initial }: { initial: BillingOverview }) {
                 <p className="mt-1 text-sm text-foreground/80">{paid ? (sub?.mode === "one_time" ? "Prepaid for one period. It does not renew." : sub?.cancel_at_period_end || sub?.status === "cancelled" ? "Cancelled. You keep access until the period ends." : "Renews automatically.") : "You're currently on the Free plan."}</p>
                 <dl className="grid-cols-1 mt-3 grid grid-cols-2 gap-3 text-sm">
                   {([[Calendar, "Billing Cycle", paid ? (sub?.billing_cycle === "annual" ? "Annual" : "Monthly") : "-"],
-                    [Tag, "Price", paid && sub ? `${formatMoney(priceFor(data.planId, sub.billing_cycle, sub.currency), sub.currency)} / ${sub.billing_cycle === "annual" ? "year" : "month"}` : "$0 / month"],
+                    [Tag, "Price", paid && sub ? `${formatMoney(priceFor(data.planId, sub.billing_cycle, sub.currency), sub.currency)} / ${sub.billing_cycle === "annual" ? "year" : "month"}` : `${formatMoney(0, "INR")} / month`],
                     [RefreshCw, sub?.mode === "one_time" || sub?.cancel_at_period_end ? "Access Until" : "Next Renewal", paid ? date(sub?.current_period_end) : "-"],
                     [Check, "Status", paid ? (sub?.status ?? "active") : "Free Plan"]] as const).map(([I, l, v]) => (
                     <div key={l} className="flex items-center gap-2"><I className="size-4 text-lavender" aria-hidden /><div className="leading-tight"><dt className="text-[11px] text-muted">{l}</dt><dd className="font-semibold capitalize">{v}</dd></div></div>
@@ -161,9 +175,8 @@ export function BillingPanel({ initial }: { initial: BillingOverview }) {
         </Card>
         <Card className="scroll-mt-24" >
           <div id="plans" />
-          <CardHeader title="Available Plans" description="Choose the right plan for your team and automation needs." icon={<Layers />} tile
+          <CardHeader title="Available Plans" description="Choose the right plan for your team and automation needs. All plans are billed in INR (\u20B9)." icon={<Layers />} tile
             action={<div className="flex flex-wrap items-center justify-end gap-2">
-              <Toggle label="Currency" value={currency} onChange={setCurrency} options={[["USD", "USD ($)"], ["INR", "INR (\u20B9)"]]} />
               <Toggle label="Payment type" value={mode} onChange={setMode} options={[["subscription", "Auto-renew"], ["one_time", "One-time (Prepaid)"]]} />
               <Toggle label="Billing period" value={cycle} onChange={setCycle} options={[["monthly", "Monthly"], ["annual", "Annual -20%"]]} />
             </div>} />

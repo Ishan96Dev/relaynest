@@ -16,7 +16,7 @@ import { clearEntitlementCache, effectivePlan, executionsThisMonth, SUBSCRIPTION
 export const checkoutInput = z.object({
   plan: z.enum(["pro", "business"]),
   cycle: z.enum(["monthly", "annual"]),
-  currency: z.enum(["USD", "INR"]),
+  currency: z.literal("INR").default("INR"),
   /** "subscription" renews automatically; "one_time" is a prepaid single period. */
   mode: z.enum(["subscription", "one_time"]),
 });
@@ -70,7 +70,7 @@ async function aiTokensThisMonth(ctx: AuthContext): Promise<number> {
 /** Razorpay plan IDs are created once per plan, cycle, currency and price, then cached in razorpay_plans. */
 async function razorpayPlanId(plan: PlanId, cycle: Cycle, currency: Currency): Promise<string> {
   const amount = priceFor(plan, cycle, currency);
-  const key = `${plan}:${cycle}:${currency}:${amount}`;
+  const key = `${publicKeyId().slice(0, 14)}:${plan}:${cycle}:${currency}:${amount}`;
   const db = admin();
   const { data } = await db.from("razorpay_plans").select("razorpay_plan_id").eq("key", key).maybeSingle();
   if (data) return data.razorpay_plan_id as string;
@@ -157,18 +157,46 @@ async function ownerEmail(workspaceId: string): Promise<string | null> {
   const { data: u } = await db.auth.admin.getUserById(data.user_id as string);
   return u.user?.email ?? null;
 }
-/** Stores a payment and its invoice once. Returns null when this payment was already recorded (webhook plus browser verify, or a retry). */
-async function recordPayment(a: { workspaceId: string; plan: PlanId; cycle: Cycle; mode: string; payment: RzpPayment; periodStart?: string | null; periodEnd?: string | null }) {
+/** Resolves recurring subscription status and billing period even when Razorpay returns `created` or null dates right after checkout. */
+export function resolveRecurringActivation(sub: RzpSubscription, cycle: Cycle, payment?: RzpPayment) {
+  const paidNow = Boolean(payment && (payment.status === "captured" || payment.status === "authorized"));
+  const fallbackStart = paidNow ? new Date((payment!.created_at || Math.floor(Date.now() / 1000)) * 1000) : null;
+  const start = fromUnix(sub.current_start) ?? (fallbackStart ? fallbackStart.toISOString() : null);
+  const end = fromUnix(sub.current_end) ?? (fallbackStart ? periodEnd(fallbackStart, cycle).toISOString() : null);
+  const status: SubscriptionRow["status"] =
+    sub.status === "active" || sub.status === "authenticated" || paidNow ? "active" : "pending";
+  return { status, start, end };
+}
+
+/** Stores a payment and its invoice once. Updates status from authorized -> captured on webhook without duplicating invoices. */
+async function recordPayment(a: {
+  workspaceId: string; plan: PlanId; cycle: Cycle; mode: string; payment: RzpPayment;
+  periodStart?: string | null; periodEnd?: string | null; subscriptionId?: string | null;
+}) {
   const db = admin();
   const p = a.payment;
   const status = p.status === "captured" ? "captured" : p.status === "failed" ? "failed" : p.status === "refunded" ? "refunded" : "authorized";
+  const subscriptionId = p.subscription_id ?? a.subscriptionId ?? null;
   const { data: row, error } = await db.from("payments").upsert({
-    workspace_id: a.workspaceId, razorpay_payment_id: p.id, razorpay_order_id: p.order_id ?? null, razorpay_subscription_id: p.subscription_id ?? null,
+    workspace_id: a.workspaceId, razorpay_payment_id: p.id, razorpay_order_id: p.order_id ?? null, razorpay_subscription_id: subscriptionId,
     plan: a.plan, billing_cycle: a.cycle, mode: a.mode, amount: p.amount, currency: p.currency, status, method: p.method ?? null,
     card_network: p.card?.network ?? null, card_last4: p.card?.last4 ?? null, error_description: p.error_description ?? null,
   }, { onConflict: "razorpay_payment_id", ignoreDuplicates: true }).select("id").maybeSingle();
   if (error) throw new Error(`payment-insert: ${error.message}`);
-  if (!row || status === "failed") return null; // duplicate delivery, or nothing to invoice
+  if (!row) {
+    // Duplicate delivery (e.g. webhook arriving after browser verify): promote authorized -> captured and backfill method details.
+    if (status === "captured") {
+      await db.from("payments").update({
+        status: "captured",
+        ...(p.method ? { method: p.method } : {}),
+        ...(p.card?.network ? { card_network: p.card.network } : {}),
+        ...(p.card?.last4 ? { card_last4: p.card.last4 } : {}),
+        ...(subscriptionId ? { razorpay_subscription_id: subscriptionId } : {}),
+      }).eq("razorpay_payment_id", p.id).eq("status", "authorized");
+    }
+    return null;
+  }
+  if (status === "failed") return null; // nothing to invoice
   const { data: inv, error: invErr } = await db.from("invoices").insert({
     workspace_id: a.workspaceId, payment_id: row.id, plan: a.plan, amount: p.amount, currency: p.currency,
     description: `RelayNest ${PLANS[a.plan].name} plan (${a.cycle})`, period_start: a.periodStart ?? null, period_end: a.periodEnd ?? null,
@@ -190,7 +218,7 @@ async function activateOrder(a: { workspaceId: string; plan: PlanId; cycle: Cycl
   const cur = data as SubscriptionRow | null;
   // Buying the same plan again while it is still active extends it instead of wasting the days already paid for.
   const extend = cur && cur.mode === "one_time" && cur.plan === a.plan && effectivePlan(cur) === a.plan && cur.current_period_end;
-  const start = extend ? new Date(cur!.current_period_end!) : new Date(a.payment.created_at * 1000);
+  const start = extend ? new Date(cur!.current_period_end!) : new Date((a.payment.created_at || Math.floor(Date.now() / 1000)) * 1000);
   const end = periodEnd(start, a.cycle);
   const first = await recordPayment({ workspaceId: a.workspaceId, plan: a.plan, cycle: a.cycle, mode: "one_time", payment: a.payment, periodStart: start.toISOString(), periodEnd: end.toISOString() });
   // A repeat delivery recorded nothing, so it must not extend the period a second time.
@@ -201,12 +229,13 @@ async function activateOrder(a: { workspaceId: string; plan: PlanId; cycle: Cycl
 async function activateRecurring(sub: RzpSubscription, payment?: RzpPayment) {
   const n = notesOf(sub.notes);
   if (!n.workspace_id || (n.plan !== "pro" && n.plan !== "business")) throw new Error("subscription-notes-missing");
+  const cycle: Cycle = n.cycle === "annual" ? "annual" : "monthly";
+  const resolved = resolveRecurringActivation(sub, cycle, payment);
   const a: Activation = {
-    workspaceId: n.workspace_id, plan: n.plan as PlanId, cycle: n.cycle === "annual" ? "annual" : "monthly", currency: n.currency === "INR" ? "INR" : "USD", mode: "recurring",
-    subscriptionId: sub.id, customerId: sub.customer_id, start: fromUnix(sub.current_start), end: fromUnix(sub.current_end),
-    status: sub.status === "active" || sub.status === "authenticated" ? "active" : "pending",
+    workspaceId: n.workspace_id, plan: n.plan as PlanId, cycle, currency: n.currency === "USD" ? "USD" : "INR", mode: "recurring",
+    subscriptionId: sub.id, customerId: sub.customer_id, start: resolved.start, end: resolved.end, status: resolved.status,
   };
-  if (payment) await recordPayment({ workspaceId: a.workspaceId, plan: a.plan, cycle: a.cycle, mode: "recurring", payment, periodStart: a.start, periodEnd: a.end });
+  if (payment) await recordPayment({ workspaceId: a.workspaceId, plan: a.plan, cycle: a.cycle, mode: "recurring", payment, periodStart: a.start, periodEnd: a.end, subscriptionId: sub.id });
   await upsertSubscription(a);
   if (a.status === "active") await notifyOwners(a.workspaceId, { kind: "plan_activated", title: `${PLANS[a.plan].name} plan is active`, body: a.end ? `Billing cycle refreshed. Next renewal on ${new Date(a.end).toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" })}.` : "Your subscription is active and renews automatically.", dedupeHours: 0.01 });
 }
@@ -222,10 +251,12 @@ export async function verifyCheckout(ctx: AuthContext, input: z.infer<typeof ver
     const order = await fetchOrder(input.razorpay_order_id);
     const n = notesOf(order.notes);
     if (n.workspace_id !== ctx.workspaceId || payment.order_id !== order.id) throw Errors.forbidden();
-    await activateOrder({ workspaceId: ctx.workspaceId, plan: n.plan as PlanId, cycle: n.cycle === "annual" ? "annual" : "monthly", currency: n.currency === "INR" ? "INR" : "USD", payment });
+    if (n.plan !== "pro" && n.plan !== "business") throw Errors.invalid("Order plan metadata is missing.");
+    await activateOrder({ workspaceId: ctx.workspaceId, plan: n.plan as PlanId, cycle: n.cycle === "annual" ? "annual" : "monthly", currency: n.currency === "USD" ? "USD" : "INR", payment });
   } else {
     const sub = await fetchSubscription(input.razorpay_subscription_id!);
     if (notesOf(sub.notes).workspace_id !== ctx.workspaceId) throw Errors.forbidden();
+    if (payment.subscription_id && payment.subscription_id !== sub.id) throw Errors.forbidden();
     await activateRecurring(sub, payment);
   }
   return getBillingOverview(ctx);
@@ -277,7 +308,7 @@ async function applyEvent(evt: RzpEvent) {
     case "subscription.authenticated":
     case "subscription.activated":
     case "subscription.resumed":
-      if (sub) await activateRecurring(sub);
+      if (sub) await activateRecurring(sub, payment);
       return;
     case "subscription.charged":
       if (sub) await activateRecurring(sub, payment);
@@ -302,8 +333,32 @@ async function applyEvent(evt: RzpEvent) {
     case "order.paid": {
       const order = evt.payload.order?.entity;
       const n = notesOf(order?.notes);
-      if (!payment || !n.workspace_id || n.mode !== "one_time") return;
-      await activateOrder({ workspaceId: n.workspace_id, plan: n.plan as PlanId, cycle: n.cycle === "annual" ? "annual" : "monthly", currency: n.currency === "INR" ? "INR" : "USD", payment });
+      if (!payment || !n.workspace_id || n.mode !== "one_time" || (n.plan !== "pro" && n.plan !== "business")) return;
+      await activateOrder({ workspaceId: n.workspace_id, plan: n.plan as PlanId, cycle: n.cycle === "annual" ? "annual" : "monthly", currency: n.currency === "USD" ? "USD" : "INR", payment });
+      return;
+    }
+    case "payment.captured": {
+      if (!payment) return;
+      if (payment.subscription_id) {
+        const fetchedSub = await fetchSubscription(payment.subscription_id);
+        await activateRecurring(fetchedSub, payment);
+        return;
+      }
+      if (payment.order_id) {
+        const fetchedOrder = await fetchOrder(payment.order_id);
+        const n = notesOf(fetchedOrder.notes);
+        if (n.workspace_id && n.mode === "one_time" && (n.plan === "pro" || n.plan === "business")) {
+          await activateOrder({ workspaceId: n.workspace_id, plan: n.plan as PlanId, cycle: n.cycle === "annual" ? "annual" : "monthly", currency: n.currency === "USD" ? "USD" : "INR", payment });
+          return;
+        }
+      }
+      // Fallback: promote any existing authorized payment row to captured.
+      await db.from("payments").update({
+        status: "captured",
+        ...(payment.method ? { method: payment.method } : {}),
+        ...(payment.card?.network ? { card_network: payment.card.network } : {}),
+        ...(payment.card?.last4 ? { card_last4: payment.card.last4 } : {}),
+      }).eq("razorpay_payment_id", payment.id).eq("status", "authorized");
       return;
     }
     case "qr_code.credited": {

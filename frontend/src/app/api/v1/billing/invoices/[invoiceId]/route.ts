@@ -15,7 +15,7 @@ export const GET = route<{ params: Promise<{ invoiceId: string }> }>(async (_req
   const method = pay ? [pay.card_network, pay.card_last4 ? `ending ${pay.card_last4}` : pay.method].filter(Boolean).join(" ") : "";
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invoice ${esc(String(inv.number))}</title>
 <style>body{font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:40px auto;padding:0 24px;color:#111}h1{margin:0}table{width:100%;border-collapse:collapse;margin-top:24px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #ddd;font-size:14px}.r{text-align:right}.muted{color:#666;font-size:13px}.badge{display:inline-block;padding:2px 10px;border-radius:99px;background:#e6f7ee;color:#0a7a3d;font-size:12px;font-weight:700;text-transform:uppercase}@media print{.noprint{display:none}}</style></head><body>
-<p class="noprint"><a href="javascript:window.print()">Print or save as PDF</a></p>
+<p class="noprint"><button type="button" onclick="window.print()" style="padding:8px 14px;border-radius:8px;border:1px solid #ddd;background:#f7f7fb;font-weight:600;cursor:pointer">Print or save as PDF</button></p>
 <h1>RelayNest</h1><p class="muted">Invoice ${esc(String(inv.number))} &middot; <span class="badge">${esc(String(inv.status))}</span></p>
 <p>Billed to: <strong>${esc(String(ws?.name ?? "Workspace"))}</strong><br><span class="muted">Issued ${esc(date(inv.issued_at as string))}</span></p>
 <table><thead><tr><th>Description</th><th>Period</th><th class="r">Amount</th></tr></thead><tbody>

@@ -47,11 +47,13 @@ export function PromoCard({ promo, onNavigate }: { promo: Promo; onNavigate?: ()
 
 export function Sidebar({
   collapsed = false,
+  planId = "free",
   onToggle,
   onNavigate,
   onClose,
 }: {
   collapsed?: boolean;
+  planId?: "free" | "pro" | "business";
   onToggle?: () => void;
   onNavigate?: () => void;
   onClose?: () => void;
@@ -126,7 +128,7 @@ export function Sidebar({
         {mainNav.filter((i) => i.section === "Workspace").map(renderMain)}
       </nav>
 
-      {!collapsed && <div className="hidden [@media(min-height:880px)]:block"><PromoCard promo={promoFor(pathname)} onNavigate={onNavigate} /></div>}
+      {!collapsed && <div className="hidden [@media(min-height:880px)]:block"><PromoCard promo={promoFor(pathname, planId)} onNavigate={onNavigate} /></div>}
     </div>
   );
 }

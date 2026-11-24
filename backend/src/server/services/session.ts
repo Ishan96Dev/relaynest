@@ -1,7 +1,11 @@
 import "server-only";
+import { PLANS, type PlanId } from "../../lib/billing/plans";
 import { isSupabaseConfigured } from "../../lib/env/public";
+import { createAdminClient } from "../../lib/supabase/admin";
 import { BUCKETS, publicStorageUrl } from "../../lib/supabase/storage";
+import { requireAuth } from "../auth/context";
 import { getIdentity } from "../auth/identity";
+import { getEntitlements } from "../billing/entitlements";
 
 export interface SessionUser {
   name: string;
@@ -9,6 +13,7 @@ export interface SessionUser {
   initials: string;
   /** Public URL of the uploaded profile picture, or null to show initials. */
   avatarUrl: string | null;
+  planId: PlanId;
   plan: string;
   workspaceName: string;
   demo: boolean;
@@ -19,6 +24,7 @@ const DEMO: SessionUser = {
   email: "ishan@example.com",
   initials: "IC",
   avatarUrl: null,
+  planId: "pro",
   plan: "Pro Plan",
   workspaceName: "RelayNest Team",
   demo: true,
@@ -31,13 +37,37 @@ export function initialsOf(name: string): string {
 }
 
 /**
- * Current user for the UI chrome. Reads only the verified token (no database or network call), so the layout adds
- * no latency to navigation. The display name comes from the `full_name` set at sign-up and kept in sync on profile save.
+ * Current user for the UI chrome. Identity comes from the verified token; workspace plan comes from the 30 s
+ * cached entitlements helper (invalidated immediately on payment, upgrade, or cancellation).
  */
 export async function getSessionUser(): Promise<SessionUser> {
   if (!isSupabaseConfigured()) return DEMO;
   const identity = await getIdentity();
-  if (!identity) return { ...DEMO, name: "Guest", email: "", initials: "?", avatarUrl: null, plan: "Free Plan", demo: false };
+  if (!identity) return { ...DEMO, name: "Guest", email: "", initials: "?", avatarUrl: null, planId: "free", plan: "Free Plan", workspaceName: "My Workspace", demo: false };
   const name = identity.name || identity.email?.split("@")[0] || "User";
-  return { name, email: identity.email ?? "", initials: initialsOf(name), avatarUrl: publicStorageUrl(BUCKETS.avatars, identity.avatarPath), plan: "Free Plan", workspaceName: "My Workspace", demo: false };
+
+  let planId: PlanId = "free";
+  let workspaceName = "My Workspace";
+  try {
+    const ctx = await requireAuth();
+    const [ent, ws] = await Promise.all([
+      getEntitlements(ctx.workspaceId),
+      createAdminClient().from("workspaces").select("name").eq("id", ctx.workspaceId).maybeSingle(),
+    ]);
+    planId = ent.planId;
+    if (ws.data?.name) workspaceName = String(ws.data.name);
+  } catch {
+    // Keep safe defaults if workspace lookup is unavailable during sign-out or cold boot.
+  }
+
+  return {
+    name,
+    email: identity.email ?? "",
+    initials: initialsOf(name),
+    avatarUrl: publicStorageUrl(BUCKETS.avatars, identity.avatarPath),
+    planId,
+    plan: `${PLANS[planId].name} Plan`,
+    workspaceName,
+    demo: false,
+  };
 }

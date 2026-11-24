@@ -11,9 +11,9 @@ Anything left empty simply disables that feature; the app keeps working.
 3. Apply all migrations in `supabase/migrations/` in numeric order (SQL Editor or `supabase db push`), from `20260101000000_init.sql` through `20260101001300_api_keys_integrations.sql`.
 4. Generate `ENCRYPTION_KEY`: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
 
-## 2. Razorpay (billing: Free, Pro \$9 / ₹749, Business \$29 / ₹2,399)
+## 2. Razorpay (billing: Free ₹0, Pro ₹749, Business ₹2,399)
 
-Supports one-time (prepaid period, Razorpay Orders) and recurring (Razorpay Subscriptions) in both USD and INR.
+Supports one-time (prepaid period, Razorpay Orders), UPI QR, and recurring (Razorpay Subscriptions) in INR (₹).
 Annual billing is 12 months at 20% off. Prices live in `backend/src/lib/billing/plans.ts`.
 
 1. https://dashboard.razorpay.com → switch to **Test Mode** (top bar).
@@ -22,7 +22,7 @@ Annual billing is 12 months at 20% off. Prices live in `backend/src/lib/billing/
    `RAZORPAY_WEBHOOK_SECRET`. Tick: `subscription.*` (authenticated, activated, charged, pending, halted, cancelled,
    completed, resumed), `order.paid`, `payment.failed`, `payment.refunded`, `refund.processed`, **`qr_code.credited`** (UPI QR payments).
    Locally, expose port 3000 with a tunnel (e.g. `cloudflared tunnel --url http://localhost:3000`).
-4. USD charges need **International Payments** enabled on your Razorpay account (Settings → Configuration → Payment Methods; may need approval). INR works immediately.
+4. Billing runs in **INR**, which works immediately on Indian Razorpay accounts without needing International Payments approval.
 5. Test card: `4111 1111 1111 1111`, any future expiry, any CVV. Go live by swapping to `rzp_live_` keys and a live-mode webhook.
 
 Plan IDs are created on demand in Razorpay and cached in `razorpay_plans`. The webhook is signature-verified and idempotent (`billing_events`).

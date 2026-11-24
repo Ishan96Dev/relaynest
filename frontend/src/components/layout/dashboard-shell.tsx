@@ -65,12 +65,12 @@ export function DashboardShell({ children, user }: { children: React.ReactNode; 
       <RouteProgress />
       <AuditTracker demo={user.demo} />
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-white">Skip to content</a>
-      <aside className="sticky top-0 hidden h-screen lg:block" aria-label="Sidebar"><Sidebar collapsed={collapsed} onToggle={toggle} /></aside>
+      <aside className="sticky top-0 hidden h-screen lg:block" aria-label="Sidebar"><Sidebar collapsed={collapsed} planId={user.planId} onToggle={toggle} /></aside>
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
           <button aria-label="Close menu" className="absolute inset-0 bg-black/70" style={{ animation: "rn-fade-in 0.25s ease both" }} onClick={() => setOpen(false)} />
           <div className="relative h-full w-[84vw] max-w-[310px]" style={{ animation: "rn-slide-in-left 0.35s var(--ease-out-expo) both" }}>
-            <Sidebar onNavigate={() => setOpen(false)} onClose={() => setOpen(false)} />
+            <Sidebar planId={user.planId} onNavigate={() => setOpen(false)} onClose={() => setOpen(false)} />
           </div>
         </div>
       )}

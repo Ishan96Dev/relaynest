@@ -766,8 +766,8 @@ const V010_GUIDES: PageGuide[] = [
     gif: {
       kind: "gif",
       src: "/images/docs/gifs/settings.gif",
-      alt: "Recorded walkthrough touring Profile, Security, Notifications, Billing USD/INR pricing, and Preferences",
-      caption: "Live Walkthrough: navigating Settings tabs, toggling INR/USD pricing in Billing, and reviewing Security & Notification controls.",
+      alt: "Recorded walkthrough touring Profile, Security, Notifications, Billing INR pricing, and Preferences",
+      caption: "Live Walkthrough: navigating Settings tabs, reviewing INR plans (Auto-renew, Prepaid & UPI QR) in Billing, and Security & Notification controls.",
     },
     callouts: [
       {
@@ -779,16 +779,16 @@ const V010_GUIDES: PageGuide[] = [
       {
         tone: "info",
         badge: "Flexible Billing",
-        title: "USD & INR With Auto-Renew or Prepaid",
-        body: "Switch currencies cleanly inside Settings -> Billing between USD ($) and INR (Card, NetBanking, or UPI QR) on Monthly or 20%-off Annual billing.",
+        title: "INR Billing With Auto-Renew, Prepaid & UPI QR",
+        body: "Upgrade cleanly inside Settings -> Billing in INR (\u20B9) via Card, NetBanking, UPI AutoPay, or UPI QR on Monthly or 20%-off Annual billing.",
       },
     ],
     screenshots: [
       {
         kind: "image",
         src: "/images/docs/pages/settings-billing.png",
-        alt: "RelayNest Billing & Subscription screen showing Free, Pro, and Business plans",
-        caption: "Billing & Subscription (/settings/billing): toggle USD ($)/INR, Auto-renew vs One-time, and Monthly vs Annual plans.",
+        alt: "RelayNest Billing & Subscription screen showing Free, Pro, and Business plans in INR",
+        caption: "Billing & Subscription (/settings/billing): choose INR (\u20B9) Auto-renew vs One-time (Prepaid), Monthly vs Annual plans, or Pay via UPI QR.",
       },
       {
         kind: "image",
@@ -838,7 +838,7 @@ const V010_GUIDES: PageGuide[] = [
       },
       {
         title: "Plans & Payments under Billing",
-        detail: "Upgrade between Free, Pro, and Business using USD or INR, choosing either recurring subscriptions or one-time prepaid passes.",
+        detail: "Upgrade between Free, Pro, and Business in INR (\u20B9), choosing recurring subscriptions, one-time prepaid passes, or UPI QR.",
       },
     ],
   },

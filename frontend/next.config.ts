@@ -37,13 +37,13 @@ const nextConfig: NextConfig = {
     const devEval = process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : "";
     const csp = [
       "default-src 'self'",
-      `script-src 'self' 'unsafe-inline'${devEval} https://www.googletagmanager.com https://checkout.razorpay.com`,
+      `script-src 'self' 'unsafe-inline'${devEval} https://www.googletagmanager.com https://checkout.razorpay.com https://*.razorpay.com`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
-      "font-src 'self' data:",
+      "font-src 'self' data: https://*.razorpay.com",
       "media-src 'self' blob:",
       "connect-src 'self' https: wss:",
-      "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com",
+      "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
       "object-src 'none'",
       "base-uri 'self'",
       "frame-ancestors 'none'",

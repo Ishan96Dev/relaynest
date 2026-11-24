@@ -6,7 +6,7 @@
 
 **Build Telegram Bots. Automate Workflows. Launch Grounded AI Agents.**
 
-A multi-tenant no-code Telegram bot builder, visual automation studio, RAG Knowledge Base, and workspace API platform — backed by Supabase (Auth, Postgres RLS, Storage), Telegram Bot API, Upstash Redis &amp; Kafka, NVIDIA Build / Vercel AI Gateway, Razorpay (USD &amp; INR/UPI QR), and Brevo.
+A multi-tenant no-code Telegram bot builder, visual automation studio, RAG Knowledge Base, and workspace API platform — backed by Supabase (Auth, Postgres RLS, Storage), Telegram Bot API, Upstash Redis &amp; Kafka, NVIDIA Build / Vercel AI Gateway, Razorpay (INR &amp; UPI QR), and Brevo.
 
 [![CI](https://github.com/Ishan96Dev/relaynest/actions/workflows/ci.yml/badge.svg)](https://github.com/Ishan96Dev/relaynest/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-v0.1.0-6C47FF)
@@ -54,7 +54,7 @@ Explore real recorded walkthroughs captured from the live RelayNest workspace (z
 - **Visual Workflow Automations**: Drag-and-drop React Flow (`@xyflow/react`) builder with triggers, conditional branches, delays, SSRF-protected outbound HTTP requests, cron scheduling (`POST /api/cron/tick`), simulation test runs, and live execution history.
 - **AI Platform & Knowledge Base RAG**: Browse models (`NVIDIA Build` + `Vercel AI Gateway`), test prompts live in Model Playground, upload PDF/text/URL Knowledge Base sources (keyword search or Milvus/Zilliz vector retrieval), and launch autonomous 24/7 Telegram AI Agents.
 - **Integrations, Scoped API Keys & In-App Swagger UI**: Generate SHA-256 hashed production Bearer keys (`rnk_live_...`) with permission scopes and expiry windows, test endpoints live inside the authenticated Swagger UI (`/api-docs`), configure Slack/Discord/HTTPS outbound webhooks (`X-RelayNest-Signature` HMAC-SHA256) and signed incoming webhook triggers (`POST /api/webhooks/workflows/[publicId]`), and view 7-day request telemetry.
-- **Real-Time Alerts, Billing & Platform Admin Console**: Instant notification bell + Brevo/Supabase Auth & account-deletion confirmation emails (`supabase/templates/` + `send-account-deleted` Edge Function), USD & INR plans (Subscriptions, Prepaid, Razorpay UPI QR), zero-trust Platform Admin Console (`/admin`) with Audit Trail, User Records, Live Service Health, Keys & Tokens, Console Logs, and Security Matrix.
+- **Real-Time Alerts, Billing & Platform Admin Console**: Instant notification bell + Brevo/Supabase Auth & account-deletion confirmation emails (`supabase/templates/` + `send-account-deleted` Edge Function), INR plans (Subscriptions, Prepaid, Razorpay UPI QR), zero-trust Platform Admin Console (`/admin`) with Audit Trail, User Records, Live Service Health, Keys & Tokens, Console Logs, and Security Matrix.
 - **Compliance & CyberSecurity Gate**: Built-in GIGW, WCAG 2.1 Level AA, VA/CA security scanner (`pnpm audit:compliance`) covering CSP, HSTS, anti-phishing URL/redirect guards, breached password rejection, sliding-window API rate limits (Upstash Redis), and app/docs version lockstep.
 
 ## Tech Stack

@@ -24,7 +24,7 @@ const plans: PlanMeta[] = [
 
 export function PricingPlans() {
   const [cycle, setCycle] = React.useState<Cycle>("monthly");
-  const [cur, setCur] = React.useState<Currency>("USD");
+  const cur: Currency = "INR";
   const [mode, setMode] = React.useState<"subscription" | "one_time">("subscription");
   const annual = cycle === "annual";
 
@@ -50,16 +50,6 @@ export function PricingPlans() {
             </button>
           ))}
         </div>
-
-        <div role="radiogroup" aria-label="Currency" className="relative flex rounded-full border border-border bg-surface/80 p-1 text-xs font-semibold">
-          <span aria-hidden className={cn("absolute inset-y-1 w-[calc(50%-4px)] rounded-full bg-foreground/10 ring-1 ring-inset ring-foreground/15 transition-transform duration-300 ease-out", cur === "INR" && "translate-x-full")} />
-          {([["USD ($)", "USD"], ["INR (\u20B9)", "INR"]] as const).map(([label, value]) => (
-            <button key={value} role="radio" aria-checked={cur === value} onClick={() => setCur(value)}
-              className={cn("relative z-10 flex h-10 w-24 items-center justify-center rounded-full transition-colors duration-300", cur === value ? "text-foreground" : "text-muted hover:text-foreground")}>
-              {label}
-            </button>
-          ))}
-        </div>
       </div>
 
       <ul className="mx-auto mt-10 grid max-w-[1100px] items-stretch gap-6 text-left md:grid-cols-3">
@@ -68,7 +58,7 @@ export function PricingPlans() {
           const periodPrice = priceFor(p.id, cycle, cur);
           const paid = p.id !== "free";
           const perMonth = annual && paid ? formatMoney(Math.round(periodPrice / 12), cur) : null;
-          const href = `/settings/billing?plan=${p.id}&cycle=${cycle}&currency=${cur}&mode=${mode}`;
+          const href = `/settings/billing?plan=${p.id}&cycle=${cycle}&mode=${mode}`;
           return (
             <Reveal as="li" key={p.id} delay={i * 120} variant="up" className={cn("relative", p.featured && "md:-mt-3 md:mb-3")}>
               {p.featured && (

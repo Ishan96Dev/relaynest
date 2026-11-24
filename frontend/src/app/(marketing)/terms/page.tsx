@@ -36,9 +36,9 @@ export const TERMS_SECTIONS: LegalSection[] = [
   },
   {
     id: "plans-billing",
-    title: "Plans, Quotas & Billing (USD / INR)",
+    title: "Plans, Quotas & Billing (INR)",
     paragraphs: [
-      "RelayNest offers a Free starter plan along with paid Pro and Business tiers priced transparently in USD and INR, supporting monthly subscriptions, annual billing (20% savings), and one-time prepaid periods.",
+      "RelayNest offers a Free starter plan along with paid Pro and Business tiers priced transparently in INR (₹), supporting monthly subscriptions, annual billing (20% savings), one-time prepaid periods, and UPI QR.",
       "Upgrades activate immediately upon payment confirmation. Subscriptions may be cancelled anytime inside Settings -> Billing without losing remaining paid-period access.",
     ],
   },

@@ -124,7 +124,7 @@ const EXTRA_CAPABILITIES = [
   { icon: Puzzle, title: "Connected Integrations", desc: "Manage Telegram bots, webhooks, API keys, and connected services in one workspace hub." },
   { icon: ShieldCheck, title: "Security & Activity Trail", desc: "Keep teams safe with login alerts, API key controls, workspace roles, and transparent activity logs." },
   { icon: KeyRound, title: "Scoped API Keys", desc: "Generate API keys to trigger flows or inspect statuses programmatically whenever your team needs custom hooks." },
-  { icon: CreditCard, title: "USD & INR Flexible Billing", desc: "Start free forever, or upgrade monthly/annually (20% off) via auto-renew subscription, one-time pass, or UPI QR." },
+  { icon: CreditCard, title: "Flexible INR Billing & UPI QR", desc: "Start free forever, or upgrade monthly/annually (20% off) in INR via auto-renew subscription, one-time pass, or UPI QR." },
 ] as const;
 
 export function FeaturesShowcase() {

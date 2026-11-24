@@ -28,7 +28,7 @@ export const AnalyticsScene: React.FC = () => {
             accent: RN_COLORS.lavender,
           },
           {
-            badge: "USD & INR Billing",
+            badge: "INR & UPI QR Billing",
             title: "Free, Pro & Business Plans",
             detail: "Start free forever, or pay monthly/annually with Card or UPI QR whenever you need more bots.",
             accent: RN_COLORS.ok,

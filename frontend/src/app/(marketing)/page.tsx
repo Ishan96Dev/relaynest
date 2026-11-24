@@ -4,7 +4,6 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { CountUp } from "@/components/motion/count-up";
-import { MediaPreviewFrame } from "@/components/marketing/media-preview-frame";
 import { ProductVideoSection } from "@/components/marketing/product-video";
 import { Reveal } from "@/components/motion/reveal";
 import { ScrollFillText } from "@/components/motion/scroll-fill-text";
@@ -100,16 +99,17 @@ export default function LandingPage() {
 
           <div className="fade-up relative" style={{ "--d": "300ms" } as React.CSSProperties}>
             <Tilt max={7}>
-              <MediaPreviewFrame
-                src="/images/dashboard-preview.webp"
-                alt="RelayNest dashboard showing bots, an automation workflow, and an execution trend"
-                caption="RelayNest Dashboard — Unified control over bots, workflows, execution trends, and activity."
-                width={1400}
-                height={788}
-                priority
-                sizes="(min-width: 1024px) 640px, 100vw"
-                className="card-glow p-1.5 shadow-[0_0_90px_-24px_rgb(var(--rn-primary))]"
-              />
+              <div className="card-glow relative p-1.5 shadow-[0_0_90px_-24px_rgb(var(--rn-primary))]">
+                <Image
+                  src="/images/dashboard-preview.webp"
+                  alt="RelayNest dashboard showing bots, an automation workflow, and an execution trend"
+                  width={1400}
+                  height={788}
+                  priority
+                  sizes="(min-width: 1024px) 640px, 100vw"
+                  className="h-auto w-full rounded-xl"
+                />
+              </div>
               <div className="tilt-layer float absolute -left-3 top-8 hidden sm:block lg:-left-10" style={{ "--z": "70px" } as React.CSSProperties} aria-hidden>
                 <div className="card flex items-center gap-3 px-4 py-3 shadow-xl">
                   <span className="pulse-dot size-2.5 rounded-full bg-success" />
