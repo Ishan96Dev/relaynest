@@ -116,9 +116,10 @@ Because Next.js App Router relies on SSR, middleware auth protection (`backend/s
 
 ### Option B: Cloudflare Pages (with OpenNext Static + Worker Integration)
 
-1. Recommended integration with Cloudflare Workers: `.github/workflows/ci.yml` already supports building via `@opennextjs/cloudflare` (`npx @opennextjs/cloudflare build`) which produces:
-   - `.open-next/assets` (static frontend assets, deployed optionally to Cloudflare Pages via `CLOUDFLARE_PAGES_PROJECT`)
-   - `.open-next/worker.js` (SSR pages + `/api/*` backend Worker configured in `wrangler.jsonc`).
+1. Recommended integration with Cloudflare Workers: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`open-next.config.ts`](../open-next.config.ts) build via `pnpm build:cloudflare` (`opennextjs-cloudflare build`) which produces:
+   - `frontend/.open-next/assets` (static frontend assets, deployed optionally to Cloudflare Pages via `CLOUDFLARE_PAGES_PROJECT`)
+   - `frontend/.open-next/worker.js` (SSR pages + `/api/*` backend Worker configured in `wrangler.jsonc`).
+   *(When deploying via Cloudflare Workers Builds with `WORKERS_CI=1`, `pnpm build` automatically selects OpenNext too!)*
 2. Required **Cloudflare Pages Build Environment Variables**:
    - `NEXT_PUBLIC_APP_URL` = `https://app.yourdomain.com`
    - `NEXT_PUBLIC_SUPABASE_URL` = `https://<project-ref>.supabase.co`
@@ -136,7 +137,7 @@ Because Next.js App Router relies on SSR, middleware auth protection (`backend/s
 
 1. Build locally or via CI:
    ```bash
-   npx @opennextjs/cloudflare build
+   pnpm build:cloudflare
    ```
 2. Push all server secrets via Wrangler CLI (never put secrets in `wrangler.jsonc` or Git):
    ```bash

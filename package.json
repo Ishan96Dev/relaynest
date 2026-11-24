@@ -20,7 +20,9 @@
     "emails": "node --env-file-if-exists=.env scripts/build-email-templates.mjs",
     "emails:logo": "node --env-file-if-exists=.env scripts/upload-email-logo.mjs",
     "auth:config": "node --env-file=.env scripts/apply-auth-config.mjs",
-    "build": "next build frontend",
+    "build": "node scripts/build.mjs",
+    "build:next": "next build frontend",
+    "build:cloudflare": "node scripts/build.mjs --cloudflare",
     "start": "next start frontend",
     "lint": "eslint frontend/src backend/src backend/tests",
     "typecheck": "tsc --noEmit -p frontend/tsconfig.json",
@@ -47,6 +49,7 @@
     "@eslint/eslintrc": "^3.3.7",
     "@eslint/js": "^10.0.1",
     "@next/env": "15.5.29",
+    "@opennextjs/cloudflare": "^1.20.18",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
@@ -59,6 +62,7 @@
     "tailwindcss": "^4.3.5",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.72.2"
+    "typescript-eslint": "^8.72.2",
+    "wrangler": "^4.168.0"
   }
 }

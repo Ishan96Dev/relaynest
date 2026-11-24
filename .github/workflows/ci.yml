@@ -45,7 +45,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build for Cloudflare Workers / Pages (OpenNext)
-        run: npx -y @opennextjs/cloudflare build
+        run: pnpm build:cloudflare
         env:
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
@@ -63,4 +63,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy .open-next/assets --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+          command: pages deploy frontend/.open-next/assets --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}
