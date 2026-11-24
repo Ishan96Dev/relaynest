@@ -56,6 +56,8 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          wranglerVersion: "4.168.0"
           command: deploy
       - name: Optional Static Assets Sync to Cloudflare Pages
         if: vars.CLOUDFLARE_PAGES_PROJECT != ''
@@ -63,4 +65,6 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          wranglerVersion: "4.168.0"
           command: pages deploy frontend/.open-next/assets --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}

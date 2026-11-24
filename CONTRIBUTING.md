@@ -4,7 +4,7 @@ Thanks for helping improve RelayNest. This guide keeps changes easy to review.
 
 ## Setup
 
-1. Install Node 22+ and pnpm 10+ (`corepack enable`).
+1. Install Node 26+ and pnpm 10+ (`corepack enable`).
 2. Run `pnpm install`, copy `.env.example` to `.env`, then start the app (`pnpm dev`, or `pnpm dev:demo` without credentials).
 3. Read [docs/VIBE_CODING_GUIDE.md](docs/VIBE_CODING_GUIDE.md) for the engineering rules.
 

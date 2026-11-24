@@ -103,16 +103,17 @@ Because Next.js App Router relies on SSR, middleware auth protection (`backend/s
 ### Option A: Vercel (Full-Stack Next.js or Frontend Proxy)
 
 1. Import your GitHub repository in **Vercel -> Add New -> Project**.
-2. Set **Root Directory** to `./` (repository root, because `frontend/` imports `@backend/*` and `@/*`).
-3. Build & Output Overrides:
-   - **Install Command:** `pnpm install --frozen-lockfile`
-   - **Build Command:** `pnpm build` *(runs `next build frontend`)*
-   - **Output Directory:** `frontend/.next`
+2. Set **Root Directory** to `./` (or `/`, repository root, because `frontend/` imports `@backend/*` and `@/*`).
+3. Build & Output Settings (pre-configured via [`vercel.json`](../vercel.json)):
+   - Leave **Install Command**, **Build Command**, and **Output Directory** overrides **off** (default) so [`vercel.json`](../vercel.json) applies automatically, or match these exact values if overridden in the Vercel Dashboard:
+     - **Install Command:** `pnpm install --frozen-lockfile`
+     - **Build Command:** `pnpm build` *(runs `next build frontend`)*
+     - **Output Directory:** `frontend/.next`
 4. **Environment Variables (Production + Preview):**
    - Required public vars: `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_APP_NAME=RelayNest`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_GA_MEASUREMENT_ID` (optional).
-   - If hosting full-stack on Vercel (recommended when using Vercel), also add all server secrets from Section 6 below.
+   - If hosting full-stack on Vercel (recommended when using Vercel), also add all server secrets from Section 7 below.
    - If splitting Backend onto Render/Cloudflare Workers while keeping Frontend on Vercel, add a Next.js rewrite in `frontend/next.config.ts` forwarding `/api/:path*` -> `https://api.yourdomain.com/api/:path*`, and set `NEXT_PUBLIC_APP_URL=https://app.yourdomain.com`.
-5. **Vercel Cron (`vercel.json` or External Cron):** Because Vercel is serverless, leave `SCHEDULER_IN_PROCESS` empty and call `POST https://<domain>/api/cron/tick` every minute with header `Authorization: Bearer <CRON_SECRET>`.
+5. **Vercel Cron / External Scheduler:** Because Vercel is serverless, leave `SCHEDULER_IN_PROCESS` empty. Vercel Hobby plans only allow daily crons (`vercel.json` intentionally omits a per-minute `crons` entry so Hobby deploys succeed), so call `POST https://<domain>/api/cron/tick` every minute from an external scheduler (e.g., `cron-job.org` or GitHub Actions) with header `Authorization: Bearer <CRON_SECRET>`.
 
 ### Option B: Cloudflare Pages (with OpenNext Static + Worker Integration)
 
@@ -125,7 +126,7 @@ Because Next.js App Router relies on SSR, middleware auth protection (`backend/s
    - `NEXT_PUBLIC_SUPABASE_URL` = `https://<project-ref>.supabase.co`
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` = `sb_publishable_...`
    - `NEXT_PUBLIC_GA_MEASUREMENT_ID` = `G-XXXXXXXXXX` *(optional)*
-3. Set `NODE_VERSION=22` in Cloudflare Pages build settings. If splitting Pages frontend from a separate Backend Worker/Render API, route `/api/*` via Cloudflare Worker Route or Pages Function proxy (`functions/api/[[path]].js`) to your backend domain so auth cookies stay first-party.
+3. Set `NODE_VERSION=26` in Cloudflare Pages / Workers Builds settings (matches `.nvmrc`). If splitting Pages frontend from a separate Backend Worker/Render API, route `/api/*` via Cloudflare Worker Route or Pages Function proxy (`functions/api/[[path]].js`) to your backend domain so auth cookies stay first-party.
 
 ---
 
@@ -133,7 +134,7 @@ Because Next.js App Router relies on SSR, middleware auth protection (`backend/s
 
 ### Option A: Cloudflare Workers (`wrangler.jsonc` — Recommended Edge Host)
 
-[`wrangler.jsonc`](../wrangler.jsonc) is pre-configured with `nodejs_compat`, `.open-next/worker.js`, and a minute Cron Trigger (`* * * * *`).
+[`wrangler.jsonc`](../wrangler.jsonc) is pre-configured with `nodejs_compat`, `global_fetch_strictly_public`, `WORKER_SELF_REFERENCE`, [`cloudflare/worker.ts`](../cloudflare/worker.ts) (wrapping `frontend/.open-next/worker.js`), and a minute Cron Trigger (`* * * * *`) invoking `/api/cron/tick`.
 
 1. Build locally or via CI:
    ```bash
@@ -172,7 +173,7 @@ Because Next.js App Router relies on SSR, middleware auth protection (`backend/s
 Use **Render Web Service** if you want persistent Node processes (supports optional in-process scheduler `SCHEDULER_IN_PROCESS=true` and optional gRPC/HTTP `MILVUS_URI` self-hosted connections).
 
 1. **New -> Web Service -> Connect GitHub Repo**:
-   - **Environment:** `Node` (Node 22 via `.nvmrc`)
+   - **Environment:** `Node` (Node 26 via `.nvmrc`)
    - **Build Command:** `pnpm install --frozen-lockfile && pnpm build`
    - **Start Command:** `pnpm start` *(runs `next start frontend`, reads `$PORT` automatically)*
    - **Health Check Path:** `/api/health`

@@ -1,13 +1,19 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "relaynest",
-  "main": "frontend/.open-next/worker.js",
-  "compatibility_date": "2025-05-05",
-  "compatibility_flags": ["nodejs_compat"],
+  "main": "cloudflare/worker.ts",
+  "compatibility_date": "2026-11-23",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
     "directory": "frontend/.open-next/assets",
     "binding": "ASSETS"
   },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "relaynest"
+    }
+  ],
   "triggers": {
     "crons": ["* * * * *"]
   }

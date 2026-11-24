@@ -10,7 +10,7 @@ A multi-tenant no-code Telegram bot builder, visual automation studio, RAG Knowl
 
 [![CI](https://github.com/Ishan96Dev/relaynest/actions/workflows/ci.yml/badge.svg)](https://github.com/Ishan96Dev/relaynest/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-v0.1.0-6C47FF)
-![Node](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=node.js&logoColor=white)
+![Node](https://img.shields.io/badge/node-%E2%89%A526-339933?logo=node.js&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3ECF8E?logo=supabase&logoColor=white)
@@ -73,7 +73,7 @@ Explore real recorded walkthroughs captured from the live RelayNest workspace (z
 ## Getting Started
 
 ```bash
-# 1. Install (Node >= 22, pnpm >= 10)
+# 1. Install (Node >= 26, pnpm >= 10)
 pnpm install
 
 # 2. Configure local environment

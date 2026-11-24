@@ -4,8 +4,9 @@
 import { spawnSync } from "node:child_process";
 
 const forceCloudflare = process.argv.includes("--cloudflare");
+const isVercel = ["1", "true", "yes"].includes(String(process.env.VERCEL ?? "").toLowerCase());
 const isWorkersCi = ["1", "true", "yes"].includes(String(process.env.WORKERS_CI ?? "").toLowerCase());
-const useCloudflare = forceCloudflare || isWorkersCi;
+const useCloudflare = forceCloudflare || (isWorkersCi && !isVercel);
 
 const cmdArgs = useCloudflare
   ? ["exec", "opennextjs-cloudflare", "build"]

@@ -6,7 +6,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.33.4",
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
   "scripts": {
     "dev": "concurrently -n web,backend -c cyan,magenta --kill-others-on-fail \"pnpm dev:web\" \"pnpm dev:backend\"",
@@ -23,6 +23,8 @@
     "build": "node scripts/build.mjs",
     "build:next": "next build frontend",
     "build:cloudflare": "node scripts/build.mjs --cloudflare",
+    "preview:cloudflare": "node scripts/build.mjs --cloudflare && opennextjs-cloudflare preview",
+    "deploy:cloudflare": "node scripts/build.mjs --cloudflare && opennextjs-cloudflare deploy",
     "start": "next start frontend",
     "lint": "eslint frontend/src backend/src backend/tests",
     "typecheck": "tsc --noEmit -p frontend/tsconfig.json",
@@ -31,6 +33,7 @@
   },
   "dependencies": {
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@opennextjs/cloudflare": "^1.20.18",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.119.0",
     "@xyflow/react": "^13.0.0",
@@ -46,10 +49,10 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261124.1",
     "@eslint/eslintrc": "^3.3.7",
     "@eslint/js": "^10.0.1",
     "@next/env": "15.5.29",
-    "@opennextjs/cloudflare": "^1.20.18",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
