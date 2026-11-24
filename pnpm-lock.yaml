@@ -58,8 +58,8 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(eslint@9.39.5(jiti@2.7.0))
       '@next/env':
-        specifier: 15.5.29
-        version: 15.5.29
+        specifier: 16.4.6
+        version: 16.4.6
       '@tailwindcss/postcss':
         specifier: ^4.3.5
         version: 4.3.5
@@ -515,6 +515,9 @@ packages:
 
   '@next/env@15.5.29':
     resolution: {integrity: sha512-9SrTiTsgORa+KfhlXXAGC1eSs847E+d2MQTPUX+n7R5XA8g/B6ZitfL6GoYHNMLwG3Hzs1wjDH0/ME5WrGMqBQ==}
+
+  '@next/env@16.4.6':
+    resolution: {integrity: sha512-SunBjJ6t+oBtecS3dTjdVuMhUogP5wD/vrGL5EVuQYM1iS4O5ilL51HkiJ3sPjMzRHiCChvr4dbaSJbR7F3lxA==}
 
   '@next/eslint-plugin-next@15.5.29':
     resolution: {integrity: sha512-d3dH0WVbXr+W/3f/TMU6fl7vHJBuok7ugMCDPfRnHhCLl8ppAtFbfXgVHpnLrUirHN4vE5GkTMnId3Fmxv9UCQ==}
@@ -2755,6 +2758,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.6.0
 
   '@next/env@15.5.29': {}
+
+  '@next/env@16.4.6': {}
 
   '@next/eslint-plugin-next@15.5.29':
     dependencies:
