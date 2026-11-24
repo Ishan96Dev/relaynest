@@ -1,0 +1,1 @@
+-- Curated bot templates

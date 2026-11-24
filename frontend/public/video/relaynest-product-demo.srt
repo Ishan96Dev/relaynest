@@ -1,0 +1,207 @@
+1
+00:00:00,509 --> 00:00:03,495
+Welcome to RelayNest your all-in-one workspace
+
+2
+00:00:03,495 --> 00:00:06,140
+to build automate and manage powerful
+
+3
+00:00:06,140 --> 00:00:08,398
+Telegram bots without writing a single
+
+4
+00:00:08,398 --> 00:00:09,162
+line of code
+
+5
+00:00:10,209 --> 00:00:12,200
+Start on your live Overview dashboard
+
+6
+00:00:12,600 --> 00:00:15,452
+Track active bots incoming messages quick
+
+7
+00:00:15,452 --> 00:00:17,891
+shortcuts and instant notifications from your
+
+8
+00:00:17,891 --> 00:00:19,626
+header bell in one clean view
+
+9
+00:00:20,664 --> 00:00:22,800
+Inside My Bots connect your Telegram
+
+10
+00:00:22,800 --> 00:00:23,771
+bot in seconds
+
+11
+00:00:24,183 --> 00:00:26,926
+RelayNest syncs your bot profile automatically
+
+12
+00:00:27,205 --> 00:00:28,868
+stays in lockstep with Telegram
+
+13
+00:00:29,232 --> 00:00:31,125
+and records created or deleted bot
+
+14
+00:00:31,125 --> 00:00:31,586
+history
+
+15
+00:00:32,597 --> 00:00:33,993
+Open any bot to edit its
+
+16
+00:00:33,993 --> 00:00:37,233
+name photo slash commands and welcome
+
+17
+00:00:37,233 --> 00:00:39,709
+or fallback replies every update syncs
+
+18
+00:00:39,709 --> 00:00:41,699
+smoothly to Telegram with a live
+
+19
+00:00:41,699 --> 00:00:43,252
+test console built right in
+
+20
+00:00:44,264 --> 00:00:45,380
+Want to launch even faster
+
+21
+00:00:45,805 --> 00:00:47,917
+Pick ready-made templates for Customer Support
+
+22
+00:00:48,208 --> 00:00:52,043
+smart FAQs community welcomes notifications and
+
+23
+00:00:52,043 --> 00:00:52,784
+lead capture
+
+24
+00:00:53,809 --> 00:00:56,151
+Design custom bot flows visually inside
+
+25
+00:00:56,151 --> 00:00:56,867
+Automations
+
+26
+00:00:57,268 --> 00:01:00,411
+Combine triggers smart choices scheduled updates
+
+27
+00:01:00,605 --> 00:01:02,243
+and interactive reply buttons
+
+28
+00:01:02,547 --> 00:01:04,901
+then review every run in Executions
+
+29
+00:01:05,942 --> 00:01:08,187
+Give your bots human-like intelligence in
+
+30
+00:01:08,187 --> 00:01:09,207
+the AI Platform
+
+31
+00:01:09,619 --> 00:01:11,209
+Browse top models in the Model
+
+32
+00:01:11,209 --> 00:01:13,794
+Catalog and test real conversations live
+
+33
+00:01:13,794 --> 00:01:15,311
+inside the Model Playground
+
+34
+00:01:16,330 --> 00:01:19,097
+Upload your PDFs product guides and
+
+35
+00:01:19,097 --> 00:01:21,464
+FAQs into the Knowledge Base then
+
+36
+00:01:21,464 --> 00:01:23,369
+launch an AI Agent that answers
+
+37
+00:01:23,369 --> 00:01:26,027
+customer questions accurately on Telegram around
+
+38
+00:01:26,027 --> 00:01:26,524
+the clock
+
+39
+00:01:27,564 --> 00:01:30,295
+Track growth inside Analytics manage team
+
+40
+00:01:30,295 --> 00:01:33,135
+settings effortlessly and choose Free Pro
+
+41
+00:01:33,353 --> 00:01:35,016
+or Business plans in dollars or
+
+42
+00:01:35,016 --> 00:01:36,411
+rupees whenever you scale
+
+43
+00:01:37,430 --> 00:01:40,136
+Connect Slack Discord and signed webhooks
+
+44
+00:01:40,136 --> 00:01:42,818
+in Integrations generate scoped A P
+
+45
+00:01:42,818 --> 00:01:45,197
+I keys test live calls inside
+
+46
+00:01:45,197 --> 00:01:47,515
+interactive Swagger U I and receive
+
+47
+00:01:47,661 --> 00:01:49,129
+instant notification alerts
+
+48
+00:01:50,164 --> 00:01:51,790
+Everything you need to run Telegram
+
+49
+00:01:51,790 --> 00:01:54,642
+support workflows and AI assistants in
+
+50
+00:01:54,642 --> 00:01:55,285
+one place
+
+51
+00:01:55,686 --> 00:01:57,349
+Create your first bot free on
+
+52
+00:01:57,349 --> 00:01:58,198
+RelayNest today

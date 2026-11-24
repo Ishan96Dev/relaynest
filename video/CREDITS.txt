@@ -1,0 +1,22 @@
+RelayNest Product Demo — Audio & Media Credits
+==============================================
+
+Voiceover:
+- Neural TTS (`en-US-AndrewNeural` via Edge TTS) synced with exact WordBoundary timestamps
+
+Background Music (Soft Tech Bed):
+- "Jungle Voices" by Diego Nava (Mixkit #517 — Electronic, Relaxed)
+  Source: https://assets.mixkit.co/music/517/517.mp3
+  License: Mixkit Stock Music Free License (https://mixkit.co/license/#musicFree)
+  Note: Downloaded locally for render; excluded from git commits per Mixkit terms.
+
+Sound Effects (Bundled CC0 1.0):
+- Whoosh: "Whoosh" by qubodup (https://freesound.org/people/qubodup/sounds/60013/), CC0 1.0
+- Click: "Classic Click" by adh.dreaming (https://freesound.org/people/adh.dreaming/sounds/671105/), CC0 1.0
+- Pop: "POP SFX Neutral" by ethernel0 (https://freesound.org/people/ethernel0/sounds/776016/), CC0 1.0
+- Riser: "Cinematic Riser #3 subtle" by BeaconStudio (https://freesound.org/people/BeaconStudio/sounds/859482/), CC0 1.0
+- Impact: "soft_impact3" by peoplearehappy (https://freesound.org/people/peoplearehappy/sounds/841274/), CC0 1.0
+- Tick: "Click / Tick" by Squirrel_404 (https://freesound.org/people/Squirrel_404/sounds/683048/), CC0 1.0
+- Typing: "Digital Typing" by Sky_Motion (https://freesound.org/people/Sky_Motion/sounds/416777/), CC0 1.0
+- Notification Chime: "Soft Notifications Bell Ding" by LegitCheese (https://freesound.org/people/LegitCheese/sounds/571513/), CC0 1.0
+- Swipe Transition: "Swipe" (Freesound #702773), CC0 1.0

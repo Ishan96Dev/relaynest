@@ -1,0 +1,1426 @@
+[
+  {
+    "id": "intro",
+    "title": "Meet RelayNest",
+    "text": "Welcome to RelayNest \u2014 your all-in-one workspace to build, automate, and manage powerful Telegram bots without writing a single line of code.",
+    "audioFile": "audio/vo-intro.mp3",
+    "durationMs": 9120,
+    "words": [
+      {
+        "text": "Welcome",
+        "startMs": 109,
+        "endMs": 522
+      },
+      {
+        "text": "to",
+        "startMs": 522,
+        "endMs": 667
+      },
+      {
+        "text": "RelayNest",
+        "startMs": 667,
+        "endMs": 1419
+      },
+      {
+        "text": "your",
+        "startMs": 1626,
+        "endMs": 1808
+      },
+      {
+        "text": "all-in-one",
+        "startMs": 1808,
+        "endMs": 2415
+      },
+      {
+        "text": "workspace",
+        "startMs": 2415,
+        "endMs": 3095
+      },
+      {
+        "text": "to",
+        "startMs": 3095,
+        "endMs": 3301
+      },
+      {
+        "text": "build",
+        "startMs": 3301,
+        "endMs": 3677
+      },
+      {
+        "text": "automate",
+        "startMs": 3920,
+        "endMs": 4442
+      },
+      {
+        "text": "and",
+        "startMs": 4684,
+        "endMs": 4842
+      },
+      {
+        "text": "manage",
+        "startMs": 4842,
+        "endMs": 5231
+      },
+      {
+        "text": "powerful",
+        "startMs": 5231,
+        "endMs": 5740
+      },
+      {
+        "text": "Telegram",
+        "startMs": 5740,
+        "endMs": 6214
+      },
+      {
+        "text": "bots",
+        "startMs": 6214,
+        "endMs": 6590
+      },
+      {
+        "text": "without",
+        "startMs": 6590,
+        "endMs": 7063
+      },
+      {
+        "text": "writing",
+        "startMs": 7063,
+        "endMs": 7488
+      },
+      {
+        "text": "a",
+        "startMs": 7488,
+        "endMs": 7568
+      },
+      {
+        "text": "single",
+        "startMs": 7549,
+        "endMs": 7998
+      },
+      {
+        "text": "line",
+        "startMs": 7998,
+        "endMs": 8265
+      },
+      {
+        "text": "of",
+        "startMs": 8265,
+        "endMs": 8374
+      },
+      {
+        "text": "code",
+        "startMs": 8374,
+        "endMs": 8762
+      }
+    ]
+  },
+  {
+    "id": "dashboard",
+    "title": "Overview & Notifications",
+    "text": "Start on your live Overview dashboard. Track active bots, incoming messages, quick shortcuts, and instant notifications from your header bell in one clean view.",
+    "audioFile": "audio/vo-dashboard.mp3",
+    "durationMs": 9888,
+    "words": [
+      {
+        "text": "Start",
+        "startMs": 109,
+        "endMs": 388
+      },
+      {
+        "text": "on",
+        "startMs": 388,
+        "endMs": 510
+      },
+      {
+        "text": "your",
+        "startMs": 510,
+        "endMs": 631
+      },
+      {
+        "text": "live",
+        "startMs": 631,
+        "endMs": 1165
+      },
+      {
+        "text": "Overview",
+        "startMs": 1165,
+        "endMs": 1517
+      },
+      {
+        "text": "dashboard",
+        "startMs": 1517,
+        "endMs": 2100
+      },
+      {
+        "text": "Track",
+        "startMs": 2500,
+        "endMs": 2791
+      },
+      {
+        "text": "active",
+        "startMs": 2791,
+        "endMs": 3131
+      },
+      {
+        "text": "bots",
+        "startMs": 3131,
+        "endMs": 3592
+      },
+      {
+        "text": "incoming",
+        "startMs": 3847,
+        "endMs": 4345
+      },
+      {
+        "text": "messages",
+        "startMs": 4345,
+        "endMs": 4940
+      },
+      {
+        "text": "quick",
+        "startMs": 5109,
+        "endMs": 5352
+      },
+      {
+        "text": "shortcuts",
+        "startMs": 5352,
+        "endMs": 6056
+      },
+      {
+        "text": "and",
+        "startMs": 6262,
+        "endMs": 6432
+      },
+      {
+        "text": "instant",
+        "startMs": 6432,
+        "endMs": 6772
+      },
+      {
+        "text": "notifications",
+        "startMs": 6772,
+        "endMs": 7500
+      },
+      {
+        "text": "from",
+        "startMs": 7500,
+        "endMs": 7658
+      },
+      {
+        "text": "your",
+        "startMs": 7658,
+        "endMs": 7791
+      },
+      {
+        "text": "header",
+        "startMs": 7791,
+        "endMs": 8046
+      },
+      {
+        "text": "bell",
+        "startMs": 8046,
+        "endMs": 8337
+      },
+      {
+        "text": "in",
+        "startMs": 8568,
+        "endMs": 8714
+      },
+      {
+        "text": "one",
+        "startMs": 8714,
+        "endMs": 8956
+      },
+      {
+        "text": "clean",
+        "startMs": 8956,
+        "endMs": 9235
+      },
+      {
+        "text": "view",
+        "startMs": 9235,
+        "endMs": 9526
+      }
+    ]
+  },
+  {
+    "id": "telegram",
+    "title": "My Bots & Two-Way Sync",
+    "text": "Inside My Bots, connect your Telegram bot in seconds. RelayNest syncs your bot profile automatically, stays in lockstep with Telegram, and records created or deleted bot history.",
+    "audioFile": "audio/vo-telegram.mp3",
+    "durationMs": 11376,
+    "words": [
+      {
+        "text": "Inside",
+        "startMs": 97,
+        "endMs": 473
+      },
+      {
+        "text": "My",
+        "startMs": 473,
+        "endMs": 619
+      },
+      {
+        "text": "Bots",
+        "startMs": 619,
+        "endMs": 1141
+      },
+      {
+        "text": "connect",
+        "startMs": 1347,
+        "endMs": 1650
+      },
+      {
+        "text": "your",
+        "startMs": 1650,
+        "endMs": 1760
+      },
+      {
+        "text": "Telegram",
+        "startMs": 1760,
+        "endMs": 2233
+      },
+      {
+        "text": "bot",
+        "startMs": 2233,
+        "endMs": 2500
+      },
+      {
+        "text": "in",
+        "startMs": 2500,
+        "endMs": 2597
+      },
+      {
+        "text": "seconds",
+        "startMs": 2597,
+        "endMs": 3204
+      },
+      {
+        "text": "RelayNest",
+        "startMs": 3616,
+        "endMs": 4260
+      },
+      {
+        "text": "syncs",
+        "startMs": 4260,
+        "endMs": 4624
+      },
+      {
+        "text": "your",
+        "startMs": 4624,
+        "endMs": 4757
+      },
+      {
+        "text": "bot",
+        "startMs": 4757,
+        "endMs": 5036
+      },
+      {
+        "text": "profile",
+        "startMs": 5036,
+        "endMs": 5631
+      },
+      {
+        "text": "automatically",
+        "startMs": 5631,
+        "endMs": 6359
+      },
+      {
+        "text": "stays",
+        "startMs": 6638,
+        "endMs": 6990
+      },
+      {
+        "text": "in",
+        "startMs": 6990,
+        "endMs": 7112
+      },
+      {
+        "text": "lockstep",
+        "startMs": 7112,
+        "endMs": 7621
+      },
+      {
+        "text": "with",
+        "startMs": 7621,
+        "endMs": 7755
+      },
+      {
+        "text": "Telegram",
+        "startMs": 7755,
+        "endMs": 8301
+      },
+      {
+        "text": "and",
+        "startMs": 8665,
+        "endMs": 8786
+      },
+      {
+        "text": "records",
+        "startMs": 8786,
+        "endMs": 9150
+      },
+      {
+        "text": "created",
+        "startMs": 9150,
+        "endMs": 9782
+      },
+      {
+        "text": "or",
+        "startMs": 9782,
+        "endMs": 9891
+      },
+      {
+        "text": "deleted",
+        "startMs": 9891,
+        "endMs": 10364
+      },
+      {
+        "text": "bot",
+        "startMs": 10364,
+        "endMs": 10558
+      },
+      {
+        "text": "history",
+        "startMs": 10558,
+        "endMs": 11019
+      }
+    ]
+  },
+  {
+    "id": "manageBot",
+    "title": "Manage & Edit Bot",
+    "text": "Open any bot to edit its name, photo, slash commands, and welcome or fallback replies \u2014 every update syncs smoothly to Telegram with a live test console built right in.",
+    "audioFile": "audio/vo-manageBot.mp3",
+    "durationMs": 11112,
+    "words": [
+      {
+        "text": "Open",
+        "startMs": 97,
+        "endMs": 376
+      },
+      {
+        "text": "any",
+        "startMs": 376,
+        "endMs": 583
+      },
+      {
+        "text": "bot",
+        "startMs": 583,
+        "endMs": 922
+      },
+      {
+        "text": "to",
+        "startMs": 922,
+        "endMs": 1068
+      },
+      {
+        "text": "edit",
+        "startMs": 1068,
+        "endMs": 1323
+      },
+      {
+        "text": "its",
+        "startMs": 1323,
+        "endMs": 1493
+      },
+      {
+        "text": "name",
+        "startMs": 1493,
+        "endMs": 1918
+      },
+      {
+        "text": "photo",
+        "startMs": 2197,
+        "endMs": 2682
+      },
+      {
+        "text": "slash",
+        "startMs": 2876,
+        "endMs": 3228
+      },
+      {
+        "text": "commands",
+        "startMs": 3228,
+        "endMs": 3847
+      },
+      {
+        "text": "and",
+        "startMs": 4090,
+        "endMs": 4248
+      },
+      {
+        "text": "welcome",
+        "startMs": 4248,
+        "endMs": 4733
+      },
+      {
+        "text": "or",
+        "startMs": 4733,
+        "endMs": 4830
+      },
+      {
+        "text": "fallback",
+        "startMs": 4830,
+        "endMs": 5352
+      },
+      {
+        "text": "replies",
+        "startMs": 5352,
+        "endMs": 5886
+      },
+      {
+        "text": "every",
+        "startMs": 6177,
+        "endMs": 6444
+      },
+      {
+        "text": "update",
+        "startMs": 6444,
+        "endMs": 6833
+      },
+      {
+        "text": "syncs",
+        "startMs": 6833,
+        "endMs": 7209
+      },
+      {
+        "text": "smoothly",
+        "startMs": 7209,
+        "endMs": 7706
+      },
+      {
+        "text": "to",
+        "startMs": 7706,
+        "endMs": 7816
+      },
+      {
+        "text": "Telegram",
+        "startMs": 7816,
+        "endMs": 8399
+      },
+      {
+        "text": "with",
+        "startMs": 8580,
+        "endMs": 8714
+      },
+      {
+        "text": "a",
+        "startMs": 8714,
+        "endMs": 8794
+      },
+      {
+        "text": "live",
+        "startMs": 8762,
+        "endMs": 9199
+      },
+      {
+        "text": "test",
+        "startMs": 9199,
+        "endMs": 9490
+      },
+      {
+        "text": "console",
+        "startMs": 9490,
+        "endMs": 9976
+      },
+      {
+        "text": "built",
+        "startMs": 9976,
+        "endMs": 10316
+      },
+      {
+        "text": "right",
+        "startMs": 10316,
+        "endMs": 10546
+      },
+      {
+        "text": "in",
+        "startMs": 10546,
+        "endMs": 10752
+      }
+    ]
+  },
+  {
+    "id": "templates",
+    "title": "Bot Templates",
+    "text": "Want to launch even faster? Pick ready-made templates for Customer Support, smart FAQs, community welcomes, notifications, and lead capture.",
+    "audioFile": "audio/vo-templates.mp3",
+    "durationMs": 8976,
+    "words": [
+      {
+        "text": "Want",
+        "startMs": 97,
+        "endMs": 218
+      },
+      {
+        "text": "to",
+        "startMs": 218,
+        "endMs": 298
+      },
+      {
+        "text": "launch",
+        "startMs": 279,
+        "endMs": 570
+      },
+      {
+        "text": "even",
+        "startMs": 570,
+        "endMs": 752
+      },
+      {
+        "text": "faster",
+        "startMs": 752,
+        "endMs": 1213
+      },
+      {
+        "text": "Pick",
+        "startMs": 1638,
+        "endMs": 1845
+      },
+      {
+        "text": "ready-made",
+        "startMs": 1845,
+        "endMs": 2294
+      },
+      {
+        "text": "templates",
+        "startMs": 2294,
+        "endMs": 2682
+      },
+      {
+        "text": "for",
+        "startMs": 2682,
+        "endMs": 2828
+      },
+      {
+        "text": "Customer",
+        "startMs": 2828,
+        "endMs": 3252
+      },
+      {
+        "text": "Support",
+        "startMs": 3252,
+        "endMs": 3750
+      },
+      {
+        "text": "smart",
+        "startMs": 4041,
+        "endMs": 4393
+      },
+      {
+        "text": "FAQs",
+        "startMs": 4393,
+        "endMs": 5170
+      },
+      {
+        "text": "community",
+        "startMs": 5388,
+        "endMs": 5825
+      },
+      {
+        "text": "welcomes",
+        "startMs": 5825,
+        "endMs": 6408
+      },
+      {
+        "text": "notifications",
+        "startMs": 6602,
+        "endMs": 7512
+      },
+      {
+        "text": "and",
+        "startMs": 7718,
+        "endMs": 7876
+      },
+      {
+        "text": "lead",
+        "startMs": 7876,
+        "endMs": 8107
+      },
+      {
+        "text": "capture",
+        "startMs": 8107,
+        "endMs": 8617
+      }
+    ]
+  },
+  {
+    "id": "workflow",
+    "title": "Visual Automations",
+    "text": "Design custom bot flows visually inside Automations. Combine triggers, smart choices, scheduled updates, and interactive reply buttons, then review every run in Executions.",
+    "audioFile": "audio/vo-workflow.mp3",
+    "durationMs": 11568,
+    "words": [
+      {
+        "text": "Design",
+        "startMs": 109,
+        "endMs": 437
+      },
+      {
+        "text": "custom",
+        "startMs": 437,
+        "endMs": 813
+      },
+      {
+        "text": "bot",
+        "startMs": 813,
+        "endMs": 1104
+      },
+      {
+        "text": "flows",
+        "startMs": 1104,
+        "endMs": 1468
+      },
+      {
+        "text": "visually",
+        "startMs": 1468,
+        "endMs": 1990
+      },
+      {
+        "text": "inside",
+        "startMs": 1990,
+        "endMs": 2451
+      },
+      {
+        "text": "Automations",
+        "startMs": 2451,
+        "endMs": 3167
+      },
+      {
+        "text": "Combine",
+        "startMs": 3568,
+        "endMs": 3908
+      },
+      {
+        "text": "triggers",
+        "startMs": 3908,
+        "endMs": 4515
+      },
+      {
+        "text": "smart",
+        "startMs": 4684,
+        "endMs": 4976
+      },
+      {
+        "text": "choices",
+        "startMs": 4976,
+        "endMs": 5534
+      },
+      {
+        "text": "scheduled",
+        "startMs": 5704,
+        "endMs": 6153
+      },
+      {
+        "text": "updates",
+        "startMs": 6153,
+        "endMs": 6711
+      },
+      {
+        "text": "and",
+        "startMs": 6905,
+        "endMs": 7075
+      },
+      {
+        "text": "interactive",
+        "startMs": 7075,
+        "endMs": 7682
+      },
+      {
+        "text": "reply",
+        "startMs": 7682,
+        "endMs": 8058
+      },
+      {
+        "text": "buttons",
+        "startMs": 8058,
+        "endMs": 8543
+      },
+      {
+        "text": "then",
+        "startMs": 8847,
+        "endMs": 9017
+      },
+      {
+        "text": "review",
+        "startMs": 9017,
+        "endMs": 9563
+      },
+      {
+        "text": "every",
+        "startMs": 9563,
+        "endMs": 9903
+      },
+      {
+        "text": "run",
+        "startMs": 9903,
+        "endMs": 10279
+      },
+      {
+        "text": "in",
+        "startMs": 10279,
+        "endMs": 10388
+      },
+      {
+        "text": "Executions",
+        "startMs": 10388,
+        "endMs": 11201
+      }
+    ]
+  },
+  {
+    "id": "aiStudio",
+    "title": "Models & Playground",
+    "text": "Give your bots human-like intelligence in the AI Platform. Browse top models in the Model Catalog and test real conversations live inside the Model Playground.",
+    "audioFile": "audio/vo-aiStudio.mp3",
+    "durationMs": 9840,
+    "words": [
+      {
+        "text": "Give",
+        "startMs": 109,
+        "endMs": 267
+      },
+      {
+        "text": "your",
+        "startMs": 267,
+        "endMs": 400
+      },
+      {
+        "text": "bots",
+        "startMs": 400,
+        "endMs": 825
+      },
+      {
+        "text": "human-like",
+        "startMs": 825,
+        "endMs": 1432
+      },
+      {
+        "text": "intelligence",
+        "startMs": 1432,
+        "endMs": 2257
+      },
+      {
+        "text": "in",
+        "startMs": 2257,
+        "endMs": 2354
+      },
+      {
+        "text": "the",
+        "startMs": 2354,
+        "endMs": 2451
+      },
+      {
+        "text": "AI",
+        "startMs": 2451,
+        "endMs": 2767
+      },
+      {
+        "text": "Platform",
+        "startMs": 2767,
+        "endMs": 3374
+      },
+      {
+        "text": "Browse",
+        "startMs": 3786,
+        "endMs": 4114
+      },
+      {
+        "text": "top",
+        "startMs": 4114,
+        "endMs": 4393
+      },
+      {
+        "text": "models",
+        "startMs": 4393,
+        "endMs": 4806
+      },
+      {
+        "text": "in",
+        "startMs": 4806,
+        "endMs": 4939
+      },
+      {
+        "text": "the",
+        "startMs": 4939,
+        "endMs": 5019
+      },
+      {
+        "text": "Model",
+        "startMs": 5012,
+        "endMs": 5376
+      },
+      {
+        "text": "Catalog",
+        "startMs": 5376,
+        "endMs": 5934
+      },
+      {
+        "text": "and",
+        "startMs": 6104,
+        "endMs": 6226
+      },
+      {
+        "text": "test",
+        "startMs": 6226,
+        "endMs": 6566
+      },
+      {
+        "text": "real",
+        "startMs": 6566,
+        "endMs": 6833
+      },
+      {
+        "text": "conversations",
+        "startMs": 6833,
+        "endMs": 7573
+      },
+      {
+        "text": "live",
+        "startMs": 7573,
+        "endMs": 7961
+      },
+      {
+        "text": "inside",
+        "startMs": 7961,
+        "endMs": 8447
+      },
+      {
+        "text": "the",
+        "startMs": 8447,
+        "endMs": 8532
+      },
+      {
+        "text": "Model",
+        "startMs": 8532,
+        "endMs": 8859
+      },
+      {
+        "text": "Playground",
+        "startMs": 8859,
+        "endMs": 9478
+      }
+    ]
+  },
+  {
+    "id": "aiAgent",
+    "title": "Knowledge Base & AI Agents",
+    "text": "Upload your PDFs, product guides, and FAQs into the Knowledge Base, then launch an AI Agent that answers customer questions accurately on Telegram around the clock.",
+    "audioFile": "audio/vo-aiAgent.mp3",
+    "durationMs": 10656,
+    "words": [
+      {
+        "text": "Upload",
+        "startMs": 97,
+        "endMs": 510
+      },
+      {
+        "text": "your",
+        "startMs": 510,
+        "endMs": 655
+      },
+      {
+        "text": "PDFs",
+        "startMs": 655,
+        "endMs": 1492
+      },
+      {
+        "text": "product",
+        "startMs": 1650,
+        "endMs": 2051
+      },
+      {
+        "text": "guides",
+        "startMs": 2051,
+        "endMs": 2500
+      },
+      {
+        "text": "and",
+        "startMs": 2658,
+        "endMs": 2864
+      },
+      {
+        "text": "FAQs",
+        "startMs": 2864,
+        "endMs": 3653
+      },
+      {
+        "text": "into",
+        "startMs": 3653,
+        "endMs": 3847
+      },
+      {
+        "text": "the",
+        "startMs": 3847,
+        "endMs": 3944
+      },
+      {
+        "text": "Knowledge",
+        "startMs": 3944,
+        "endMs": 4345
+      },
+      {
+        "text": "Base",
+        "startMs": 4345,
+        "endMs": 4745
+      },
+      {
+        "text": "then",
+        "startMs": 5036,
+        "endMs": 5231
+      },
+      {
+        "text": "launch",
+        "startMs": 5231,
+        "endMs": 5534
+      },
+      {
+        "text": "an",
+        "startMs": 5534,
+        "endMs": 5789
+      },
+      {
+        "text": "AI",
+        "startMs": 5789,
+        "endMs": 6189
+      },
+      {
+        "text": "Agent",
+        "startMs": 6189,
+        "endMs": 6566
+      },
+      {
+        "text": "that",
+        "startMs": 6566,
+        "endMs": 6748
+      },
+      {
+        "text": "answers",
+        "startMs": 6748,
+        "endMs": 7136
+      },
+      {
+        "text": "customer",
+        "startMs": 7136,
+        "endMs": 7561
+      },
+      {
+        "text": "questions",
+        "startMs": 7561,
+        "endMs": 8277
+      },
+      {
+        "text": "accurately",
+        "startMs": 8277,
+        "endMs": 8847
+      },
+      {
+        "text": "on",
+        "startMs": 8847,
+        "endMs": 8993
+      },
+      {
+        "text": "Telegram",
+        "startMs": 8993,
+        "endMs": 9527
+      },
+      {
+        "text": "around",
+        "startMs": 9527,
+        "endMs": 9794
+      },
+      {
+        "text": "the",
+        "startMs": 9794,
+        "endMs": 9874
+      },
+      {
+        "text": "clock",
+        "startMs": 9854,
+        "endMs": 10291
+      }
+    ]
+  },
+  {
+    "id": "analytics",
+    "title": "Analytics, Settings & Plans",
+    "text": "Track growth inside Analytics, manage team settings effortlessly, and choose Free, Pro, or Business plans in dollars or rupees whenever you scale.",
+    "audioFile": "audio/vo-analytics.mp3",
+    "durationMs": 9312,
+    "words": [
+      {
+        "text": "Track",
+        "startMs": 97,
+        "endMs": 437
+      },
+      {
+        "text": "growth",
+        "startMs": 437,
+        "endMs": 837
+      },
+      {
+        "text": "inside",
+        "startMs": 837,
+        "endMs": 1286
+      },
+      {
+        "text": "Analytics",
+        "startMs": 1286,
+        "endMs": 1917
+      },
+      {
+        "text": "manage",
+        "startMs": 2160,
+        "endMs": 2561
+      },
+      {
+        "text": "team",
+        "startMs": 2561,
+        "endMs": 2828
+      },
+      {
+        "text": "settings",
+        "startMs": 2828,
+        "endMs": 3301
+      },
+      {
+        "text": "effortlessly",
+        "startMs": 3301,
+        "endMs": 3956
+      },
+      {
+        "text": "and",
+        "startMs": 4223,
+        "endMs": 4320
+      },
+      {
+        "text": "choose",
+        "startMs": 4320,
+        "endMs": 4612
+      },
+      {
+        "text": "Free",
+        "startMs": 4612,
+        "endMs": 5000
+      },
+      {
+        "text": "Pro",
+        "startMs": 5255,
+        "endMs": 5668
+      },
+      {
+        "text": "or",
+        "startMs": 5886,
+        "endMs": 6032
+      },
+      {
+        "text": "Business",
+        "startMs": 6032,
+        "endMs": 6408
+      },
+      {
+        "text": "plans",
+        "startMs": 6408,
+        "endMs": 6772
+      },
+      {
+        "text": "in",
+        "startMs": 6772,
+        "endMs": 6881
+      },
+      {
+        "text": "dollars",
+        "startMs": 6881,
+        "endMs": 7330
+      },
+      {
+        "text": "or",
+        "startMs": 7330,
+        "endMs": 7549
+      },
+      {
+        "text": "rupees",
+        "startMs": 7549,
+        "endMs": 8070
+      },
+      {
+        "text": "whenever",
+        "startMs": 8070,
+        "endMs": 8422
+      },
+      {
+        "text": "you",
+        "startMs": 8422,
+        "endMs": 8519
+      },
+      {
+        "text": "scale",
+        "startMs": 8519,
+        "endMs": 8944
+      }
+    ]
+  },
+  {
+    "id": "integrationsApi",
+    "title": "Integrations, API Keys & Swagger UI",
+    "text": "Connect Slack, Discord, and signed webhooks in Integrations, generate scoped A P I keys, test live calls inside interactive Swagger U I, and receive instant notification alerts.",
+    "audioFile": "audio/vo-integrationsApi.mp3",
+    "durationMs": 12168,
+    "words": [
+      {
+        "text": "Connect",
+        "startMs": 97,
+        "endMs": 400
+      },
+      {
+        "text": "Slack",
+        "startMs": 400,
+        "endMs": 922
+      },
+      {
+        "text": "Discord",
+        "startMs": 1104,
+        "endMs": 1674
+      },
+      {
+        "text": "and",
+        "startMs": 1869,
+        "endMs": 1990
+      },
+      {
+        "text": "signed",
+        "startMs": 1990,
+        "endMs": 2366
+      },
+      {
+        "text": "webhooks",
+        "startMs": 2366,
+        "endMs": 2803
+      },
+      {
+        "text": "in",
+        "startMs": 2803,
+        "endMs": 2925
+      },
+      {
+        "text": "Integrations",
+        "startMs": 2925,
+        "endMs": 3762
+      },
+      {
+        "text": "generate",
+        "startMs": 4005,
+        "endMs": 4466
+      },
+      {
+        "text": "scoped",
+        "startMs": 4466,
+        "endMs": 5024
+      },
+      {
+        "text": "A",
+        "startMs": 5024,
+        "endMs": 5146
+      },
+      {
+        "text": "P",
+        "startMs": 5146,
+        "endMs": 5485
+      },
+      {
+        "text": "I",
+        "startMs": 5485,
+        "endMs": 5655
+      },
+      {
+        "text": "keys",
+        "startMs": 5655,
+        "endMs": 6189
+      },
+      {
+        "text": "test",
+        "startMs": 6468,
+        "endMs": 6748
+      },
+      {
+        "text": "live",
+        "startMs": 6748,
+        "endMs": 7015
+      },
+      {
+        "text": "calls",
+        "startMs": 7015,
+        "endMs": 7306
+      },
+      {
+        "text": "inside",
+        "startMs": 7306,
+        "endMs": 7864
+      },
+      {
+        "text": "interactive",
+        "startMs": 7864,
+        "endMs": 8447
+      },
+      {
+        "text": "Swagger",
+        "startMs": 8447,
+        "endMs": 8884
+      },
+      {
+        "text": "U",
+        "startMs": 8884,
+        "endMs": 9066
+      },
+      {
+        "text": "I",
+        "startMs": 9066,
+        "endMs": 9333
+      },
+      {
+        "text": "and",
+        "startMs": 9624,
+        "endMs": 9757
+      },
+      {
+        "text": "receive",
+        "startMs": 9757,
+        "endMs": 10182
+      },
+      {
+        "text": "instant",
+        "startMs": 10328,
+        "endMs": 10655
+      },
+      {
+        "text": "notification",
+        "startMs": 10655,
+        "endMs": 11286
+      },
+      {
+        "text": "alerts",
+        "startMs": 11286,
+        "endMs": 11796
+      }
+    ]
+  },
+  {
+    "id": "closer",
+    "title": "Start Free Today",
+    "text": "Everything you need to run Telegram support, workflows, and AI assistants in one place. Create your first bot free on RelayNest today.",
+    "audioFile": "audio/vo-closer.mp3",
+    "durationMs": 8496,
+    "words": [
+      {
+        "text": "Everything",
+        "startMs": 97,
+        "endMs": 485
+      },
+      {
+        "text": "you",
+        "startMs": 485,
+        "endMs": 583
+      },
+      {
+        "text": "need",
+        "startMs": 583,
+        "endMs": 801
+      },
+      {
+        "text": "to",
+        "startMs": 801,
+        "endMs": 922
+      },
+      {
+        "text": "run",
+        "startMs": 922,
+        "endMs": 1201
+      },
+      {
+        "text": "Telegram",
+        "startMs": 1201,
+        "endMs": 1723
+      },
+      {
+        "text": "support",
+        "startMs": 1723,
+        "endMs": 2196
+      },
+      {
+        "text": "workflows",
+        "startMs": 2476,
+        "endMs": 3156
+      },
+      {
+        "text": "and",
+        "startMs": 3325,
+        "endMs": 3519
+      },
+      {
+        "text": "AI",
+        "startMs": 3519,
+        "endMs": 3847
+      },
+      {
+        "text": "assistants",
+        "startMs": 3847,
+        "endMs": 4430
+      },
+      {
+        "text": "in",
+        "startMs": 4430,
+        "endMs": 4575
+      },
+      {
+        "text": "one",
+        "startMs": 4575,
+        "endMs": 4745
+      },
+      {
+        "text": "place",
+        "startMs": 4745,
+        "endMs": 5218
+      },
+      {
+        "text": "Create",
+        "startMs": 5619,
+        "endMs": 5910
+      },
+      {
+        "text": "your",
+        "startMs": 5910,
+        "endMs": 6032
+      },
+      {
+        "text": "first",
+        "startMs": 6032,
+        "endMs": 6396
+      },
+      {
+        "text": "bot",
+        "startMs": 6396,
+        "endMs": 6614
+      },
+      {
+        "text": "free",
+        "startMs": 6614,
+        "endMs": 7087
+      },
+      {
+        "text": "on",
+        "startMs": 7087,
+        "endMs": 7282
+      },
+      {
+        "text": "RelayNest",
+        "startMs": 7282,
+        "endMs": 7840
+      },
+      {
+        "text": "today",
+        "startMs": 7840,
+        "endMs": 8131
+      }
+    ]
+  }
+]

@@ -1,0 +1,77 @@
+# dependencies
+node_modules
+.pnpm-store
+
+# builds
+.next
+.next/
+.next-prod/
+out
+dist
+build
+*.tsbuildinfo
+next-env.d.ts
+.turbo
+.eslintcache
+
+# env & local secrets (never commit secrets)
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+*.crt
+*.p12
+
+# logs, test artifacts & tooling output
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+coverage
+.playwright-mcp
+playwright-mcp
+playwright-report
+test-results
+blob-report
+playwright/.cache
+.vercel
+.open-next
+.wrangler
+.cloudflare
+.render
+shot-*.jpg
+*.tmp
+*.tmp.*
+*.bak
+*.swp
+*.err
+*.pid
+
+# agent / assistant workspace skills (not app source)
+.agents/
+.claude/
+.cursor/
+.windsurf/
+.gemini/
+skills-lock.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.editorconfig
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# Supabase CLI local temp state
+supabase/.branches/
+supabase/.temp/
+
+# video build intermediates & large scratch audio
+video/public/audio/bg-music.mp3
+video/public/audio/bg-tech.mp3
+video/no-subs.json
+video/out/

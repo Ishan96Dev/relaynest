@@ -1,0 +1,3 @@
+/** Shared field styling so Input, Textarea and the custom Select look identical. */
+export const inputClass =
+  "h-10 w-full rounded-lg border border-border bg-surface-2/80 px-3 text-sm text-foreground placeholder:text-muted/70 transition focus:border-lavender focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60 read-only:text-foreground/90 hover:border-lavender/40 aria-[invalid=true]:border-danger aria-[invalid=true]:bg-danger/5 aria-[invalid=true]:ring-2 aria-[invalid=true]:ring-danger/25";
