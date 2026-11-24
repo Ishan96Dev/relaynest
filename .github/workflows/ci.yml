@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Manual deploy target (synced runs both Cloudflare & Vercel when enabled)"
+        type: choice
+        default: all
+        options:
+          - all
+          - cloudflare
+          - vercel
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -33,8 +43,12 @@ jobs:
           NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID || '' }}
 
   deploy_cloudflare:
+    name: Deploy Cloudflare Workers
     needs: verify
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.CLOUDFLARE_DEPLOY == 'true'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'all' || inputs.target == 'cloudflare'))) &&
+      vars.CLOUDFLARE_DEPLOY == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +61,7 @@ jobs:
       - name: Build for Cloudflare Workers / Pages (OpenNext)
         run: pnpm build:cloudflare
         env:
-          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.CLOUDFLARE_APP_URL || vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
@@ -68,3 +82,50 @@ jobs:
           packageManager: pnpm
           wranglerVersion: "4.168.0"
           command: pages deploy frontend/.open-next/assets --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      - name: Publish Cloudflare Summary
+        run: |
+          echo "### Cloudflare Workers Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: \`relaynest\` (OpenNext Workers)" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy_vercel:
+    name: Deploy Vercel (Synced)
+    needs: verify
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'all' || inputs.target == 'vercel'))) &&
+      vars.VERCEL_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy to Vercel (CLI Prebuilt or Deploy Hook)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
+            pnpm dlx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+            pnpm dlx vercel@latest build --prod --token="$VERCEL_TOKEN"
+            DEPLOY_URL=$(pnpm dlx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+            echo "### Vercel Production Deployed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- URL: ${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$VERCEL_DEPLOY_HOOK_URL" ]; then
+            curl -fsSL -X POST "$VERCEL_DEPLOY_HOOK_URL"
+            echo "### Vercel Deploy Hook Triggered" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::VERCEL_DEPLOY is 'true' but neither (VERCEL_TOKEN + VERCEL_ORG_ID + VERCEL_PROJECT_ID) nor VERCEL_DEPLOY_HOOK_URL secrets are set."
+            exit 1
+          fi

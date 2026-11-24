@@ -33,8 +33,8 @@ Replace `<APP_URL>` (`https://app.yourdomain.com` or your single HTTPS domain) a
 
 ## 2. GitHub Repository Setup (`github.com` + CI/CD)
 
-CI runs via [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on every pull request and push to `main`:
-`pnpm audit:compliance` -> `pnpm lint` -> `pnpm typecheck` -> `pnpm test` -> `pnpm build` -> *(optional)* Cloudflare OpenNext deploy.
+CI runs via [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on every pull request, push to `main`, and manual `workflow_dispatch`:
+`pnpm audit:compliance` -> `pnpm lint` -> `pnpm typecheck` -> `pnpm test` -> `pnpm build` -> **synced parallel deploys** to **Cloudflare Workers (OpenNext)** and **Vercel** once all checks pass.
 
 Open **GitHub Repo -> Settings -> Secrets and variables -> Actions**:
 
@@ -42,8 +42,10 @@ Open **GitHub Repo -> Settings -> Secrets and variables -> Actions**:
 
 | Variable | Example / Value | Required |
 | --- | --- | --- |
-| `CLOUDFLARE_DEPLOY` | `true` *(enable auto-deploy on `main`)* | For CF auto-deploy |
+| `CLOUDFLARE_DEPLOY` | `true` *(enable Cloudflare auto-deploy on `main`)* | For CF CI deploy |
+| `VERCEL_DEPLOY` | `true` *(enable synced Vercel auto-deploy on `main`)* | For Vercel CI deploy |
 | `CLOUDFLARE_PAGES_PROJECT` | `relaynest` *(only if syncing `.open-next/assets` to CF Pages)* | Optional |
+| `CLOUDFLARE_APP_URL` | `https://relaynest.<subdomain>.workers.dev` *(overrides `NEXT_PUBLIC_APP_URL` for CF build if CF and Vercel use separate URLs)* | Optional |
 | `NEXT_PUBLIC_APP_URL` | `https://app.yourdomain.com` | **Yes** |
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://<project-ref>.supabase.co` | **Yes** |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_...` | **Yes** |
@@ -55,8 +57,11 @@ Open **GitHub Repo -> Settings -> Secrets and variables -> Actions**:
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare Profile -> API Tokens -> **Edit Cloudflare Workers** + **Cloudflare Pages Edit** | Cloudflare CI deploy |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard -> Workers & Pages -> Overview right sidebar | Cloudflare CI deploy |
+| `VERCEL_TOKEN` | Vercel -> Account Settings -> Tokens | Synced Vercel CLI deploy |
+| `VERCEL_ORG_ID` | Vercel -> Team/Account Settings -> General (or `.vercel/project.json` `orgId`) | Synced Vercel CLI deploy |
+| `VERCEL_PROJECT_ID` | Vercel -> Project Settings -> General (or `.vercel/project.json` `projectId`) | Synced Vercel CLI deploy |
+| `VERCEL_DEPLOY_HOOK_URL` | Vercel -> Project Settings -> Git -> Deploy Hooks *(simpler alternative if not setting the 3 CLI secrets above)* | Optional Vercel Hook CD |
 | `RENDER_DEPLOY_HOOK_URL` | Render Service -> Settings -> Deploy Hook *(if wiring custom Render CD)* | Optional Render CD |
-| `VERCEL_TOKEN` | Vercel -> Account Settings -> Tokens *(if wiring custom Vercel CD)* | Optional Vercel CD |
 
 > **Manual Git Push Check:** Before running `git push`, verify `git status` shows no `.env`, `.dev.vars`, `.next*`, `.editorconfig`, `.playwright-mcp/`, or `.agents/` files. See [`.gitignore`](../.gitignore).
 
