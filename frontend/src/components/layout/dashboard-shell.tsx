@@ -11,7 +11,8 @@ import { AuditTracker } from "./audit-tracker";
 import { Header } from "./header";
 import { Sidebar } from "./sidebar";
 
-function Footer() {
+/** Shared sticky footer for authenticated workspace and admin portal shells. */
+export function AppFooter() {
   return (
     <footer className="sticky bottom-0 z-20 shrink-0 border-t border-border/70 bg-background/95 px-4 py-2 text-xs text-muted backdrop-blur-md lg:px-8">
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1">
@@ -81,7 +82,7 @@ export function DashboardShell({ children, user }: { children: React.ReactNode; 
           </div>
         )}
         <main id="main" tabIndex={-1} className="min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8 lg:py-8">{children}</main>
-        <Footer />
+        <AppFooter />
       </div>
     </div>
   );

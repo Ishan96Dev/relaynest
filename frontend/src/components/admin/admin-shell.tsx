@@ -8,11 +8,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 import { Logo } from "@/components/brand/logo";
+import { AppFooter } from "@/components/layout/dashboard-shell";
 import { RouteProgress } from "@/components/motion/route-progress";
-import { GITHUB_URL, GitHubIcon, LEGAL_STRIP_LINKS, SUPPORT_EMAIL, SUPPORT_PHONE, SUPPORT_PHONE_HREF } from "@/components/marketing/legal-shell";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
-import { APP_VERSION_TAG } from "@/lib/app-version";
 import { cn } from "@/lib/utils";
 
 interface AdminNavItem {
@@ -218,7 +217,7 @@ export function AdminShell({ adminEmail, children }: { adminEmail: string; child
         </div>
       )}
 
-      <div className="flex min-w-0 flex-col">
+      <div className="flex min-h-screen min-w-0 flex-col">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-border/70 bg-background/85 px-4 backdrop-blur-md lg:px-8">
           <div className="flex items-center gap-3">
             <button
@@ -250,30 +249,7 @@ export function AdminShell({ adminEmail, children }: { adminEmail: string; child
           {children}
         </main>
 
-        <footer className="mt-8 border-t border-border/60 bg-background/90 px-4 py-4 text-xs text-muted lg:px-8">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="font-semibold text-foreground/90">RelayNest Admin · {APP_VERSION_TAG}</span>
-              <span aria-hidden className="text-border">|</span>
-              <Link href="/docs" className="hover:text-lavender">Documentation</Link>
-            </div>
-            <div className="flex flex-wrap items-center gap-4">
-              <a href={`mailto:${SUPPORT_EMAIL}`} className="hover:text-lavender">{SUPPORT_EMAIL}</a>
-              <a href={SUPPORT_PHONE_HREF} className="hover:text-lavender">{SUPPORT_PHONE}</a>
-              <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-lavender">
-                <GitHubIcon className="size-3.5" /> GitHub
-              </a>
-            </div>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2 border-t border-border/40 pt-2 text-[11px] text-foreground/70">
-            {LEGAL_STRIP_LINKS.map((l, idx) => (
-              <span key={l.href} className="inline-flex items-center gap-2">
-                {idx > 0 && <span aria-hidden className="text-border">|</span>}
-                <Link href={l.href} className="hover:text-lavender">{l.label}</Link>
-              </span>
-            ))}
-          </div>
-        </footer>
+        <AppFooter />
       </div>
     </div>
   );
