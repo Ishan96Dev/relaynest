@@ -42,13 +42,13 @@ Open **GitHub Repo -> Settings -> Secrets and variables -> Actions**:
 
 | Variable | Example / Value | Required |
 | --- | --- | --- |
-| `CLOUDFLARE_DEPLOY` | `true` *(enable Cloudflare auto-deploy on `main`)* | For CF CI deploy |
-| `VERCEL_DEPLOY` | `true` *(enable synced Vercel auto-deploy on `main`)* | For Vercel CI deploy |
+| `CLOUDFLARE_DEPLOY` | Optional: set to `false` to disable Cloudflare CI job *(auto-runs on `main` whenever secrets are present)* | Optional |
+| `VERCEL_DEPLOY` | Optional: set to `false` to disable Vercel CI job *(auto-runs on `main` whenever secrets are present)* | Optional |
 | `CLOUDFLARE_PAGES_PROJECT` | `relaynest` *(only if syncing `.open-next/assets` to CF Pages)* | Optional |
 | `CLOUDFLARE_APP_URL` | `https://relaynest.<subdomain>.workers.dev` *(overrides `NEXT_PUBLIC_APP_URL` for CF build if CF and Vercel use separate URLs)* | Optional |
-| `NEXT_PUBLIC_APP_URL` | `https://app.yourdomain.com` | **Yes** |
-| `NEXT_PUBLIC_SUPABASE_URL` | `https://<project-ref>.supabase.co` | **Yes** |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_...` | **Yes** |
+| `NEXT_PUBLIC_APP_URL` | `https://app.yourdomain.com` *(read from Variables or Secrets)* | **Yes** |
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://<project-ref>.supabase.co` *(read from Variables or Secrets)* | **Yes** |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_...` *(read from Variables or Secrets)* | **Yes** |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `G-XXXXXXXXXX` | Optional |
 
 ### Repository Secrets (`Secrets` tab — Private)
@@ -57,6 +57,7 @@ Open **GitHub Repo -> Settings -> Secrets and variables -> Actions**:
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare Profile -> API Tokens -> **Edit Cloudflare Workers** + **Cloudflare Pages Edit** | Cloudflare CI deploy |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard -> Workers & Pages -> Overview right sidebar | Cloudflare CI deploy |
+| `CLOUDFLARE_DEPLOY_HOOK_URL` | Cloudflare Workers -> Builds -> Deploy Hooks *(simpler alternative to API token)* | Optional CF Hook CD |
 | `VERCEL_TOKEN` | Vercel -> Account Settings -> Tokens | Synced Vercel CLI deploy |
 | `VERCEL_ORG_ID` | Vercel -> Team/Account Settings -> General (or `.vercel/project.json` `orgId`) | Synced Vercel CLI deploy |
 | `VERCEL_PROJECT_ID` | Vercel -> Project Settings -> General (or `.vercel/project.json` `projectId`) | Synced Vercel CLI deploy |

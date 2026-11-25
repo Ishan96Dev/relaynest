@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Manual deploy target (synced runs both Cloudflare & Vercel when enabled)"
+        description: "Manual deploy target (all runs both Cloudflare & Vercel in sync)"
         type: choice
         default: all
         options:
@@ -23,9 +23,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -37,10 +37,10 @@ jobs:
       - run: pnpm test
       - run: pnpm build
         env:
-          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || '' }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '' }}
-          NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID || '' }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL || secrets.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL || '' }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '' }}
+          NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID || secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID || '' }}
 
   deploy_cloudflare:
     name: Deploy Cloudflare Workers
@@ -48,25 +48,66 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'all' || inputs.target == 'cloudflare'))) &&
-      vars.CLOUDFLARE_DEPLOY == 'true'
+      vars.CLOUDFLARE_DEPLOY != 'false'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - name: Check Cloudflare deploy credentials
+        id: creds
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCOUNT" ]; then
+            echo "mode=wrangler" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CF_HOOK" ]; then
+            echo "mode=hook" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=missing" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Cloudflare CI Secrets Missing::Add CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (or CLOUDFLARE_DEPLOY_HOOK_URL) under GitHub Repo Settings -> Secrets and variables -> Actions -> Secrets to deploy from GitHub Actions."
+            {
+              echo "### Cloudflare Workers CI Deploy Not Configured Yet"
+              echo "Add either of the following in **Settings -> Secrets and variables -> Actions -> Secrets**:"
+              echo "- \`CLOUDFLARE_API_TOKEN\` + \`CLOUDFLARE_ACCOUNT_ID\` *(builds OpenNext in CI and runs \`wrangler deploy\`)*"
+              echo "- OR \`CLOUDFLARE_DEPLOY_HOOK_URL\` *(triggers Cloudflare Workers Builds)*"
+              echo ""
+              echo "> Note: If Cloudflare Workers Builds GitHub integration is connected, Cloudflare still deploys \`main\` automatically on push."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Trigger Cloudflare Workers Deploy Hook
+        if: steps.creds.outputs.mode == 'hook'
+        env:
+          CF_HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK_URL }}
+        run: |
+          curl -fsSL -X POST "$CF_HOOK"
+          {
+            echo "### Cloudflare Workers Deploy Hook Triggered"
+            echo "- Commit: \`${GITHUB_SHA::7}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        if: steps.creds.outputs.mode == 'wrangler'
+      - uses: pnpm/action-setup@v6
+        if: steps.creds.outputs.mode == 'wrangler'
+      - uses: actions/setup-node@v7
+        if: steps.creds.outputs.mode == 'wrangler'
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - if: steps.creds.outputs.mode == 'wrangler'
+        run: pnpm install --frozen-lockfile
       - name: Build for Cloudflare Workers / Pages (OpenNext)
+        if: steps.creds.outputs.mode == 'wrangler'
         run: pnpm build:cloudflare
         env:
-          NEXT_PUBLIC_APP_URL: ${{ vars.CLOUDFLARE_APP_URL || vars.NEXT_PUBLIC_APP_URL }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.CLOUDFLARE_APP_URL || vars.NEXT_PUBLIC_APP_URL || secrets.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID || secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
       - name: Deploy Backend & Frontend Worker
-        uses: cloudflare/wrangler-action@v3
+        if: steps.creds.outputs.mode == 'wrangler'
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -74,8 +115,8 @@ jobs:
           wranglerVersion: "4.168.0"
           command: deploy
       - name: Optional Static Assets Sync to Cloudflare Pages
-        if: vars.CLOUDFLARE_PAGES_PROJECT != ''
-        uses: cloudflare/wrangler-action@v3
+        if: steps.creds.outputs.mode == 'wrangler' && vars.CLOUDFLARE_PAGES_PROJECT != ''
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -83,6 +124,7 @@ jobs:
           wranglerVersion: "4.168.0"
           command: pages deploy frontend/.open-next/assets --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}
       - name: Publish Cloudflare Summary
+        if: steps.creds.outputs.mode == 'wrangler'
         run: |
           echo "### Cloudflare Workers Deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
@@ -94,20 +136,14 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'all' || inputs.target == 'vercel'))) &&
-      vars.VERCEL_DEPLOY == 'true'
+      vars.VERCEL_DEPLOY != 'false'
     runs-on: ubuntu-latest
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Deploy to Vercel (CLI Prebuilt or Deploy Hook)
+      - name: Check Vercel deploy credentials
+        id: creds
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -115,17 +151,52 @@ jobs:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
           if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
-            pnpm dlx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
-            pnpm dlx vercel@latest build --prod --token="$VERCEL_TOKEN"
-            DEPLOY_URL=$(pnpm dlx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
-            echo "### Vercel Production Deployed" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- URL: ${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
+            echo "mode=cli" >> "$GITHUB_OUTPUT"
           elif [ -n "$VERCEL_DEPLOY_HOOK_URL" ]; then
-            curl -fsSL -X POST "$VERCEL_DEPLOY_HOOK_URL"
-            echo "### Vercel Deploy Hook Triggered" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "mode=hook" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::VERCEL_DEPLOY is 'true' but neither (VERCEL_TOKEN + VERCEL_ORG_ID + VERCEL_PROJECT_ID) nor VERCEL_DEPLOY_HOOK_URL secrets are set."
-            exit 1
+            echo "mode=missing" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Vercel CI Secrets Missing::Add VERCEL_TOKEN + VERCEL_ORG_ID + VERCEL_PROJECT_ID (or VERCEL_DEPLOY_HOOK_URL) under GitHub Repo Settings -> Secrets and variables -> Actions -> Secrets to deploy to Vercel from GitHub Actions."
+            {
+              echo "### Vercel Synced CI Deploy Not Configured Yet"
+              echo "Add either of the following in **Settings -> Secrets and variables -> Actions -> Secrets**:"
+              echo "- \`VERCEL_TOKEN\`, \`VERCEL_ORG_ID\`, \`VERCEL_PROJECT_ID\` *(prebuilt CLI deploy)*"
+              echo "- OR \`VERCEL_DEPLOY_HOOK_URL\` *(triggers Vercel production deploy hook)*"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Trigger Vercel Deploy Hook
+        if: steps.creds.outputs.mode == 'hook'
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          curl -fsSL -X POST "$VERCEL_DEPLOY_HOOK_URL"
+          {
+            echo "### Vercel Deploy Hook Triggered"
+            echo "- Commit: \`${GITHUB_SHA::7}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        if: steps.creds.outputs.mode == 'cli'
+      - uses: pnpm/action-setup@v6
+        if: steps.creds.outputs.mode == 'cli'
+      - uses: actions/setup-node@v7
+        if: steps.creds.outputs.mode == 'cli'
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: steps.creds.outputs.mode == 'cli'
+        run: pnpm install --frozen-lockfile
+      - name: Deploy to Vercel (CLI Prebuilt)
+        if: steps.creds.outputs.mode == 'cli'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          pnpm dlx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+          pnpm dlx vercel@latest build --prod --token="$VERCEL_TOKEN"
+          DEPLOY_URL=$(pnpm dlx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "### Vercel Production Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
