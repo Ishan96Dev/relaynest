@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import { expect } from "./expect";
 import { buildSystemPrompt, clampReply, DEFAULT_TOOLS, parseTools, type AgentConfig } from "../src/server/ai/agent";
-import { canPowerAgent, executionMode, MODEL_CATALOG } from "../src/server/ai/model-catalog";
+import { canPowerAgent, executionMode, MODEL_CATALOG, PROVIDER_CATALOG, supportsImageInput } from "../src/server/ai/model-catalog";
+import { base64ToBytes, sniffImageMime, stripThinkTags } from "../src/server/ai/provider";
+import { resolveModelFromDb } from "../src/server/services/ai-models";
 import { updateAiAgentInput } from "../src/lib/validation/schemas";
 
 const agent: AgentConfig = {
@@ -47,9 +49,28 @@ describe("model execution", () => {
   it("only lets chat language models power an agent", () => {
     const ids = MODEL_CATALOG.filter(canPowerAgent).map((m) => m.slug);
     expect(ids).toContain("gemma-4-31b-it");
+    expect(ids).toContain("nemotron-3-5-super-vl-120b-a12b");
+    expect(ids).toContain("nemotron-3-5-bolt-e4b");
     expect(ids).not.toContain("paligemma");
     expect(ids).not.toContain("nemotron-3-embed-1b");
     expect(ids).not.toContain("cosmos3-nano");
+  });
+
+  it("detects multimodal image-input models and resolves inactive models via catalog/DB fallback metadata", async () => {
+    const by = (slug: string) => MODEL_CATALOG.find((m) => m.slug === slug)!;
+    expect(supportsImageInput(by("nemotron-3-5-super-vl-120b-a12b"))).toBe(true);
+    expect(supportsImageInput(by("nemotron-3-5-lightning-30b-a3b"))).toBe(false);
+    expect(PROVIDER_CATALOG.map((p) => p.source)).toEqual(["nvidia", "vercel"]);
+    expect(by("nemotron-3-embed-1b").apiModelId).toBe("nvidia/nemotron-3.5-embed-1b");
+    expect(by("gemma-4-31b-it").isActive).toBe(false);
+    expect(by("gemma-4-31b-it").fallbackModelSlug).toBe("nemotron-3-5-super-vl-120b-a12b");
+    const resolved = await resolveModelFromDb({ slug: "gemma-4-31b-it", source: "nvidia", apiModelId: "google/gemma-4-31b-it" });
+    expect(resolved.model.slug).toBe("nemotron-3-5-super-vl-120b-a12b");
+    expect(resolved.provider.chatBaseUrl).toContain("integrate.api.nvidia.com");
+    expect(stripThinkTags("<think>internal plan</think>\nFinal answer.")).toBe("Final answer.");
+    expect(sniffImageMime("iVBORw0KGgo")).toEqual({ mime: "image/png", ext: "png" });
+    expect(sniffImageMime("/9j/4AAQ")).toEqual({ mime: "image/jpeg", ext: "jpg" });
+    expect(base64ToBytes("SGk=").length).toBe(2);
   });
 });
 

@@ -70,13 +70,19 @@ export async function assertBotLimit(workspaceId: string) {
   }
 }
 
-/** Throws when the workspace has reached its monthly execution limit. */
+/** Throws when the workspace has reached its monthly execution limit. Uses the 60s soft cache to avoid a count query per request. */
 export async function assertExecutionLimit(workspaceId: string) {
+  const hit = execCache.get(workspaceId);
+  if (hit && Date.now() - hit.at < 60_000 && hit.allowed) return;
   const { plan } = await getEntitlements(workspaceId);
-  if (plan.limits.executionsPerMonth === Infinity) return;
+  if (plan.limits.executionsPerMonth === Infinity) {
+    execCache.set(workspaceId, { at: Date.now(), allowed: true });
+    return;
+  }
   const used = await executionsThisMonth(workspaceId);
-  if (used >= plan.limits.executionsPerMonth) {
-    execCache.set(workspaceId, { at: Date.now(), allowed: false });
+  const allowed = used < plan.limits.executionsPerMonth;
+  execCache.set(workspaceId, { at: Date.now(), allowed });
+  if (!allowed) {
     throw new ApiError(
       402,
       "PLAN_LIMIT",

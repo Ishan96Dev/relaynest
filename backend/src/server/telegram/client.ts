@@ -67,12 +67,29 @@ export function deleteWebhook(token: string, dropPendingUpdates = true) {
   return call<true>(token, "deleteWebhook", { drop_pending_updates: dropPendingUpdates });
 }
 
-export function sendMessage(token: string, chatId: number | string, text: string, parseMode?: "Markdown" | "HTML") {
+export function sendMessage(
+  token: string,
+  chatId: number | string,
+  text: string,
+  parseMode?: "Markdown" | "HTML",
+  opts?: { disableWebPagePreview?: boolean },
+) {
   return call<{ message_id: number }>(token, "sendMessage", {
     chat_id: chatId,
     text,
     ...(parseMode ? { parse_mode: parseMode } : {}),
+    ...(opts?.disableWebPagePreview ? { disable_web_page_preview: true } : {}),
   });
+}
+
+/** Sends rich Telegram HTML first, falling back to plain text if Telegram rejects any formatting entity. */
+export async function sendFormattedMessage(token: string, chatId: number | string, html: string, plainFallback: string) {
+  try {
+    return await sendMessage(token, chatId, html, "HTML", { disableWebPagePreview: true });
+  } catch (err) {
+    if (isTelegramBotDeletedError(err)) throw err;
+    return await sendMessage(token, chatId, plainFallback, undefined, { disableWebPagePreview: true });
+  }
 }
 
 export function sendChatAction(token: string, chatId: number | string, action: "typing" | "upload_photo") {
@@ -137,11 +154,25 @@ export async function fetchBotProfilePhoto(token: string, botId: number): Promis
 }
 
 /** Uploads a picture (multipart, because the bytes are not at a public URL). Telegram accepts photos up to 10 MB. */
-export async function sendPhoto(token: string, chatId: number | string, bytes: Uint8Array, caption?: string, filename = "image.jpg"): Promise<void> {
+export async function sendPhoto(
+  token: string,
+  chatId: number | string,
+  bytes: Uint8Array,
+  caption?: string,
+  filename = "image.jpg",
+  mime?: string,
+): Promise<void> {
+  const detectedMime =
+    mime ??
+    (bytes[0] === 0x89 && bytes[1] === 0x50
+      ? "image/png"
+      : bytes[0] === 0x52 && bytes[1] === 0x49
+        ? "image/webp"
+        : "image/jpeg");
   const form = new FormData();
   form.set("chat_id", String(chatId));
   if (caption) form.set("caption", caption.slice(0, 1000));
-  form.set("photo", new Blob([bytes as BlobPart], { type: "image/jpeg" }), filename);
+  form.set("photo", new Blob([bytes as BlobPart], { type: detectedMime }), filename);
   let res: Response;
   try {
     res = await fetch(`${serverEnv().TELEGRAM_API_BASE_URL}/bot${token}/sendPhoto`, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });
@@ -149,7 +180,7 @@ export async function sendPhoto(token: string, chatId: number | string, bytes: U
     throw Errors.upstream("Could not reach Telegram.");
   }
   const json = (await res.json().catch(() => null)) as TgResponse<unknown> | null;
-  if (!json?.ok) throw Errors.upstream("Telegram did not accept the picture.");
+  if (!json?.ok) throw Errors.upstream(json?.description ? `Telegram: ${json.description}` : "Telegram did not accept the picture.");
 }
 
 /** Downloads a file a user sent to the bot. Refuses anything larger than maxBytes. */
@@ -170,6 +201,7 @@ export async function downloadFile(token: string, fileId: string, maxBytes: numb
 }
 
 export interface TelegramPhotoSize { file_id: string; width: number; height: number; file_size?: number }
+export interface TelegramDocument { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
 
 export interface TelegramUpdate {
   update_id: number;
@@ -178,6 +210,7 @@ export interface TelegramUpdate {
     text?: string;
     caption?: string;
     photo?: TelegramPhotoSize[];
+    document?: TelegramDocument;
     chat: { id: number; type: string };
     from?: { id: number; first_name?: string; username?: string };
   };

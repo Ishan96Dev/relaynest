@@ -3,15 +3,27 @@
 /* eslint-disable @next/next/no-img-element */
 import { ArrowLeft, Bot, MoreVertical, Paperclip, Send, Smile } from "lucide-react";
 import * as React from "react";
+import type { CitationSource } from "@backend/server/ai/citations";
+import { CitedText, SourcesPanel } from "@/components/ai/citations-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { IconTile } from "@/components/ui/icon-tile";
 import { cn } from "@/lib/utils";
 
-interface Msg { id: number; from: "user" | "bot"; text: string; time: string; error?: boolean; image?: string }
+interface Msg {
+  id: number;
+  from: "user" | "bot";
+  text: string;
+  time: string;
+  error?: boolean;
+  image?: string;
+  sources?: CitationSource[];
+  ms?: number;
+}
 
 const nowTime = () => new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 const GREETING = (name: string): Msg => ({ id: 1, from: "bot", text: `Hi! I'm ${name}. How can I help?`, time: nowTime() });
+const sniffMime = (b64: string) => (b64.startsWith("iVBOR") ? "image/png" : b64.startsWith("UklGR") ? "image/webp" : "image/jpeg");
 
 /**
  * Telegram-style chat. With `onAsk` it talks to the real agent (saved settings); without it, it shows a canned reply
@@ -20,11 +32,15 @@ const GREETING = (name: string): Msg => ({ id: 1, from: "bot", text: `Hi! I'm ${
 export function TelegramPreview({ name, avatar, onAsk, note }: {
   name: string;
   avatar: string | null;
-  onAsk?: (history: { role: "user" | "assistant"; content: string }[], message: string) => Promise<{ ok: true; reply: string; imageBase64?: string } | { ok: false; message: string }>;
+  onAsk?: (
+    history: { role: "user" | "assistant"; content: string }[],
+    message: string,
+  ) => Promise<{ ok: true; reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number } | { ok: false; message: string }>;
   note?: string;
 }) {
   const title = name || "Your AI Agent";
   const [msgs, setMsgs] = React.useState<Msg[]>(() => [GREETING(title)]);
+  const [activeCite, setActiveCite] = React.useState<Record<number, number | null>>({});
   const [draft, setDraft] = React.useState("");
   const [typing, setTyping] = React.useState(false);
   const endRef = React.useRef<HTMLDivElement>(null);
@@ -50,7 +66,20 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
     }
     const r = await onAsk(history, text);
     setTyping(false);
-    setMsgs((m) => [...m, r.ok ? { id: Date.now() + 1, from: "bot", text: r.reply, time: nowTime(), image: r.imageBase64 ? `data:image/jpeg;base64,${r.imageBase64}` : undefined } : { id: Date.now() + 1, from: "bot", text: r.message, time: nowTime(), error: true }]);
+    setMsgs((m) => [
+      ...m,
+      r.ok
+        ? {
+            id: Date.now() + 1,
+            from: "bot",
+            text: r.reply,
+            time: nowTime(),
+            image: r.imageBase64 ? `data:${sniffMime(r.imageBase64)};base64,${r.imageBase64}` : undefined,
+            sources: r.sources?.length ? r.sources : undefined,
+            ms: r.ms,
+          }
+        : { id: Date.now() + 1, from: "bot", text: r.message, time: nowTime(), error: true },
+    ]);
   }
 
   const avatarEl = (className?: string) => (
@@ -80,18 +109,44 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
           <MoreVertical className="size-5 text-muted" aria-hidden />
         </div>
 
-        <div className="h-[290px] space-y-2.5 overflow-y-auto px-3 py-3" role="log" aria-label="Conversation preview" aria-live="polite">
+        <div className="h-[340px] space-y-2.5 overflow-y-auto px-3 py-3" role="log" aria-label="Conversation preview" aria-live="polite">
           <p className="mx-auto w-fit rounded-full bg-foreground/10 px-3 py-0.5 text-xs text-muted">Today</p>
-          {msgs.map((m) => (
-            <div key={m.id} className={cn("flex items-end gap-2", m.from === "user" && "justify-end")}>
-              {m.from === "bot" && avatarEl("size-7")}
-              <div className={cn("max-w-[78%] rounded-2xl px-3 py-2 text-sm", m.from === "user" ? "btn-primary-bg rounded-br-sm text-white" : m.error ? "rounded-bl-sm bg-danger/10 text-bad ring-1 ring-danger/40" : "rounded-bl-sm bg-surface text-foreground ring-1 ring-border")}>
-                {m.image && <img src={m.image} alt={m.text || "Generated image"} className="mb-1.5 h-auto max-h-64 w-full rounded-lg object-contain" />}
-                {(m.text || !m.image) && <p className="whitespace-pre-wrap break-words">{m.text}</p>}
-                <p className={cn("mt-0.5 text-right text-[10px]", m.from === "user" ? "text-white/70" : "text-muted")}>{m.time}</p>
+          {msgs.map((m) => {
+            const activeIdx = activeCite[m.id] ?? null;
+            return (
+              <div key={m.id} className={cn("flex items-end gap-2", m.from === "user" && "justify-end")}>
+                {m.from === "bot" && avatarEl("size-7")}
+                <div className={cn("max-w-[84%] rounded-2xl px-3 py-2 text-sm", m.from === "user" ? "btn-primary-bg rounded-br-sm text-white" : m.error ? "rounded-bl-sm bg-danger/10 text-bad ring-1 ring-danger/40" : "rounded-bl-sm bg-surface text-foreground ring-1 ring-border")}>
+                  {m.image && <img src={m.image} alt={m.text || "Generated image"} className="mb-1.5 h-auto max-h-64 w-full rounded-lg object-contain" />}
+                  {(m.text || !m.image) && (
+                    m.from === "bot" && m.sources?.length ? (
+                      <CitedText
+                        text={m.text}
+                        sources={m.sources}
+                        activeIndex={activeIdx}
+                        onSelect={(idx) => setActiveCite((prev) => ({ ...prev, [m.id]: prev[m.id] === idx ? null : idx }))}
+                        variant="telegram"
+                      />
+                    ) : (
+                      <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                    )
+                  )}
+                  {m.from === "bot" && m.sources && m.sources.length > 0 && (
+                    <SourcesPanel
+                      text={m.text}
+                      sources={m.sources}
+                      activeIndex={activeIdx}
+                      onSelect={(idx) => setActiveCite((prev) => ({ ...prev, [m.id]: idx }))}
+                      variant="telegram"
+                    />
+                  )}
+                  <p className={cn("mt-1 text-right text-[10px]", m.from === "user" ? "text-white/70" : "text-muted")}>
+                    {m.ms !== undefined ? `${(m.ms / 1000).toFixed(1)}s · ` : ""}{m.time}
+                  </p>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {typing && (
             <div className="flex items-end gap-2" aria-label="The agent is typing">
               {avatarEl("size-7")}
@@ -105,7 +160,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
 
         <form onSubmit={send} className="flex items-center gap-2 border-t border-border p-2.5">
           <Smile className="size-5 shrink-0 text-muted" aria-hidden />
-          <input aria-label="Type a message to preview" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={500} placeholder="Type a message..."
+          <input aria-label="Type a message to preview" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={500} placeholder="Type a message or /imagine ..."
             className="h-9 min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted focus:outline-none" />
           <Paperclip className="size-5 shrink-0 text-muted" aria-hidden />
           <button type="submit" aria-label="Send" disabled={!draft.trim() || typing} className="btn-primary-bg grid size-9 shrink-0 place-items-center rounded-full text-white transition disabled:opacity-50">

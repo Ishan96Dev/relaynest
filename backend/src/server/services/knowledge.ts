@@ -10,6 +10,7 @@ import { embedMany, rateLimit } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
 import { chunkText } from "@backend/server/knowledge/chunk";
 import { extractFileText, fetchPageText, KnowledgeError, kindFromFilename, MAX_FILE_BYTES, type DocKind } from "@backend/server/knowledge/extract";
+import { getProviderConfig } from "@backend/server/services/ai-models";
 import { kbEmbedModel, retrieve, type RetrievalResult } from "@backend/server/services/knowledge-retrieval";
 
 const BUCKET = "knowledge";
@@ -281,7 +282,7 @@ async function processDocumentInner(workspaceId: string, documentId: string): Pr
     let note: string | null = null;
     if (milvusConfig()) {
       try {
-        const model = kbEmbedModel();
+        const model = await kbEmbedModel();
         const vectors: number[][] = [];
         for (let i = 0; i < rows.length; i += EMBED_BATCH) {
           vectors.push(...(await embedMany(model, rows.slice(i, i + EMBED_BATCH).map((r) => r.content), "passage")).vectors);
@@ -321,11 +322,11 @@ async function searchKnowledgeInner(ctx: AuthContext, query: string, collectionI
 
 export async function knowledgeStatus(): Promise<KnowledgeStatusDto> {
   const cfg = milvusConfig();
-  const ping = cfg ? await pingMilvus() : null;
-  const model = kbEmbedModel();
+  const [ping, model] = await Promise.all([cfg ? pingMilvus() : Promise.resolve(null), kbEmbedModel()]);
+  const provider = await getProviderConfig(model.source);
   return {
     vector: { configured: Boolean(cfg), reachable: ping ? ping.ok : null, collection: cfg?.collection ?? null, message: ping && !ping.ok ? (ping.message ?? null) : null },
     embedModel: model.apiModelId,
-    embeddingsReady: Boolean(process.env.NVIDIA_API_KEY?.trim()),
+    embeddingsReady: Boolean(process.env[provider.envKeyName]?.trim()),
   };
 }

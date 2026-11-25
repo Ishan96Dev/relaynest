@@ -1,6 +1,6 @@
 // Sends one tiny chat request to a model and prints status, latency and the start of the answer.
 // Never prints the API key. Usage: node --env-file=.env scripts/check-ai-provider.mjs [model-id] [nvidia|vercel]
-const model = process.argv[2] ?? "google/gemma-4-31b-it";
+const model = process.argv[2] ?? "nvidia/nemotron-3.5-lightning-30b-a3b";
 const source = process.argv[3] ?? "nvidia";
 const key = source === "nvidia" ? process.env.NVIDIA_API_KEY : process.env.AI_GATEWAY_API_KEY;
 const base = source === "nvidia" ? "https://integrate.api.nvidia.com/v1" : "https://ai-gateway.vercel.sh/v1";

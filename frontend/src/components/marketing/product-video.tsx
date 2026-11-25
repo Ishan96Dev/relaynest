@@ -14,6 +14,9 @@ type Chapter = {
   timeLabel: string;
 };
 
+const VIDEO_URL = "/video/relaynest-product-demo.mp4";
+const DEFAULT_DURATION_SEC = 121.2;
+
 const CHAPTERS: Chapter[] = [
   { id: "intro", label: "Meet RelayNest", timeSec: 0, timeLabel: "0:00" },
   { id: "dashboard", label: "Overview", timeSec: 9.7, timeLabel: "0:10" },
@@ -24,25 +27,55 @@ const CHAPTERS: Chapter[] = [
   { id: "ai-studio", label: "AI & Playground", timeSec: 65.43, timeLabel: "1:05" },
   { id: "ai-agent", label: "Knowledge & Agents", timeSec: 75.83, timeLabel: "1:16" },
   { id: "analytics", label: "Analytics & Plans", timeSec: 87.07, timeLabel: "1:27" },
-  { id: "integrations-api", label: "APIs & Swagger UI", timeSec: 96.93, timeLabel: "1:37" },
-  { id: "closer", label: "Start Free", timeSec: 109.67, timeLabel: "1:50" },
+  { id: "integrations-api", label: "APIs & Swagger UI", timeSec: 98.9, timeLabel: "1:39" },
+  { id: "closer", label: "Start Free", timeSec: 111.63, timeLabel: "1:52" },
 ];
+
+function isSeekableAt(el: HTMLVideoElement, sec: number): boolean {
+  if (sec <= 0.25) return true;
+  for (let i = 0; i < el.seekable.length; i++) {
+    if (sec >= el.seekable.start(i) - 0.25 && sec <= el.seekable.end(i) + 0.25) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function ProductVideoSection() {
   const playerFrameRef = React.useRef<HTMLDivElement>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
+  const sliderRef = React.useRef<HTMLDivElement>(null);
+
+  const pendingSeekRef = React.useRef<number | null>(null);
+  const autoPlayAfterSeekRef = React.useRef(false);
+  const isScrubbingRef = React.useRef(false);
+  const scrubTargetRef = React.useRef(0);
+  const blobUrlRef = React.useRef<string | null>(null);
+  const blobFetchRef = React.useRef<Promise<string | null> | null>(null);
+
+  const [videoSrc, setVideoSrc] = React.useState(VIDEO_URL);
   const [playing, setPlaying] = React.useState(false);
   const [muted, setMuted] = React.useState(false);
   const [currentTime, setCurrentTime] = React.useState(0);
-  const [duration, setDuration] = React.useState(119.2);
+  const [duration, setDuration] = React.useState(DEFAULT_DURATION_SEC);
   const [ccEnabled, setCcEnabled] = React.useState(false);
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [hovered, setHovered] = React.useState(false);
+  const [bufferingSeek, setBufferingSeek] = React.useState(false);
 
   React.useEffect(() => {
     const onFsChange = () => setIsFullscreen(document.fullscreenElement === playerFrameRef.current);
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
   }, []);
 
   const activeChapter = React.useMemo(() => {
@@ -57,12 +90,79 @@ export function ProductVideoSection() {
     playerFrameRef.current?.focus({ preventScroll: true });
   }
 
+  /**
+   * Fallback for proxies/CDNs that strip HTTP `Range` headers and serve a non-seekable `200 OK`
+   * MP4 stream: buffers the video once into an in-memory `blob:` URL so seeking always works.
+   */
+  const ensureSeekableBlob = React.useCallback(async (targetSec: number, shouldPlay: boolean) => {
+    pendingSeekRef.current = targetSec;
+    autoPlayAfterSeekRef.current = shouldPlay;
+    setCurrentTime(targetSec);
+
+    if (blobUrlRef.current) {
+      setVideoSrc(blobUrlRef.current);
+      return;
+    }
+
+    setBufferingSeek(true);
+    if (!blobFetchRef.current) {
+      blobFetchRef.current = fetch(VIDEO_URL)
+        .then((res) => (res.ok ? res.blob() : null))
+        .then((blob) => {
+          if (!blob) return null;
+          const url = URL.createObjectURL(blob);
+          blobUrlRef.current = url;
+          return url;
+        })
+        .catch(() => null);
+    }
+
+    const url = await blobFetchRef.current;
+    if (url) {
+      setVideoSrc(url);
+    } else {
+      setBufferingSeek(false);
+      blobFetchRef.current = null;
+    }
+  }, []);
+
+  function applyResolvedSeek(el: HTMLVideoElement, targetSec: number, shouldPlay: boolean) {
+    const effectiveDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : duration || DEFAULT_DURATION_SEC;
+    const clamped = Math.max(0, Math.min(effectiveDur, targetSec));
+
+    if (clamped > 1.5 && !isSeekableAt(el, clamped) && !blobUrlRef.current) {
+      void ensureSeekableBlob(clamped, shouldPlay);
+      return;
+    }
+
+    pendingSeekRef.current = clamped;
+    autoPlayAfterSeekRef.current = shouldPlay;
+    setCurrentTime(clamped);
+
+    try {
+      el.currentTime = clamped;
+    } catch {
+      // Ignore DOMException if browser still transitioning readyState; onLoadedMetadata/onCanPlay will retry.
+    }
+
+    // Detect synchronous snap-back to 0 when the upstream server ignored Range requests.
+    if (clamped > 1.5 && el.currentTime < 0.5 && !el.seeking && !blobUrlRef.current) {
+      void ensureSeekableBlob(clamped, shouldPlay);
+      return;
+    }
+
+    if (shouldPlay && el.paused) {
+      el.muted = muted;
+      void el.play().catch(() => {});
+    }
+  }
+
   function togglePlay() {
     const el = videoRef.current;
     if (!el) return;
     if (el.paused) {
       el.muted = muted;
-      void el.play();
+      void el.play().catch(() => {});
     } else {
       el.pause();
     }
@@ -87,13 +187,71 @@ export function ProductVideoSection() {
   function jumpTo(sec: number, autoPlay = true) {
     const el = videoRef.current;
     if (!el) return;
-    const clamped = Math.max(0, Math.min(duration || 108, sec));
-    el.currentTime = clamped;
+    const effectiveDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : duration || DEFAULT_DURATION_SEC;
+    const clamped = Math.max(0, Math.min(effectiveDur, sec));
+
+    pendingSeekRef.current = clamped;
+    autoPlayAfterSeekRef.current = autoPlay;
     setCurrentTime(clamped);
-    if (autoPlay && el.paused) {
-      el.muted = muted;
-      void el.play();
+
+    if (el.readyState < 1) {
+      // Metadata has not loaded yet: trigger loading inside the user gesture and apply the seek on loadedmetadata.
+      if (autoPlay) {
+        el.muted = muted;
+        void el.play().catch(() => {});
+      } else {
+        el.load();
+      }
+      return;
     }
+
+    applyResolvedSeek(el, clamped, autoPlay);
+  }
+
+  function timeFromPointer(clientX: number): number {
+    const track = sliderRef.current;
+    const el = videoRef.current;
+    if (!track) return currentTime;
+    const rect = track.getBoundingClientRect();
+    const pct = rect.width > 0 ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0;
+    const effectiveDur = el && Number.isFinite(el.duration) && el.duration > 0 ? el.duration : duration || DEFAULT_DURATION_SEC;
+    return pct * effectiveDur;
+  }
+
+  function handleSliderPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    isScrubbingRef.current = true;
+    const target = timeFromPointer(e.clientX);
+    scrubTargetRef.current = target;
+    setCurrentTime(target);
+  }
+
+  function handleSliderPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isScrubbingRef.current) return;
+    const target = timeFromPointer(e.clientX);
+    scrubTargetRef.current = target;
+    setCurrentTime(target);
+  }
+
+  function handleSliderPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isScrubbingRef.current) return;
+    isScrubbingRef.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    const target = timeFromPointer(e.clientX);
+    scrubTargetRef.current = target;
+    jumpTo(target, true);
+  }
+
+  function handleSliderPointerCancel(e: React.PointerEvent<HTMLDivElement>) {
+    if (!isScrubbingRef.current) return;
+    isScrubbingRef.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    jumpTo(scrubTargetRef.current, playing);
   }
 
   function toggleFullscreen() {
@@ -121,8 +279,8 @@ export function ProductVideoSection() {
     toggleFullscreen,
     seekBy: (delta: number) => {
       const el = videoRef.current;
-      const cur = el ? el.currentTime : currentTime;
-      jumpTo(cur + delta, false);
+      const base = pendingSeekRef.current ?? (el ? el.currentTime : currentTime);
+      jumpTo(base + delta, false);
     },
   };
 
@@ -183,7 +341,7 @@ export function ProductVideoSection() {
     return `${m}:${String(r).padStart(2, "0")}`;
   };
 
-  const progressPct = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const progressPct = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0;
 
   return (
     <section id="product-video" className="mx-auto max-w-[1280px] scroll-mt-24 px-4 pt-20 sm:px-6 lg:pt-28">
@@ -235,25 +393,81 @@ export function ProductVideoSection() {
           <div className={cn("relative aspect-video w-full overflow-hidden rounded-xl bg-[#08081A]", isFullscreen && "min-h-0 flex-1")}>
             <video
               ref={videoRef}
+              src={videoSrc}
               className="h-full w-full object-contain"
               playsInline
               preload="metadata"
               poster="/video/relaynest-product-demo-poster.png"
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
-              onEnded={() => setPlaying(false)}
-              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+              onEnded={() => {
+                pendingSeekRef.current = null;
+                setPlaying(false);
+              }}
               onLoadedMetadata={(e) => {
-                if (e.currentTarget.duration && Number.isFinite(e.currentTarget.duration)) {
-                  setDuration(e.currentTarget.duration);
+                const el = e.currentTarget;
+                if (el.duration && Number.isFinite(el.duration)) {
+                  setDuration(el.duration);
                 }
-                if (e.currentTarget.textTracks[0]) {
-                  e.currentTarget.textTracks[0].mode = "disabled";
+                if (el.textTracks[0]) {
+                  el.textTracks[0].mode = ccEnabled ? "showing" : "disabled";
                 }
+                const pending = pendingSeekRef.current;
+                if (pending !== null) {
+                  applyResolvedSeek(el, pending, autoPlayAfterSeekRef.current);
+                }
+              }}
+              onSeeked={(e) => {
+                const el = e.currentTarget;
+                const pending = pendingSeekRef.current;
+                if (pending !== null) {
+                  if (pending > 1.5 && el.currentTime < 0.5 && !blobUrlRef.current) {
+                    void ensureSeekableBlob(pending, !el.paused || autoPlayAfterSeekRef.current);
+                    return;
+                  }
+                  if (Math.abs(el.currentTime - pending) <= 1.5) {
+                    pendingSeekRef.current = null;
+                  }
+                }
+                setBufferingSeek(false);
+                if (!isScrubbingRef.current) {
+                  setCurrentTime(el.currentTime);
+                }
+                if (autoPlayAfterSeekRef.current && el.paused) {
+                  autoPlayAfterSeekRef.current = false;
+                  el.muted = muted;
+                  void el.play().catch(() => {});
+                }
+              }}
+              onTimeUpdate={(e) => {
+                const el = e.currentTarget;
+                if (isScrubbingRef.current) return;
+                const pending = pendingSeekRef.current;
+                if (pending !== null) {
+                  if (el.seeking) return;
+                  if (Math.abs(el.currentTime - pending) <= 1.5) {
+                    pendingSeekRef.current = null;
+                    setBufferingSeek(false);
+                    setCurrentTime(el.currentTime);
+                    return;
+                  }
+                  if (pending > 1.5 && el.currentTime < 0.5 && el.readyState >= 2 && !blobUrlRef.current) {
+                    void ensureSeekableBlob(pending, !el.paused || autoPlayAfterSeekRef.current);
+                    return;
+                  }
+                  if (isSeekableAt(el, pending)) {
+                    try {
+                      el.currentTime = pending;
+                    } catch {
+                      // retry on next event
+                    }
+                  }
+                  return;
+                }
+                setCurrentTime(el.currentTime);
               }}
               onClick={togglePlay}
             >
-              <source src="/video/relaynest-product-demo.mp4" type="video/mp4" />
               <track
                 kind="subtitles"
                 src="/video/relaynest-product-demo.vtt"
@@ -262,8 +476,14 @@ export function ProductVideoSection() {
               />
             </video>
 
+            {bufferingSeek && (
+              <div className="pointer-events-none absolute right-3 top-3 rounded-full border border-lavender/40 bg-[#08081A]/85 px-3 py-1 text-xs font-semibold text-lavender backdrop-blur-sm">
+                Seeking to {fmt(currentTime)}…
+              </div>
+            )}
+
             {/* Play Overlay when paused */}
-            {!playing && (
+            {!playing && !bufferingSeek && (
               <button
                 type="button"
                 data-play-overlay="true"
@@ -320,32 +540,40 @@ export function ProductVideoSection() {
                 <span className="hidden sm:inline">CC Track</span>
               </button>
 
-              {/* Progress scrubber with arrow seek */}
+              {/* Progress scrubber with click, drag, and arrow seek */}
               <div className="flex min-w-[140px] flex-1 items-center gap-2.5">
                 <span className="font-mono text-xs text-muted">{fmt(currentTime)}</span>
                 <div
+                  ref={sliderRef}
                   role="slider"
                   tabIndex={0}
                   aria-label="Video playback progress"
                   aria-valuemin={0}
                   aria-valuemax={Math.round(duration)}
                   aria-valuenow={Math.round(currentTime)}
+                  aria-valuetext={`${fmt(currentTime)} of ${fmt(duration)}`}
                   onKeyDown={(e) => {
                     if (e.key === "ArrowLeft") { e.preventDefault(); e.stopPropagation(); jumpTo(currentTime - 5, false); }
                     else if (e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); jumpTo(currentTime + 5, false); }
                     else if (e.key === "Home") { e.preventDefault(); jumpTo(0, false); }
                     else if (e.key === "End") { e.preventDefault(); jumpTo(duration, false); }
                   }}
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                    jumpTo(pct * duration);
-                  }}
-                  className="relative h-2 flex-1 cursor-pointer overflow-hidden rounded-full bg-surface"
+                  onPointerDown={handleSliderPointerDown}
+                  onPointerMove={handleSliderPointerMove}
+                  onPointerUp={handleSliderPointerUp}
+                  onPointerCancel={handleSliderPointerCancel}
+                  className="group relative flex h-6 flex-1 cursor-pointer touch-none items-center select-none"
                 >
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-primary via-lavender to-accent transition-[width] duration-150"
-                    style={{ width: `${progressPct}%` }}
+                  <div className="relative h-2 w-full overflow-hidden rounded-full bg-surface">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-primary via-lavender to-accent"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-lavender bg-white shadow-[0_0_12px_rgba(167,139,250,0.8)] transition-transform group-hover:scale-110"
+                    style={{ left: `${progressPct}%` }}
                   />
                 </div>
                 <span className="font-mono text-xs text-muted">{fmt(duration)}</span>

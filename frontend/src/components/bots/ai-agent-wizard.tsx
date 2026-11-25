@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 import { DEFAULT_TOOLS } from "@backend/server/ai/agent";
+import type { CitationSource } from "@backend/server/ai/citations";
 import type { ModelDto } from "@backend/server/ai/model-catalog";
 import type { AiAgentDto, KnowledgeDto } from "@backend/server/services/ai-agents";
 import { createClient } from "@backend/lib/supabase/lazy";
@@ -135,7 +136,6 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
     if (s === 4) {
       const problem = validateCommands(form.commands);
       if (problem) e.commands = problem;
-      else if (form.commands.some((c) => c.kind === "image") && !form.imageModelSlug) e.commands = "Image commands need an image model. Choose one in step 3.";
     }
     return e;
   }
@@ -240,8 +240,10 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
   const onAsk = React.useMemo(() => {
     if (!agent || !form.modelSlug || demo) return undefined;
     return async (history: { role: "user" | "assistant"; content: string }[], message: string) => {
-      const r = await api<{ reply: string; imageBase64?: string }>(`/api/v1/ai-agents/${agent.id}/test`, { body: { message, history } });
-      return r.ok ? { ok: true as const, reply: r.data.reply, imageBase64: r.data.imageBase64 } : { ok: false as const, message: r.message };
+      const r = await api<{ reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number }>(`/api/v1/ai-agents/${agent.id}/test`, { body: { message, history } });
+      return r.ok
+        ? { ok: true as const, reply: r.data.reply, imageBase64: r.data.imageBase64, sources: r.data.sources, ms: r.data.ms }
+        : { ok: false as const, message: r.message };
     };
   }, [agent, form.modelSlug, demo]);
 
@@ -304,8 +306,8 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
               )}
               {step === 0 && <StepTelegram agent={agent} demo={demo} onConnected={(a) => { setAgent(a); setErrors((e) => ({ ...e, telegram: undefined })); if (!initial) router.replace(`/ai/agents/${a.id}?step=1`, { scroll: false }); else setStep(1); }} blockedMessage={errors.telegram} />}
               {step === 2 && <StepModel form={form} patch={patch} models={models} imageModels={imageModels} error={errors.modelSlug} errors={errors} />}
-              {step === 3 && <StepKnowledge form={form} patch={patch} errors={errors} agentId={agent?.id ?? null} knowledge={knowledge} onKnowledge={setKnowledge} />}
-              {step === 4 && <StepTools form={form} patch={patch} />}
+              {step === 3 && <StepKnowledge form={form} patch={patch} errors={errors} agentId={agent?.id ?? null} botId={agent?.botId ?? null} demo={demo} knowledge={knowledge} onKnowledge={setKnowledge} />}
+              {step === 4 && <StepTools form={form} patch={patch} imageModels={imageModels} />}
               {step === 5 && <StepReview form={form} agent={agent} model={model} knowledgeCount={knowledge.length} onActivate={activate} activating={activating} error={formError} />}
             </div>
 

@@ -73,6 +73,13 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        source: "/video/:path*",
+        headers: [
+          { key: "Accept-Ranges", value: "bytes" },
+          { key: "Cache-Control", value: "public, max-age=3600" },
+        ],
+      },
+      {
         source: "/(.*)",
         headers: [
           { key: "X-Content-Type-Options", value: "nosniff" },

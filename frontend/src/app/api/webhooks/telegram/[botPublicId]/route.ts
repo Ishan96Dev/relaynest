@@ -22,7 +22,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ botPubl
   try {
     const r = await receiveTelegramUpdate(botPublicId, req.headers.get("x-telegram-bot-api-secret-token"), update);
     if (r.outcome === "unauthorized") return new Response(null, { status: 401 });
-    if (r.outcome === "ok") after(() => r.process().catch(() => console.error(`[${newRequestId()}] telegram processing failed`)));
+    if (r.outcome === "ok") {
+      after(() =>
+        r.process().catch((e) => console.error(`[${newRequestId()}] telegram processing failed:`, e instanceof Error ? e.message : "unknown")),
+      );
+    }
     return new Response(null, { status: 200 });
   } catch {
     console.error("telegram webhook error");

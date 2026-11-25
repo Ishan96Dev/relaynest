@@ -1044,119 +1044,144 @@
   {
     "id": "analytics",
     "title": "Analytics, Settings & Plans",
-    "text": "Track growth inside Analytics, manage team settings effortlessly, and choose Free, Pro, or Business plans in dollars or rupees whenever you scale.",
+    "text": "Track growth inside Analytics, manage team settings effortlessly, and choose Free, Pro, or Business plans in INR via Card or UPI QR \u2014 with USD billing coming soon.",
     "audioFile": "audio/vo-analytics.mp3",
-    "durationMs": 9312,
+    "durationMs": 11256,
     "words": [
       {
         "text": "Track",
-        "startMs": 97,
-        "endMs": 437
+        "startMs": 100,
+        "endMs": 428
       },
       {
         "text": "growth",
-        "startMs": 437,
-        "endMs": 837
+        "startMs": 428,
+        "endMs": 755
       },
       {
         "text": "inside",
-        "startMs": 837,
-        "endMs": 1286
+        "startMs": 755,
+        "endMs": 1241
       },
       {
         "text": "Analytics",
-        "startMs": 1286,
-        "endMs": 1917
+        "startMs": 1241,
+        "endMs": 2042
       },
       {
         "text": "manage",
-        "startMs": 2160,
-        "endMs": 2561
+        "startMs": 2042,
+        "endMs": 2442
       },
       {
         "text": "team",
-        "startMs": 2561,
-        "endMs": 2828
+        "startMs": 2442,
+        "endMs": 2697
       },
       {
         "text": "settings",
-        "startMs": 2828,
-        "endMs": 3301
+        "startMs": 2697,
+        "endMs": 3158
       },
       {
         "text": "effortlessly",
-        "startMs": 3301,
-        "endMs": 3956
+        "startMs": 3158,
+        "endMs": 3825
       },
       {
         "text": "and",
-        "startMs": 4223,
-        "endMs": 4320
+        "startMs": 4056,
+        "endMs": 4178
       },
       {
         "text": "choose",
-        "startMs": 4320,
-        "endMs": 4612
+        "startMs": 4178,
+        "endMs": 4433
       },
       {
         "text": "Free",
-        "startMs": 4612,
-        "endMs": 5000
+        "startMs": 4433,
+        "endMs": 4809
       },
       {
         "text": "Pro",
-        "startMs": 5255,
-        "endMs": 5668
+        "startMs": 5051,
+        "endMs": 5415
       },
       {
         "text": "or",
-        "startMs": 5886,
-        "endMs": 6032
+        "startMs": 5707,
+        "endMs": 5840
       },
       {
         "text": "Business",
-        "startMs": 6032,
-        "endMs": 6408
+        "startMs": 5840,
+        "endMs": 6241
       },
       {
         "text": "plans",
-        "startMs": 6408,
-        "endMs": 6772
+        "startMs": 6241,
+        "endMs": 6556
       },
       {
         "text": "in",
-        "startMs": 6772,
-        "endMs": 6881
+        "startMs": 6556,
+        "endMs": 6653
       },
       {
-        "text": "dollars",
-        "startMs": 6881,
-        "endMs": 7330
+        "text": "INR",
+        "startMs": 6653,
+        "endMs": 7102
+      },
+      {
+        "text": "via",
+        "startMs": 7102,
+        "endMs": 7369
+      },
+      {
+        "text": "Card",
+        "startMs": 7369,
+        "endMs": 7916
       },
       {
         "text": "or",
-        "startMs": 7330,
-        "endMs": 7549
+        "startMs": 7916,
+        "endMs": 8085
       },
       {
-        "text": "rupees",
-        "startMs": 7549,
-        "endMs": 8070
+        "text": "UPI",
+        "startMs": 8085,
+        "endMs": 8559
       },
       {
-        "text": "whenever",
-        "startMs": 8070,
-        "endMs": 8422
+        "text": "QR",
+        "startMs": 8559,
+        "endMs": 9032
       },
       {
-        "text": "you",
-        "startMs": 8422,
-        "endMs": 8519
+        "text": "with",
+        "startMs": 9323,
+        "endMs": 9469
       },
       {
-        "text": "scale",
-        "startMs": 8519,
-        "endMs": 8944
+        "text": "USD",
+        "startMs": 9469,
+        "endMs": 9991
+      },
+      {
+        "text": "billing",
+        "startMs": 9991,
+        "endMs": 10306
+      },
+      {
+        "text": "coming",
+        "startMs": 10306,
+        "endMs": 10549
+      },
+      {
+        "text": "soon",
+        "startMs": 10549,
+        "endMs": 10901
       }
     ]
   },

@@ -1,4 +1,4 @@
-import type { ModelDto } from "@backend/server/ai/model-catalog";
+import { PROVIDER_CATALOG, type ModelDto } from "@backend/server/ai/model-catalog";
 
 /** 262144 -> "256K", 1000000 -> "1M", 32000 -> "32K". Binary sizes (8192, 262144) read as the K/M the vendors quote. */
 export function formatTokens(n: number | null): string {
@@ -65,29 +65,32 @@ export type Lang = "python" | "node" | "curl";
 
 export interface ApiRequest { url: string; keyName: string; body: unknown }
 
-/** The real upstream request for the model (NVIDIA Build or Vercel AI Gateway), as documented on each provider's API reference. */
+/** The real upstream request for the model, built from DB-backed provider and endpoint metadata. */
 export function apiRequest(m: ModelDto): ApiRequest {
+  const provider = PROVIDER_CATALOG.find((p) => p.source === m.source) ?? PROVIDER_CATALOG[0]!;
   const nvidia = m.source === "nvidia";
-  const keyName = nvidia ? "NVIDIA_API_KEY" : "AI_GATEWAY_API_KEY";
+  const keyName = provider.envKeyName;
+  const chatBase = provider.chatBaseUrl;
+  const mediaBase = provider.mediaBaseUrl ?? chatBase;
   const chat = [{ role: "user", content: "Explain RAG in simple terms." }];
   if (m.modelType === "embedding") {
-    return { keyName, url: `${nvidia ? "https://integrate.api.nvidia.com/v1" : "https://ai-gateway.vercel.sh/v1"}/embeddings`,
+    return { keyName, url: `${chatBase}${m.endpointPath ?? "/embeddings"}`,
       body: { model: m.apiModelId, input: "RelayNest helps teams build Telegram bots.", ...(nvidia ? { input_type: "query", truncate: "END" } : {}) } };
   }
   if (m.modelType === "image_generation" && m.apiModelId.includes("flux")) {
-    return { keyName, url: `https://ai.api.nvidia.com/v1/genai/${m.apiModelId}`, body: { prompt: "A cat sitting on a windowsill at sunset", width: 1024, height: 1024, steps: 4 } };
+    return { keyName, url: `${mediaBase}${m.endpointPath ?? `/genai/${m.apiModelId}`}`, body: { prompt: "A cat sitting on a windowsill at sunset", width: 1024, height: 1024, steps: 4 } };
   }
   if (m.modelType === "image_generation") {
-    return { keyName, url: `https://ai.api.nvidia.com/v1/cosmos/${m.apiModelId}`, body: { model_mode: "text2image", prompt: "A robotic arm picks up a component on a workbench", resolution: "480_1_1" } };
+    return { keyName, url: `${mediaBase}${m.endpointPath ?? `/cosmos/${m.apiModelId}`}`, body: { model_mode: "text2image", prompt: "A robotic arm picks up a component on a workbench", resolution: "480_1_1" } };
   }
   if (m.modelType === "evaluation") {
-    return { keyName, url: "https://ai-gateway.vercel.sh/v1/decisions",
+    return { keyName, url: `${chatBase}${m.endpointPath ?? "/decisions"}`,
       body: { model: m.apiModelId, input: "The package arrived with a broken screen.", questions: [{ type: "predicate", name: "damaged", instructions: "Does the customer report a damaged item?" }] } };
   }
   if (m.slug === "paligemma") {
-    return { keyName, url: `https://ai.api.nvidia.com/v1/vlm/${m.apiModelId}`, body: { messages: [{ role: "user", content: "Describe this image. <img src=\"data:image/jpeg;base64,<BASE64_IMAGE>\" />" }], max_tokens: 256 } };
+    return { keyName, url: `${mediaBase}${m.endpointPath ?? `/vlm/${m.apiModelId}`}`, body: { messages: [{ role: "user", content: "Describe this image. <img src=\"data:image/jpeg;base64,<BASE64_IMAGE>\" />" }], max_tokens: 256 } };
   }
-  return { keyName, url: `${nvidia ? "https://integrate.api.nvidia.com/v1" : "https://ai-gateway.vercel.sh/v1"}/chat/completions`,
+  return { keyName, url: `${chatBase}${m.endpointPath ?? "/chat/completions"}`,
     body: { model: m.apiModelId, messages: chat, max_tokens: 512 } };
 }
 

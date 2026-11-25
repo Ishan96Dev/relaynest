@@ -175,8 +175,15 @@ export function BillingPanel({ initial }: { initial: BillingOverview }) {
         </Card>
         <Card className="scroll-mt-24" >
           <div id="plans" />
-          <CardHeader title="Available Plans" description="Choose the right plan for your team and automation needs. All plans are billed in INR (\u20B9)." icon={<Layers />} tile
-            action={<div className="flex flex-wrap items-center justify-end gap-2">
+          <CardHeader title="Available Plans" description="Choose the right plan for your team and automation needs. Currently billed in INR (₹) — USD ($) coming soon." icon={<Layers />} tile
+            action={<div className="flex flex-wrap items-center gap-2">
+              <div role="radiogroup" aria-label="Currency" className="flex items-center rounded-lg border border-border p-0.5 text-xs font-semibold">
+                <button type="button" role="radio" aria-checked="true" className="rounded-md btn-primary-bg px-2.5 py-1.5 text-white">INR (&#8377;)</button>
+                <button type="button" role="radio" aria-checked="false" aria-disabled="true" disabled title="USD billing is coming soon" className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-1.5 text-muted opacity-80">
+                  <span>USD ($)</span>
+                  <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-lavender">Coming Soon</span>
+                </button>
+              </div>
               <Toggle label="Payment type" value={mode} onChange={setMode} options={[["subscription", "Auto-renew"], ["one_time", "One-time (Prepaid)"]]} />
               <Toggle label="Billing period" value={cycle} onChange={setCycle} options={[["monthly", "Monthly"], ["annual", "Annual -20%"]]} />
             </div>} />

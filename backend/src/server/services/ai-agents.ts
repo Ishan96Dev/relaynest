@@ -3,11 +3,13 @@ import { z } from "zod";
 import { Errors } from "@backend/lib/http/api";
 import type { createAiAgentInput, knowledgeInput, testInput, updateAiAgentInput } from "@backend/lib/validation/schemas";
 import { requireWrite, type AuthContext } from "@backend/server/auth/context";
-import { buildSystemPrompt, clampReply, parseCommands, parseTools, type AgentCommand, type AgentConfig, type AgentTools, type KnowledgeItem } from "@backend/server/ai/agent";
+import { buildCitationSources, buildSystemPrompt, clampReply, parseCommands, parseTools, type AgentCommand, type AgentConfig, type AgentTools, type KnowledgeItem } from "@backend/server/ai/agent";
+import type { CitationSource } from "@backend/server/ai/citations";
 import { canPowerAgent } from "@backend/server/ai/model-catalog";
 import { commandTask, imagePrompt, parseCommandText, usageText } from "@backend/server/ai/commands";
 import { chat, generateImage, rateLimit, type ChatMessage } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
+import { getDbDefaultImageModel } from "@backend/server/services/ai-models";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
 import { activateBot, createBot, deactivateBot, deleteBot, loadToken, updateBotDetails } from "@backend/server/services/bots";
 import { assertBotLimit, assertExecutionLimit } from "@backend/server/billing/entitlements";
@@ -47,10 +49,20 @@ export type CreateAiAgentInput = z.infer<typeof createAiAgentInput>;
 export type UpdateAiAgentInput = z.infer<typeof updateAiAgentInput>;
 
 const COLUMNS =
-  "id, name, username, description, avatar_path, language, category, instructions, welcome_message, fallback_message, temperature, max_tokens, memory_turns, tools, bot_id, status, created_at, updated_at, ai_models!ai_agents_model_id_fkey(slug, name, source, api_model_id, model_type, is_thinking), commands, image_model:ai_models!ai_agents_image_model_id_fkey(slug, name, source, api_model_id, model_type, is_thinking)";
+  "id, name, username, description, avatar_path, language, category, instructions, welcome_message, fallback_message, temperature, max_tokens, memory_turns, tools, bot_id, status, created_at, updated_at, ai_models!ai_agents_model_id_fkey(slug, name, source, api_model_id, model_type, is_thinking, is_active, fallback_model_slug, endpoint_path), commands, image_model:ai_models!ai_agents_image_model_id_fkey(slug, name, source, api_model_id, model_type, is_thinking, is_active, fallback_model_slug, endpoint_path)";
 
 type Row = Record<string, unknown>;
-type ModelJoin = { slug: string; name: string; source: "nvidia" | "vercel"; api_model_id: string; model_type: string; is_thinking: boolean };
+type ModelJoin = {
+  slug: string;
+  name: string;
+  source: "nvidia" | "vercel";
+  api_model_id: string;
+  model_type: string;
+  is_thinking: boolean;
+  is_active?: boolean;
+  fallback_model_slug?: string | null;
+  endpoint_path?: string | null;
+};
 
 const joinOne = (m: unknown): ModelJoin | null => (Array.isArray(m) ? (m[0] as ModelJoin | undefined) ?? null : (m as ModelJoin | null)) ?? null;
 
@@ -92,8 +104,27 @@ export function toAgentConfig(r: Row, workspaceId: string): AgentConfig {
     id: dto.id, workspaceId, name: dto.name, description: dto.description, category: dto.category, language: dto.language,
     instructions: dto.instructions, welcomeMessage: dto.welcomeMessage, fallbackMessage: dto.fallbackMessage, temperature: dto.temperature,
     maxTokens: dto.maxTokens, memoryTurns: dto.memoryTurns, tools: dto.tools,
-    model: model ? { slug: model.slug, source: model.source, apiModelId: model.api_model_id, isThinking: model.is_thinking } : null,
-    imageModel: image ? { slug: image.slug, source: image.source, apiModelId: image.api_model_id } : null,
+    model: model
+      ? {
+          slug: model.slug,
+          source: model.source,
+          apiModelId: model.api_model_id,
+          isThinking: model.is_thinking,
+          isActive: model.is_active,
+          fallbackModelSlug: model.fallback_model_slug,
+          endpointPath: model.endpoint_path,
+        }
+      : null,
+    imageModel: image
+      ? {
+          slug: image.slug,
+          source: image.source,
+          apiModelId: image.api_model_id,
+          isActive: image.is_active,
+          fallbackModelSlug: image.fallback_model_slug,
+          endpointPath: image.endpoint_path,
+        }
+      : null,
     commands: dto.commands,
   };
 }
@@ -315,33 +346,65 @@ export async function deactivateAiAgent(ctx: AuthContext, id: string): Promise<A
   return toAgentDto(data);
 }
 
-/** One reply from the agent for the in-app chat preview. Uses the saved configuration and knowledge. */
-export function testAiAgent(ctx: AuthContext, id: string, input: z.infer<typeof testInput>): Promise<{ reply: string; imageBase64?: string }> {
+/** One reply from the agent for the in-app chat preview. Uses the saved configuration, agent knowledge and linked KB collections. */
+export function testAiAgent(
+  ctx: AuthContext,
+  id: string,
+  input: z.infer<typeof testInput>,
+): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number }> {
   return withUsageScope({ workspaceId: ctx.workspaceId, userId: ctx.userId, origin: "agent" }, () => testAiAgentInner(ctx, id, input));
 }
-async function testAiAgentInner(ctx: AuthContext, id: string, input: z.infer<typeof testInput>): Promise<{ reply: string; imageBase64?: string }> {
+async function testAiAgentInner(
+  ctx: AuthContext,
+  id: string,
+  input: z.infer<typeof testInput>,
+): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number }> {
+  const started = Date.now();
   rateLimit(`agent-test:${ctx.userId}`, 30, 60_000);
-  await assertExecutionLimit(ctx.workspaceId);
-  const row = await loadRow(ctx, id);
+  const [, row] = await Promise.all([assertExecutionLimit(ctx.workspaceId), loadRow(ctx, id)]);
   const config = toAgentConfig(row, ctx.workspaceId);
-  if (!config.model) throw Errors.invalid("Choose a model for this agent first (step 2).");
+  if (!config.model) throw Errors.invalid("Choose a model for this agent first (step 3).");
   // Slash commands behave like they do in Telegram: image commands draw, chat commands get a task, describe needs a photo.
   const { cmd, input: commandInput } = parseCommandText(input.message);
   const custom = cmd ? config.commands.find((c) => c.command === cmd) : undefined;
-  if (custom?.kind === "describe") return { reply: `Send a photo with the caption /${custom.command} in Telegram. The preview cannot attach pictures.` };
-  if (custom && !commandInput) return { reply: usageText(custom) };
-  if (custom?.kind === "image") {
-    if (!config.imageModel) throw Errors.invalid("Choose an image model for this agent first (step 2).");
-    rateLimit(`agent-image:${ctx.userId}`, 6, 60_000);
-    const img = await generateImage(config.imageModel, imagePrompt(custom, commandInput));
-    return { reply: commandInput.slice(0, 200), imageBase64: img.imageBase64 };
+  if (custom?.kind === "describe" || (!custom && cmd === "describe")) {
+    return { reply: `Send a photo with the caption /${custom?.command ?? "describe"} in Telegram. The preview cannot attach pictures.` };
   }
-  const [knowledge, passages] = await Promise.all([listKnowledge(ctx, id), row.bot_id ? retrieveForBot(row.bot_id as string, ctx.workspaceId, input.message) : Promise.resolve([])]);
+  if (custom && !commandInput) return { reply: usageText(custom) };
+  if (custom?.kind === "image" || (!custom && cmd === "imagine")) {
+    if (!commandInput) return { reply: `Usage: /${custom?.command ?? "imagine"} <what to draw>` };
+    const imageModel = config.imageModel ?? (await getDbDefaultImageModel());
+    if (!imageModel) throw Errors.invalid("No active image generation model is configured in the catalog.");
+    rateLimit(`agent-image:${ctx.userId}`, 8, 60_000);
+    const prompt = custom ? imagePrompt(custom, commandInput) : commandInput.slice(0, 2000);
+    const img = await generateImage(imageModel, prompt);
+    return { reply: commandInput.slice(0, 200), imageBase64: img.imageBase64, ms: Date.now() - started };
+  }
+  const [knowledge, passages] = await Promise.all([
+    listKnowledge(ctx, id),
+    row.bot_id ? retrieveForBot(row.bot_id as string, ctx.workspaceId, input.message, 5) : Promise.resolve([]),
+  ]);
+  const knowledgeItems = knowledge as KnowledgeItem[];
+  const citations = buildCitationSources(knowledgeItems, passages);
   const keep = config.memoryTurns * 2;
   const history = keep > 0 ? input.history.slice(-keep) : [];
-  const messages: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(config, knowledge as KnowledgeItem[], new Date(), passages) + (custom ? `\n\n${commandTask(custom)}` : "") }, ...history, { role: "user", content: custom ? commandInput : input.message }];
-  const r = await chat(config.model, messages, { temperature: config.temperature, maxTokens: config.maxTokens });
-  return { reply: clampReply(r.text) };
+  const messages: ChatMessage[] = [
+    { role: "system", content: buildSystemPrompt(config, knowledgeItems, new Date(), passages) + (custom ? `\n\n${commandTask(custom)}` : "") },
+    ...history,
+    { role: "user", content: custom ? commandInput : input.message },
+  ];
+  const r = await chat(config.model, messages, {
+    temperature: config.temperature,
+    maxTokens: Math.min(config.maxTokens, 1536),
+    thinking: false,
+    timeoutMs: 20_000,
+    allowFallback: true,
+  });
+  return {
+    reply: clampReply(r.text),
+    ...(citations.length ? { sources: citations } : {}),
+    ms: Date.now() - started,
+  };
 }
 
 export type { AgentTools };

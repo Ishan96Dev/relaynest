@@ -9,6 +9,7 @@ import type { AiAgentDto, KnowledgeDto } from "@backend/server/services/ai-agent
 import { ProviderMark } from "@/components/ai/provider-mark";
 import { TelegramConnectCard } from "@/components/bots/telegram-connect-card";
 import { TelegramUsernameChecker } from "@/components/bots/telegram-username-check";
+import { BotKnowledge } from "@/components/knowledge/bot-knowledge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FileUpload, type PendingImage } from "@/components/ui/file-upload";
@@ -112,9 +113,9 @@ export function StepModel({ form, patch, models, imageModels, error, errors }: {
       </div>
       <p className="text-xs text-muted">Only chat and multimodal language models can power an agent. <Link href="/ai/models" className="font-semibold text-lavender hover:underline">Browse the full catalog</Link></p>
       {imageModels.length > 0 && (
-        <Field label="Image model (optional)" htmlFor="agent-image-model" hint="Used by image commands such as /imagine. Leave empty if your agent should not draw.">
+        <Field label="Image model (optional)" htmlFor="agent-image-model" hint="Used by /imagine and image commands. Defaults to FLUX.1 Schnell automatically if left on Auto.">
           <Select id="agent-image-model" value={form.imageModelSlug ?? ""} onChange={(e) => patch({ imageModelSlug: e.target.value || null })}>
-            <option value="">None</option>
+            <option value="">Auto (FLUX.1 Schnell)</option>
             {imageModels.map((m) => <option key={m.slug} value={m.slug}>{m.name} ({m.providerName})</option>)}
           </Select>
         </Field>
@@ -142,8 +143,8 @@ const TEMPLATES: { label: string; text: string }[] = [
   { label: "Community manager", text: "Welcome new members, answer questions about the community, and keep a friendly, neutral tone. Politely decline off-topic or abusive requests." },
 ];
 
-export function StepKnowledge({ form, patch, errors, agentId, knowledge, onKnowledge }: {
-  form: AgentForm; patch: Patch; errors: FieldErrors; agentId: string | null; knowledge: KnowledgeDto[]; onKnowledge: (k: KnowledgeDto[]) => void;
+export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo = false, knowledge, onKnowledge }: {
+  form: AgentForm; patch: Patch; errors: FieldErrors; agentId: string | null; botId?: string | null; demo?: boolean; knowledge: KnowledgeDto[]; onKnowledge: (k: KnowledgeDto[]) => void;
 }) {
   const [title, setTitle] = React.useState("");
   const [content, setContent] = React.useState("");
@@ -222,6 +223,8 @@ export function StepKnowledge({ form, patch, errors, agentId, knowledge, onKnowl
           </>
         )}
       </section>
+
+      {botId && <BotKnowledge botId={botId} demo={demo} />}
     </div>
   );
 }
@@ -258,10 +261,21 @@ const PRESETS: AgentCommand[] = [
   { command: "translate", description: "Translate text", kind: "chat", instruction: "Translate the text. Use the language the person names, or English if none is named." },
 ];
 
-function CommandsEditor({ form, patch }: { form: AgentForm; patch: Patch }) {
+function CommandsEditor({ form, patch, imageModels = [] }: { form: AgentForm; patch: Patch; imageModels?: ModelDto[] }) {
   const problem = validateCommands(form.commands);
-  const set = (i: number, p: Partial<AgentCommand>) => patch({ commands: form.commands.map((c, j) => (j === i ? { ...c, ...p } : c)) });
-  const add = (c: AgentCommand) => patch({ commands: [...form.commands, c] });
+  const defaultImgSlug = imageModels.find((m) => m.slug === "flux-1-schnell")?.slug ?? imageModels[0]?.slug ?? null;
+  const set = (i: number, p: Partial<AgentCommand>) => {
+    const nextCmds = form.commands.map((c, j) => (j === i ? { ...c, ...p } : c));
+    patch({
+      commands: nextCmds,
+      ...(p.kind === "image" && !form.imageModelSlug && defaultImgSlug ? { imageModelSlug: defaultImgSlug } : {}),
+    });
+  };
+  const add = (c: AgentCommand) =>
+    patch({
+      commands: [...form.commands, c],
+      ...(c.kind === "image" && !form.imageModelSlug && defaultImgSlug ? { imageModelSlug: defaultImgSlug } : {}),
+    });
   const missing = PRESETS.filter((p) => !form.commands.some((c) => c.command === p.command));
   return (
     <section aria-labelledby="commands-title" className="space-y-3 rounded-2xl border border-border bg-surface-2/50 p-4">
@@ -292,12 +306,12 @@ function CommandsEditor({ form, patch }: { form: AgentForm; patch: Patch }) {
         <Button variant="subtle" size="sm" disabled={form.commands.length >= 15} onClick={() => add({ command: "", description: "", kind: "chat", instruction: "" })}><Plus className="size-4" aria-hidden />Add command</Button>
         {missing.map((p) => <Button key={p.command} variant="outline" size="sm" disabled={form.commands.length >= 15} onClick={() => add(p)}>+ /{p.command}</Button>)}
       </div>
-      {form.commands.some((c) => c.kind === "image") && !form.imageModelSlug && <p className="text-xs text-warn">Image commands need an image model. Choose one in step 2.</p>}
+      {form.commands.some((c) => c.kind === "image") && !form.imageModelSlug && <p className="text-xs text-muted">Image commands will use FLUX.1 Schnell automatically (or choose another model in step 3).</p>}
     </section>
   );
 }
 
-export function StepTools({ form, patch }: { form: AgentForm; patch: Patch }) {
+export function StepTools({ form, patch, imageModels = [] }: { form: AgentForm; patch: Patch; imageModels?: ModelDto[] }) {
   return (
     <div className="space-y-4">
       <Field label="Conversation memory" htmlFor="agent-memory" required hint="How many recent exchanges the agent remembers per chat. Use /reset in Telegram to clear it.">
@@ -317,7 +331,7 @@ export function StepTools({ form, patch }: { form: AgentForm; patch: Patch }) {
           </li>
         ))}
       </ul>
-      <CommandsEditor form={form} patch={patch} />
+      <CommandsEditor form={form} patch={patch} imageModels={imageModels} />
     </div>
   );
 }

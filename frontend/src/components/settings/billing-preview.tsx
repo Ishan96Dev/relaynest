@@ -42,8 +42,17 @@ export function BillingPreview() {
         </Card>
 
         <Card>
-          <CardHeader title="Available Plans" description="Choose the right plan for your team and automation needs." icon={<Layers />} tile
-            action={<div role="radiogroup" aria-label="Billing period" className="flex rounded-lg border border-border p-0.5 text-xs font-semibold">{[["Monthly", false], ["Annual", true]].map(([l, v]) => <button key={String(l)} role="radio" aria-checked={annual === v} onClick={() => setAnnual(Boolean(v))} className={cn("rounded-md px-3 py-1.5", annual === v ? "btn-primary-bg text-white" : "text-muted")}>{String(l)}{v ? <span className="ml-1.5 rounded bg-success/20 px-1 text-ok">Save 20%</span> : null}</button>)}</div>} />
+          <CardHeader title="Available Plans" description="Choose the right plan for your team and automation needs. Currently billed in INR (₹) — USD ($) coming soon." icon={<Layers />} tile
+            action={<div className="flex flex-wrap items-center gap-2">
+              <div role="radiogroup" aria-label="Currency" className="flex items-center rounded-lg border border-border p-0.5 text-xs font-semibold">
+                <button type="button" role="radio" aria-checked="true" className="rounded-md btn-primary-bg px-2.5 py-1.5 text-white">INR (&#8377;)</button>
+                <button type="button" role="radio" aria-checked="false" aria-disabled="true" disabled title="USD billing is coming soon" className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-1.5 text-muted opacity-80">
+                  <span>USD ($)</span>
+                  <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-lavender">Coming Soon</span>
+                </button>
+              </div>
+              <div role="radiogroup" aria-label="Billing period" className="flex rounded-lg border border-border p-0.5 text-xs font-semibold">{[["Monthly", false], ["Annual", true]].map(([l, v]) => <button key={String(l)} type="button" role="radio" aria-checked={annual === v} onClick={() => setAnnual(Boolean(v))} className={cn("rounded-md px-3 py-1.5", annual === v ? "btn-primary-bg text-white" : "text-muted")}>{String(l)}{v ? <span className="ml-1.5 rounded bg-success/20 px-1 text-ok">Save 20%</span> : null}</button>)}</div>
+            </div>} />
           <div className="grid-cols-1 grid gap-3 px-5 pb-5 md:grid-cols-3">
             {plans.map((p) => {
               const periodPrice = priceFor(p.id, annual ? "annual" : "monthly", "INR");

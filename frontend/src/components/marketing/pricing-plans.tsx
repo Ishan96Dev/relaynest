@@ -44,11 +44,34 @@ export function PricingPlans() {
         <div role="radiogroup" aria-label="Payment type" className="relative flex rounded-full border border-border bg-surface/80 p-1 text-xs font-semibold">
           <span aria-hidden className={cn("absolute inset-y-1 w-[calc(50%-4px)] rounded-full bg-foreground/10 ring-1 ring-inset ring-foreground/15 transition-transform duration-300 ease-out", mode === "one_time" && "translate-x-full")} />
           {([["Auto-renew", "subscription"], ["One-time", "one_time"]] as const).map(([label, value]) => (
-            <button key={value} role="radio" aria-checked={mode === value} onClick={() => setMode(value)}
+            <button key={value} type="button" role="radio" aria-checked={mode === value} onClick={() => setMode(value)}
               className={cn("relative z-10 flex h-10 w-28 items-center justify-center rounded-full transition-colors duration-300", mode === value ? "text-foreground" : "text-muted hover:text-foreground")}>
               {label}
             </button>
           ))}
+        </div>
+
+        <div role="radiogroup" aria-label="Currency" className="flex items-center rounded-full border border-border bg-surface/80 p-1 text-xs font-semibold">
+          <button
+            type="button"
+            role="radio"
+            aria-checked="true"
+            className="flex h-10 items-center justify-center rounded-full bg-foreground/10 px-4 text-foreground ring-1 ring-inset ring-foreground/15"
+          >
+            INR (&#8377;)
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked="false"
+            aria-disabled="true"
+            disabled
+            title="USD billing is coming soon"
+            className="flex h-10 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3.5 text-muted opacity-80"
+          >
+            <span>USD ($)</span>
+            <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-lavender">Coming Soon</span>
+          </button>
         </div>
       </div>
 
@@ -106,7 +129,7 @@ export function PricingPlans() {
       </ul>
       <p className="mx-auto mt-8 flex max-w-2xl items-center justify-center gap-2 text-center text-sm text-foreground/70">
         <ShieldCheck className="size-4 shrink-0 text-lavender" aria-hidden />
-        Payments powered by Razorpay (Cards, UPI, UPI QR &amp; NetBanking). Switch plans or cancel anytime from Billing.
+        Payments powered by Razorpay in INR (&#8377;) — Cards, UPI, UPI QR &amp; NetBanking. USD ($) billing is coming soon.
       </p>
     </div>
   );

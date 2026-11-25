@@ -102,16 +102,17 @@ describe("telegram client against a fake Bot API", () => {
 });
 
 describe("photo choice for vision commands", () => {
-  it("picks the largest size under the inline limit, or the smallest when none fits", async () => {
+  it("picks the largest high-res size under the 2 MB limit, or the smallest when none fits", async () => {
     const { pickPhoto } = await import("../src/server/services/ai-agent-commands");
     const sizes = [
       { file_id: "s", width: 90, height: 90, file_size: 2_000 },
       { file_id: "m", width: 320, height: 320, file_size: 30_000 },
       { file_id: "l", width: 800, height: 800, file_size: 110_000 },
       { file_id: "xl", width: 1280, height: 1280, file_size: 400_000 },
+      { file_id: "huge", width: 4096, height: 4096, file_size: 3_500_000 },
     ];
-    expect(pickPhoto(sizes)?.file_id).toBe("l");
-    expect(pickPhoto([{ file_id: "big", width: 1280, height: 1280, file_size: 500_000 }, { file_id: "bigger", width: 2000, height: 2000, file_size: 900_000 }])?.file_id).toBe("big");
+    expect(pickPhoto(sizes)?.file_id).toBe("xl");
+    expect(pickPhoto([{ file_id: "big", width: 2560, height: 2560, file_size: 2_500_000 }, { file_id: "bigger", width: 4000, height: 4000, file_size: 4_000_000 }])?.file_id).toBe("big");
     expect(pickPhoto([])).toBe(undefined);
   });
 });

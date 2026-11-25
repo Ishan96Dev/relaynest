@@ -780,15 +780,15 @@ const V010_GUIDES: PageGuide[] = [
         tone: "info",
         badge: "Flexible Billing",
         title: "INR Billing With Auto-Renew, Prepaid & UPI QR",
-        body: "Upgrade cleanly inside Settings -> Billing in INR (\u20B9) via Card, NetBanking, UPI AutoPay, or UPI QR on Monthly or 20%-off Annual billing.",
+        body: "Upgrade cleanly inside Settings -> Billing in INR (\u20B9) via Card, NetBanking, UPI AutoPay, or UPI QR on Monthly or 20%-off Annual billing. USD ($) billing is coming soon.",
       },
     ],
     screenshots: [
       {
         kind: "image",
         src: "/images/docs/pages/settings-billing.png",
-        alt: "RelayNest Billing & Subscription screen showing Free, Pro, and Business plans in INR",
-        caption: "Billing & Subscription (/settings/billing): choose INR (\u20B9) Auto-renew vs One-time (Prepaid), Monthly vs Annual plans, or Pay via UPI QR.",
+        alt: "RelayNest Billing & Subscription screen showing Free, Pro, and Business plans in INR with USD coming soon",
+        caption: "Billing & Subscription (/settings/billing): choose INR (\u20B9) Auto-renew vs One-time (Prepaid), Monthly vs Annual plans, or Pay via UPI QR (USD coming soon).",
       },
       {
         kind: "image",
@@ -838,7 +838,7 @@ const V010_GUIDES: PageGuide[] = [
       },
       {
         title: "Plans & Payments under Billing",
-        detail: "Upgrade between Free, Pro, and Business in INR (\u20B9), choosing recurring subscriptions, one-time prepaid passes, or UPI QR.",
+        detail: "Upgrade between Free, Pro, and Business in INR (\u20B9), choosing recurring subscriptions, one-time prepaid passes, or UPI QR (USD coming soon).",
       },
     ],
   },

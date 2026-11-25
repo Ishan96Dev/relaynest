@@ -7,9 +7,10 @@ import { publishKafkaEvent } from "@backend/server/queue/kafka";
 import { triggerTelegramWorkflows } from "@backend/server/services/telegram-triggers";
 import { withUsageScope } from "@backend/server/ai/usage";
 import { handleAgentUpdate } from "@backend/server/services/ai-agent-runtime";
+import { formatTelegramHtmlReply, formatTelegramPlainReply, type CitationSource } from "@backend/server/ai/citations";
 import { loadToken, markBotDeletedOnTelegram } from "@backend/server/services/bots";
 import { answerFromKnowledge } from "@backend/server/services/knowledge-retrieval";
-import { isTelegramBotDeletedError, sendMessage, type TelegramUpdate } from "@backend/server/telegram/client";
+import { isTelegramBotDeletedError, sendFormattedMessage, sendMessage, type TelegramUpdate } from "@backend/server/telegram/client";
 
 export type WebhookOutcome = "ok" | "unauthorized" | "not_found" | "duplicate" | "ignored";
 
@@ -87,16 +88,20 @@ async function processUpdateInner(bot: BotRow, update: TelegramUpdate) {
     }
     return;
   }
-  // Published automations triggered by this bot run alongside its normal reply.
-  await triggerTelegramWorkflows(bot, update);
+  // Run published automations in parallel so they never add latency to the bot's reply.
+  const wfPromise = triggerTelegramWorkflows(bot, update).catch(() => undefined);
   // Bots created from an AI agent answer with the agent; every other bot uses commands and keyword rules.
-  if (await handleAgentUpdate(bot, update)) return;
+  if (await handleAgentUpdate(bot, update)) {
+    await wfPromise;
+    return;
+  }
   const msg = update.message;
-  if (!msg?.text) return;
+  if (!msg?.text) { await wfPromise; return; }
   const admin = createAdminClient();
   const text = msg.text.trim();
   const started = Date.now();
   let reply: string | null = null;
+  let replySources: CitationSource[] = [];
   let trigger = "message";
 
   const cmd = /^\/([a-zA-Z0-9_]{1,32})(?:@\w+)?(?:\s|$)/.exec(text)?.[1]?.toLowerCase();
@@ -124,8 +129,12 @@ async function processUpdateInner(bot: BotRow, update: TelegramUpdate) {
     trigger = hit ? "keyword" : "default";
     // No rule matched: answer from Knowledge Base collections shared with this bot, then fall back to the default response.
     if (!reply) {
-      reply = await answerFromKnowledge(bot.id, bot.workspace_id, text);
-      if (reply) trigger = "knowledge";
+      const kb = await answerFromKnowledge(bot.id, bot.workspace_id, text);
+      if (kb) {
+        reply = kb.text;
+        replySources = kb.sources;
+        trigger = "knowledge";
+      }
     }
     if (!reply) reply = bot.default_response;
   }
@@ -134,22 +143,30 @@ async function processUpdateInner(bot: BotRow, update: TelegramUpdate) {
   let errorCode: string | null = null;
   if (reply) {
     try {
-      await sendMessage(await loadToken(bot.id, bot.workspace_id), msg.chat.id, reply);
+      const tok = await loadToken(bot.id, bot.workspace_id);
+      if (replySources.length > 0) {
+        await sendFormattedMessage(tok, msg.chat.id, formatTelegramHtmlReply(reply, replySources), formatTelegramPlainReply(reply, replySources));
+      } else {
+        await sendMessage(tok, msg.chat.id, reply);
+      }
     } catch (err) {
       status = "failed";
       errorCode = isTelegramBotDeletedError(err) ? "TELEGRAM_BOT_DELETED" : "SEND_FAILED";
       if (isTelegramBotDeletedError(err)) void markBotDeletedOnTelegram(bot.id, bot.workspace_id);
     }
   }
-  await admin.from("executions").insert({
-    workspace_id: bot.workspace_id,
-    bot_id: bot.id,
-    trigger_type: trigger,
-    status,
-    error_code: errorCode,
-    idempotency_key: `tg:${bot.id}:${update.update_id}`,
-    finished_at: new Date().toISOString(),
-    duration_ms: Date.now() - started,
-  });
-  await admin.from("bots").update({ last_update_at: new Date().toISOString() }).eq("id", bot.id);
+  await Promise.allSettled([
+    wfPromise,
+    admin.from("executions").insert({
+      workspace_id: bot.workspace_id,
+      bot_id: bot.id,
+      trigger_type: trigger,
+      status,
+      error_code: errorCode,
+      idempotency_key: `tg:${bot.id}:${update.update_id}`,
+      finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - started,
+    }),
+    admin.from("bots").update({ last_update_at: new Date().toISOString() }).eq("id", bot.id),
+  ]);
 }

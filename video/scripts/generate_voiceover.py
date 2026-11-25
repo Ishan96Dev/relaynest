@@ -77,7 +77,8 @@ SCENES = [
         "title": "Analytics, Settings & Plans",
         "text": (
             "Track growth inside Analytics, manage team settings effortlessly, "
-            "and choose Free, Pro, or Business plans in dollars or rupees whenever you scale."
+            "and choose Free, Pro, or Business plans in INR via Card or UPI QR — "
+            "with USD billing coming soon."
         ),
     },
     {

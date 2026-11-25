@@ -21,7 +21,7 @@ const rows: [string, string, string, string][] = [
 
 const faqs = [
   ["Is the Free plan really free?", "Yes. You can build and run up to 3 bots with basic automation at no cost, with no credit card."],
-  ["What payment methods are supported?", "We support Cards, UPI, UPI QR (one-time), and NetBanking via Razorpay in INR (₹)."],
+  ["What payment methods are supported?", "We support Cards, UPI, UPI QR (one-time), and NetBanking via Razorpay in INR (₹). USD ($) billing is coming soon."],
   ["What is the difference between Auto-renew and One-time?", "Auto-renew bills each month or year until you cancel. One-time (Prepaid) is the same rate paid once for a 1-month or 1-year pass with no auto-renewal."],
   ["Are AI features included?", "Yes. AI agents, the model catalog and the playground are available across plans, with usage tracked per workspace."],
 ];

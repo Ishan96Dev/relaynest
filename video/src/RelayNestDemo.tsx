@@ -163,7 +163,7 @@ export const RelayNestDemo: React.FC<RelayNestDemoProps> = ({ showSubtitles = tr
           <Audio from={sAi.startFrame} src={staticFile("audio/swipe.ogg")} volume={0.22} />
           <Audio from={sAi.startFrame + 175} src={staticFile("audio/ding.ogg")} volume={0.22} />
           <Audio from={sAn.startFrame} src={staticFile("audio/whoosh.ogg")} volume={0.22} />
-          <Audio from={sAn.startFrame + 175} src={staticFile("audio/pop.ogg")} volume={0.2} />
+          <Audio from={sAn.startFrame + 138} src={staticFile("audio/pop.ogg")} volume={0.2} />
           <Audio from={sApi.startFrame} src={staticFile("audio/swipe.ogg")} volume={0.22} />
           <Audio from={sApi.startFrame + 165} src={staticFile("audio/ding.ogg")} volume={0.2} />
           <Audio from={sClose.startFrame - 18} durationInFrames={42} src={staticFile("audio/riser.ogg")} volume={0.18} />

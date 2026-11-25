@@ -151,57 +151,61 @@ customer questions accurately on Telegram around
 the clock
 
 39
-00:01:27,564 --> 00:01:30,295
+00:01:27,567 --> 00:01:30,164
 Track growth inside Analytics manage team
 
 40
-00:01:30,295 --> 00:01:33,135
+00:01:30,164 --> 00:01:32,882
 settings effortlessly and choose Free Pro
 
 41
-00:01:33,353 --> 00:01:35,016
-or Business plans in dollars or
+00:01:33,174 --> 00:01:34,836
+or Business plans in INR via
 
 42
-00:01:35,016 --> 00:01:36,411
-rupees whenever you scale
+00:01:34,836 --> 00:01:37,458
+Card or UPI QR with USD
 
 43
-00:01:37,430 --> 00:01:40,136
-Connect Slack Discord and signed webhooks
+00:01:37,458 --> 00:01:38,368
+billing coming soon
 
 44
-00:01:40,136 --> 00:01:42,818
-in Integrations generate scoped A P
+00:01:39,397 --> 00:01:42,103
+Connect Slack Discord and signed webhooks
 
 45
-00:01:42,818 --> 00:01:45,197
-I keys test live calls inside
+00:01:42,103 --> 00:01:44,785
+in Integrations generate scoped A P
 
 46
-00:01:45,197 --> 00:01:47,515
-interactive Swagger U I and receive
+00:01:44,785 --> 00:01:47,164
+I keys test live calls inside
 
 47
-00:01:47,661 --> 00:01:49,129
-instant notification alerts
+00:01:47,164 --> 00:01:49,482
+interactive Swagger U I and receive
 
 48
-00:01:50,164 --> 00:01:51,790
-Everything you need to run Telegram
+00:01:49,628 --> 00:01:51,096
+instant notification alerts
 
 49
-00:01:51,790 --> 00:01:54,642
-support workflows and AI assistants in
+00:01:52,130 --> 00:01:53,756
+Everything you need to run Telegram
 
 50
-00:01:54,642 --> 00:01:55,285
-one place
+00:01:53,756 --> 00:01:56,608
+support workflows and AI assistants in
 
 51
-00:01:55,686 --> 00:01:57,349
-Create your first bot free on
+00:01:56,608 --> 00:01:57,251
+one place
 
 52
-00:01:57,349 --> 00:01:58,198
+00:01:57,652 --> 00:01:59,315
+Create your first bot free on
+
+53
+00:01:59,315 --> 00:02:00,164
 RelayNest today

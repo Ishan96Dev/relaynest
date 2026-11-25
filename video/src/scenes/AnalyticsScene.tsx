@@ -12,7 +12,7 @@ export const AnalyticsScene: React.FC = () => {
         title="Track Growth &amp; Scale with Simple Plans"
         primaryScreen="screens/analytics.png"
         secondaryScreen="screens/settings-billing.png"
-        switchFrame={175}
+        switchFrame={138}
         accentShift={-40}
         features={[
           {
@@ -28,9 +28,9 @@ export const AnalyticsScene: React.FC = () => {
             accent: RN_COLORS.lavender,
           },
           {
-            badge: "INR & UPI QR Billing",
+            badge: "INR Billing · USD Coming Soon",
             title: "Free, Pro & Business Plans",
-            detail: "Start free forever, or pay monthly/annually with Card or UPI QR whenever you need more bots.",
+            detail: "Start free forever, or pay in INR (₹) via Card or UPI QR. USD ($) billing is coming soon.",
             accent: RN_COLORS.ok,
           },
         ]}
