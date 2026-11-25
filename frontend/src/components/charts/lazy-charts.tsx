@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import dynamic from "next/dynamic";
 import type * as Charts from "./activity-charts";
 import type * as Trend from "./trend-chart";
@@ -15,5 +15,7 @@ export const TrendChart = dynamic<React.ComponentProps<typeof Trend.TrendChart>>
   () => import("./trend-chart").then((m) => m.TrendChart), { ssr: false, loading: placeholder(220) });
 export const ActivityBars = dynamic<React.ComponentProps<typeof Charts.ActivityBars>>(
   () => import("./activity-charts").then((m) => m.ActivityBars), { ssr: false, loading: placeholder(220) });
+export const StatusBars = dynamic<React.ComponentProps<typeof Charts.StatusBars>>(
+  () => import("./activity-charts").then((m) => m.StatusBars), { ssr: false, loading: placeholder(220) });
 export const SuccessDonut = dynamic<React.ComponentProps<typeof Charts.SuccessDonut>>(
   () => import("./activity-charts").then((m) => m.SuccessDonut), { ssr: false, loading: placeholder(220) });

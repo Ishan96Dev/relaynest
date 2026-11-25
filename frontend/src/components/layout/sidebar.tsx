@@ -17,7 +17,7 @@ function NavLink({ item, active, collapsed, onNavigate }: { item: NavItem; activ
   const Icon = item.icon;
   return (
     <Tooltip content={collapsed ? item.label : undefined} side="right" className="flex w-full">
-      <Link href={item.href} aria-current={active ? "page" : undefined} aria-label={collapsed ? item.label : undefined} onClick={onNavigate} className={cn(row, "w-full", collapsed && "justify-center px-0", active ? on : off)}>
+      <Link href={item.href} prefetch={false} aria-current={active ? "page" : undefined} aria-label={collapsed ? item.label : undefined} onClick={onNavigate} className={cn(row, "w-full", collapsed && "justify-center px-0", active ? on : off)}>
         <Icon className={cn("size-[19px] shrink-0 transition-transform duration-200 group-hover/nav:scale-110", active && "drop-shadow-[0_0_6px_rgb(255_255_255/0.5)]")} aria-hidden />
         {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
       </Link>
@@ -37,7 +37,7 @@ export function PromoCard({ promo, onNavigate }: { promo: Promo; onNavigate?: ()
       <p className="text-lg font-extrabold leading-tight">{promo.title}</p>
       <p className="mt-1.5 text-[13px] leading-snug text-muted">{promo.body}</p>
       {promo.cta && (
-        <Link href={promo.href} onClick={onNavigate} className={cn("sheen mt-3 flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-semibold text-white transition hover:brightness-110", promo.gradient ? "bg-gradient-to-r from-info to-primary" : "btn-primary-bg")}>
+        <Link href={promo.href} prefetch={false} onClick={onNavigate} className={cn("sheen mt-3 flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-semibold text-white transition hover:brightness-110", promo.gradient ? "bg-gradient-to-r from-info to-primary" : "btn-primary-bg")}>
           {promo.cta} <span aria-hidden>&rarr;</span>
         </Link>
       )}
@@ -87,7 +87,7 @@ export function Sidebar({
                   const SI = s.icon;
                   const active = pathname === s.href;
                   return (
-                    <Link key={s.href} href={s.href} tabIndex={settingsOpen ? 0 : -1} aria-current={active ? "page" : undefined} onClick={onNavigate}
+                    <Link key={s.href} href={s.href} prefetch={false} tabIndex={settingsOpen ? 0 : -1} aria-current={active ? "page" : undefined} onClick={onNavigate}
                       className={cn("group/sub flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium transition-all duration-200", active ? "bg-primary/20 text-lavender" : "text-foreground/70 hover:bg-primary/10 hover:text-foreground hover:translate-x-0.5")}>
                       <SI className="size-4 shrink-0 transition-transform duration-200 group-hover/sub:scale-110" aria-hidden />
                       <span className="truncate">{s.label}</span>

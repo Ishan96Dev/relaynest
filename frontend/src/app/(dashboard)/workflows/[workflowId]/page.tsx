@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { WorkflowEditor } from "@/components/workflows/workflow-editor";
+import { LazyWorkflowEditor as WorkflowEditor } from "@/components/workflows/lazy-workflow-editor";
 import { ApiError } from "@backend/lib/http/api";
 import { isSupabaseConfigured } from "@backend/lib/env/public";
 import { uuid } from "@backend/lib/validation/schemas";

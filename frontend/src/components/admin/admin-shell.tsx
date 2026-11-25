@@ -117,6 +117,7 @@ function AdminSidebar({
                     <Tooltip key={item.href} content={collapsed ? item.label : undefined} side="right" className="flex w-full">
                       <Link
                         href={item.href}
+                        prefetch={false}
                         onClick={onNavigate}
                         aria-current={active ? "page" : undefined}
                         aria-label={collapsed ? item.label : undefined}
@@ -151,6 +152,7 @@ function AdminSidebar({
             </p>
             <Link
               href="/dashboard"
+              prefetch={false}
               className="btn-primary-bg sheen mt-3 flex h-9 items-center justify-center rounded-lg text-xs font-semibold text-white transition hover:brightness-110"
             >
               Open User Dashboard &rarr;
@@ -229,7 +231,7 @@ export function AdminShell({ adminEmail, children }: { adminEmail: string; child
               <Menu className="size-4" />
             </button>
             <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm">
-              <Link href="/admin" className="font-semibold text-muted hover:text-foreground">Admin</Link>
+              <Link href="/admin" prefetch={false} className="font-semibold text-muted hover:text-foreground">Admin</Link>
               <span aria-hidden className="text-muted">/</span>
               <span className="font-bold text-lavender">{activeNav.label}</span>
             </nav>

@@ -64,7 +64,7 @@ export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<Sessio
       <header className="sticky top-0 z-30 flex h-[68px] items-center gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md sm:gap-4 lg:px-8">
       <button aria-label="Open menu" onClick={onMenu} className="grid-cols-1 grid size-10 place-items-center rounded-lg text-muted transition hover:bg-foreground/5 hover:text-foreground lg:hidden"><Menu className="size-5" /></button>
       <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-2 text-sm text-muted xl:flex">
-        <Link href="/dashboard" aria-label="Home" className="transition hover:text-foreground"><Home className="size-[18px]" /></Link>
+        <Link href="/dashboard" prefetch={false} aria-label="Home" className="transition hover:text-foreground"><Home className="size-[18px]" /></Link>
         {segments.map((s, i) => (
           <React.Fragment key={s + i}>
             <ChevronRight className="size-3.5 shrink-0 opacity-60" aria-hidden />
@@ -77,7 +77,7 @@ export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<Sessio
 
       <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
         <Tooltip content="Open documentation" side="bottom">
-          <Link href="/docs" className="hidden h-10 items-center gap-2 rounded-lg border border-border bg-surface-2/70 px-3.5 text-sm font-medium transition hover:-translate-y-px hover:border-lavender/60 md:flex"><BookOpen className="size-4" aria-hidden />Docs</Link>
+          <Link href="/docs" prefetch={false} className="hidden h-10 items-center gap-2 rounded-lg border border-border bg-surface-2/70 px-3.5 text-sm font-medium transition hover:-translate-y-px hover:border-lavender/60 md:flex"><BookOpen className="size-4" aria-hidden />Docs</Link>
         </Tooltip>
         <NotificationBell demo={user.demo} />
         <ThemeToggle />
@@ -94,7 +94,7 @@ export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<Sessio
           {menu && (
             <div role="menu" className="card pop-in absolute right-0 mt-2 w-56 overflow-hidden p-1.5 text-sm shadow-xl">
               <div className="border-b border-border/70 px-3 py-2"><p className="truncate font-bold">{user.name}</p><p className="text-xs text-muted">{user.plan}</p></div>
-              <Link role="menuitem" href="/settings/profile" onClick={() => setMenu(false)} className="mt-1 flex items-center gap-2 rounded-lg px-3 py-2 transition hover:bg-primary/10"><User className="size-4" aria-hidden />Profile</Link>
+              <Link role="menuitem" href="/settings/profile" prefetch={false} onClick={() => setMenu(false)} className="mt-1 flex items-center gap-2 rounded-lg px-3 py-2 transition hover:bg-primary/10"><User className="size-4" aria-hidden />Profile</Link>
               <button type="button" role="menuitem" onClick={handleSignOut} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-bad transition hover:bg-danger/10"><LogOut className="size-4" aria-hidden />Sign out</button>
             </div>
           )}

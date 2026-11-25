@@ -21,6 +21,24 @@ export function ActivityBars({ data }: { data: { day: string; messages: number; 
   );
 }
 
+export function StatusBars({ data }: { data: { day: string; succeeded: number; failed: number }[] }) {
+  return (
+    <div style={{ height: 220 }} role="img" aria-label="Succeeded and failed runs per day" className="text-muted">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+          <CartesianGrid stroke="currentColor" strokeOpacity={0.18} vertical={false} />
+          <XAxis dataKey="day" tick={axisTick} axisLine={false} tickLine={false} />
+          <YAxis tick={axisTick} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: "currentColor", fillOpacity: 0.08 }} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="succeeded" name="Succeeded" stackId="s" fill="#22C55E" />
+          <Bar dataKey="failed" name="Failed" stackId="s" fill="#EF4444" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export function SuccessDonut({ success, failed }: { success: number; failed: number }) {
   const total = success + failed;
   const pct = total ? (success / total) * 100 : 0;

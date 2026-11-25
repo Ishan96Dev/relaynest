@@ -20,7 +20,17 @@ const nextConfig: NextConfig = {
   // The server code lives in /backend, outside this app directory. Point tracing and Turbopack at the repo root.
   outputFileTracingRoot: repoRoot,
   turbopack: { root: repoRoot },
-  images: { formats: ["image/webp"], minimumCacheTTL: 60 * 60 * 24 * 30 },
+  // Cloudflare Workers serves static assets from the edge CDN directly without a Workers Images binding;
+  // disabling Next.js runtime /_next/image proxying avoids waking the Worker isolate on every image request.
+  images: {
+    unoptimized: Boolean(
+      process.env.WORKERS_CI ||
+        process.env.CF_PAGES ||
+        process.env.RELAYNEST_DEPLOY_TARGET === "cloudflare",
+    ),
+    formats: ["image/webp"],
+    minimumCacheTTL: 60 * 60 * 24 * 30,
+  },
   experimental: {
     optimizePackageImports: ["lucide-react", "recharts", "@xyflow/react"],
     // Keep visited dynamic pages in the client router cache for 30 s, so going back to a page is instant.

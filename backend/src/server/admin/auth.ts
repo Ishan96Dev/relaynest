@@ -22,20 +22,23 @@ export function envAdminPassword(): string | undefined {
 }
 
 /** PBKDF2-SHA256 password hashing (100,000 iterations, WebCrypto compatible on Node and Cloudflare Workers). */
-export async function hashAdminPassword(password: string, saltHex?: string): Promise<string> {
+export async function hashAdminPassword(password: string, saltHex?: string, iterations = 100_000): Promise<string> {
+  const safeIterations = Math.min(Math.max(Math.trunc(iterations), 10_000), 100_000);
   const salt = saltHex
     ? Uint8Array.from((saltHex.match(/.{2}/g) ?? []).map((b) => Number.parseInt(b, 16)))
     : crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 100_000 }, key, 256));
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: safeIterations }, key, 256));
   const toHex = (u: Uint8Array) => Array.from(u, (b) => b.toString(16).padStart(2, "0")).join("");
-  return `pbkdf2$100000$${toHex(salt)}$${toHex(bits)}`;
+  return `pbkdf2$${safeIterations}$${toHex(salt)}$${toHex(bits)}`;
 }
 
 async function verifyPasswordHash(password: string, stored: string): Promise<boolean> {
   const parts = stored.split("$");
   if (parts.length !== 4 || parts[0] !== "pbkdf2") return false;
-  const candidate = await hashAdminPassword(password, parts[2]);
+  const iterations = Number.parseInt(parts[1] ?? "100000", 10);
+  if (!Number.isFinite(iterations) || iterations < 10_000 || iterations > 100_000) return false;
+  const candidate = await hashAdminPassword(password, parts[2], iterations);
   return safeEqual(candidate, stored);
 }
 

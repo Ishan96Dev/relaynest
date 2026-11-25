@@ -35,6 +35,22 @@ export interface AuditMovement {
   detail: string;
 }
 
+export interface AdminAuditTotals {
+  users: number;
+  workspaces: number;
+  bots: number;
+  aiAgents: number;
+  apiKeys: number;
+  integrations: number;
+  securityAlerts: number;
+}
+
+export interface AdminAuditData {
+  totals: AdminAuditTotals;
+  users: AdminUserRecord[];
+  movements: AuditMovement[];
+}
+
 export interface AdminKeyInventoryItem {
   id: string;
   name: string;
@@ -76,49 +92,79 @@ export interface AdminSecurityWarningItem {
   actor?: string;
 }
 
-export async function getAdminAuditData() {
-  const db = createAdminClient();
-  const [
-    usersRes, profilesRes, membersRes, wsRes, subsRes, botsRes, agentsRes,
-    logsRes, execRes, payRes, aiRes, notifRes, auditRes, apiKeysRes, intRes, apiLogsRes,
-  ] = await Promise.all([
-    db.auth.admin.listUsers({ perPage: 200 }),
-    db.from("profiles").select("id, full_name"),
-    db.from("workspace_members").select("workspace_id, user_id, role"),
-    db.from("workspaces").select("id, name, created_by"),
-    db.from("subscriptions").select("workspace_id, plan, status"),
-    db.from("bots").select("id, workspace_id, name, telegram_username, status"),
-    db.from("ai_agents").select("id, workspace_id, name, username, status"),
-    db.from("activity_logs").select("id, workspace_id, actor_id, action, detail, created_at").order("created_at", { ascending: false }).limit(120),
-    db.from("executions").select("id, workspace_id, trigger_type, status, duration_ms, started_at").order("started_at", { ascending: false }).limit(60),
-    db.from("payments").select("id, workspace_id, plan, amount, currency, status, method, created_at").order("created_at", { ascending: false }).limit(40),
-    db.from("ai_usage_events").select("id, workspace_id, user_id, source, model_slug, origin, total_tokens, cost_usd, created_at").order("created_at", { ascending: false }).limit(60),
-    db.from("notifications").select("id, workspace_id, user_id, kind, title, created_at").order("created_at", { ascending: false }).limit(60),
-    db.from("user_audit_logs").select("id, user_id, user_email, workspace_id, event, page_path, detail, ip, created_at").order("created_at", { ascending: false }).limit(150),
-    db.from("api_keys").select("id, workspace_id, name, key_prefix, status, request_count, created_at").order("created_at", { ascending: false }).limit(100),
-    db.from("integrations").select("id, workspace_id, provider, name, status, last_status, last_error, created_at").order("created_at", { ascending: false }).limit(100),
-    db.from("api_request_logs").select("id, workspace_id, method, path, status_code, latency_ms, created_at").order("created_at", { ascending: false }).limit(60),
-  ]);
+const ADMIN_CACHE_TTL_MS = 15_000;
+const adminCache = new Map<string, { at: number; value: unknown }>();
 
-  const users = usersRes.data?.users ?? [];
-  const profiles = new Map((profilesRes.data ?? []).map((p) => [p.id as string, (p.full_name as string | null) ?? ""]));
-  const workspaces = new Map((wsRes.data ?? []).map((w) => [w.id as string, (w.name as string) ?? "Workspace"]));
-  const subs = new Map((subsRes.data ?? []).map((s) => [s.workspace_id as string, String(s.plan)]));
+async function cachedAdmin<T>(key: string, fresh: boolean, loader: () => Promise<T>): Promise<T> {
+  if (!fresh) {
+    const hit = adminCache.get(key);
+    if (hit && Date.now() - hit.at < ADMIN_CACHE_TTL_MS) return hit.value as T;
+  }
+  const value = await loader();
+  adminCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+/**
+ * Executes async query factories with bounded concurrency (default 4) so Cloudflare Workers
+ * never exceed their 6-simultaneous-outgoing-connection runtime cap or spike isolate CPU.
+ */
+async function runBatched<T>(tasks: Array<() => Promise<T>>, concurrency = 4): Promise<T[]> {
+  const results = new Array<T>(tasks.length);
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const idx = cursor++;
+      if (idx >= tasks.length) return;
+      results[idx] = await tasks[idx]!();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+  return results;
+}
+
+function buildUserRecords(
+  users: Array<{
+    id: string;
+    email?: string;
+    created_at: string;
+    last_sign_in_at?: string | null;
+    user_metadata?: Record<string, unknown>;
+    app_metadata?: Record<string, unknown>;
+  }>,
+  profilesRows: Array<Record<string, unknown>>,
+  membersRows: Array<Record<string, unknown>>,
+  workspacesRows: Array<Record<string, unknown>>,
+  subsRows: Array<Record<string, unknown>>,
+  botsRows: Array<Record<string, unknown>>,
+  agentsRows: Array<Record<string, unknown>>,
+  apiKeysRows: Array<Record<string, unknown>>,
+  intRows: Array<Record<string, unknown>>,
+): {
+  userRecords: AdminUserRecord[];
+  workspaces: Map<string, string>;
+  userEmail: Map<string, string>;
+} {
+  const profiles = new Map(profilesRows.map((p) => [p.id as string, (p.full_name as string | null) ?? ""]));
+  const workspaces = new Map(workspacesRows.map((w) => [w.id as string, (w.name as string) ?? "Workspace"]));
+  const subs = new Map(subsRows.map((s) => [s.workspace_id as string, String(s.plan)]));
   const userEmail = new Map(users.map((u) => [u.id, u.email ?? u.id]));
 
   const memberByUser = new Map<string, { workspaceId: string; role: string }>();
-  for (const m of membersRes.data ?? []) {
-    if (!memberByUser.has(m.user_id as string)) memberByUser.set(m.user_id as string, { workspaceId: m.workspace_id as string, role: m.role as string });
+  for (const m of membersRows) {
+    if (!memberByUser.has(m.user_id as string)) {
+      memberByUser.set(m.user_id as string, { workspaceId: m.workspace_id as string, role: m.role as string });
+    }
   }
 
   const botsByWs = new Map<string, number>();
-  for (const b of botsRes.data ?? []) botsByWs.set(b.workspace_id as string, (botsByWs.get(b.workspace_id as string) ?? 0) + 1);
+  for (const b of botsRows) botsByWs.set(b.workspace_id as string, (botsByWs.get(b.workspace_id as string) ?? 0) + 1);
   const agentsByWs = new Map<string, number>();
-  for (const a of agentsRes.data ?? []) agentsByWs.set(a.workspace_id as string, (agentsByWs.get(a.workspace_id as string) ?? 0) + 1);
+  for (const a of agentsRows) agentsByWs.set(a.workspace_id as string, (agentsByWs.get(a.workspace_id as string) ?? 0) + 1);
   const keysByWs = new Map<string, number>();
-  for (const k of apiKeysRes.data ?? []) keysByWs.set(k.workspace_id as string, (keysByWs.get(k.workspace_id as string) ?? 0) + 1);
+  for (const k of apiKeysRows) keysByWs.set(k.workspace_id as string, (keysByWs.get(k.workspace_id as string) ?? 0) + 1);
   const intByWs = new Map<string, number>();
-  for (const i of intRes.data ?? []) intByWs.set(i.workspace_id as string, (intByWs.get(i.workspace_id as string) ?? 0) + 1);
+  for (const i of intRows) intByWs.set(i.workspace_id as string, (intByWs.get(i.workspace_id as string) ?? 0) + 1);
 
   const userRecords: AdminUserRecord[] = users.map((u) => {
     const m = memberByUser.get(u.id);
@@ -140,92 +186,294 @@ export async function getAdminAuditData() {
     };
   });
 
-  const movements: AuditMovement[] = [
-    ...(auditRes.data ?? []).map((u) => {
-      const ev = String(u.event);
-      return {
-        id: `aud-${u.id}`,
-        ts: u.created_at as string,
-        category: (ev.startsWith("security.") ? "security" : "user_event") as AuditMovement["category"],
-        actor: (u.user_email as string | null) ?? (u.user_id ? userEmail.get(u.user_id as string) ?? String(u.user_id) : "anon"),
-        workspace: u.workspace_id ? workspaces.get(u.workspace_id as string) ?? "-" : "-",
-        action: ev,
-        detail: [u.page_path, u.detail, u.ip ? `ip:${u.ip}` : null].filter(Boolean).join(" · "),
-      };
-    }),
-    ...(logsRes.data ?? []).map((l) => {
-      const act = String(l.action);
-      const cat: AuditMovement["category"] = act.startsWith("api_key.") ? "api_key" : act.startsWith("integration.") || act.startsWith("webhook.") ? "integration" : "activity";
-      return {
-        id: `act-${l.id}`,
-        ts: l.created_at as string,
-        category: cat,
-        actor: l.actor_id ? userEmail.get(l.actor_id as string) ?? String(l.actor_id) : "system",
-        workspace: workspaces.get(l.workspace_id as string) ?? "-",
-        action: act,
-        detail: String(l.detail ?? ""),
-      };
-    }),
-    ...(apiLogsRes.data ?? []).map((r) => ({
-      id: `apilog-${r.id}`,
-      ts: r.created_at as string,
-      category: "api_key" as const,
-      actor: "API Key Bearer",
-      workspace: workspaces.get(r.workspace_id as string) ?? "-",
-      action: `${r.method} ${r.path}`,
-      detail: `HTTP ${r.status_code} · ${r.latency_ms ?? 0}ms`,
-    })),
-    ...(execRes.data ?? []).map((e) => ({
-      id: `ex-${e.id}`,
-      ts: e.started_at as string,
-      category: "execution" as const,
-      actor: "bot/workflow",
-      workspace: workspaces.get(e.workspace_id as string) ?? "-",
-      action: `execution.${e.status}`,
-      detail: `${e.trigger_type}${e.duration_ms ? ` (${e.duration_ms} ms)` : ""}`,
-    })),
-    ...(payRes.data ?? []).map((p) => ({
-      id: `pay-${p.id}`,
-      ts: p.created_at as string,
-      category: "payment" as const,
-      actor: "billing",
-      workspace: workspaces.get(p.workspace_id as string) ?? "-",
-      action: `payment.${p.status}`,
-      detail: `${p.plan} · ${Number(p.amount) / 100} ${p.currency} (${p.method ?? "razorpay"})`,
-    })),
-    ...(aiRes.data ?? []).map((a) => ({
-      id: `ai-${a.id}`,
-      ts: a.created_at as string,
-      category: "ai" as const,
-      actor: a.user_id ? userEmail.get(a.user_id as string) ?? "-" : "bot",
-      workspace: workspaces.get(a.workspace_id as string) ?? "-",
-      action: `ai.${a.source}.${a.origin}`,
-      detail: `${a.model_slug} · ${a.total_tokens} tokens`,
-    })),
-    ...(notifRes.data ?? []).map((n) => ({
-      id: `not-${n.id}`,
-      ts: n.created_at as string,
-      category: "notification" as const,
-      actor: n.user_id ? userEmail.get(n.user_id as string) ?? "-" : "workspace",
-      workspace: workspaces.get(n.workspace_id as string) ?? "-",
-      action: `notify.${n.kind}`,
-      detail: String(n.title),
-    })),
-  ].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 200);
+  return { userRecords, workspaces, userEmail };
+}
 
-  return {
-    totals: {
-      users: userRecords.length,
-      workspaces: wsRes.data?.length ?? 0,
-      bots: botsRes.data?.length ?? 0,
-      aiAgents: agentsRes.data?.length ?? 0,
-      apiKeys: apiKeysRes.data?.length ?? 0,
-      integrations: intRes.data?.length ?? 0,
-      securityAlerts: movements.filter((m) => m.category === "security" || m.action.includes("failed") || m.detail.includes("HTTP 4") || m.detail.includes("HTTP 5")).length,
-    },
-    users: userRecords,
-    movements,
-  };
+/**
+ * Lightweight summary loader for `/admin` Overview.
+ * Uses HEAD counts and tight slices instead of scanning 16 tables at once.
+ */
+export async function getAdminOverviewData(fresh = false): Promise<AdminAuditData> {
+  return cachedAdmin("overview", fresh, async () => {
+    const db = createAdminClient();
+    const [
+      usersRes,
+      wsRes,
+      botsRes,
+      agentsRes,
+      apiKeysRes,
+      intRes,
+      profilesRes,
+      membersRes,
+      subsRes,
+      auditRes,
+      logsRes,
+      apiErrRes,
+    ] = await runBatched<unknown>([
+      () => db.auth.admin.listUsers({ page: 1, perPage: 50 }),
+      async () => db.from("workspaces").select("id, name", { count: "exact" }).limit(100),
+      async () => db.from("bots").select("workspace_id", { count: "exact" }).limit(200),
+      async () => db.from("ai_agents").select("workspace_id", { count: "exact" }).limit(200),
+      async () => db.from("api_keys").select("workspace_id", { count: "exact" }).limit(200),
+      async () => db.from("integrations").select("workspace_id", { count: "exact" }).limit(200),
+      async () => db.from("profiles").select("id, full_name").limit(100),
+      async () => db.from("workspace_members").select("workspace_id, user_id, role").limit(150),
+      async () => db.from("subscriptions").select("workspace_id, plan, status").limit(100),
+      async () => db.from("user_audit_logs").select("id, user_id, user_email, workspace_id, event, page_path, detail, ip, created_at").order("created_at", { ascending: false }).limit(25),
+      async () => db.from("activity_logs").select("id, workspace_id, actor_id, action, detail, created_at").order("created_at", { ascending: false }).limit(15),
+      async () => db.from("api_request_logs").select("id, workspace_id, method, path, status_code, latency_ms, created_at").gte("status_code", 400).order("created_at", { ascending: false }).limit(15),
+    ], 4);
+
+    type QRes = { data?: Array<Record<string, unknown>> | null; count?: number | null };
+    const uRes = usersRes as { data?: { users?: Array<{ id: string; email?: string; created_at: string; last_sign_in_at?: string | null; user_metadata?: Record<string, unknown>; app_metadata?: Record<string, unknown> }>; total?: number } };
+    const ws = wsRes as QRes;
+    const bots = botsRes as QRes;
+    const agents = agentsRes as QRes;
+    const apiKeys = apiKeysRes as QRes;
+    const intg = intRes as QRes;
+    const profiles = profilesRes as QRes;
+    const members = membersRes as QRes;
+    const subs = subsRes as QRes;
+    const audit = auditRes as QRes;
+    const logs = logsRes as QRes;
+    const apiErr = apiErrRes as QRes;
+
+    const users = uRes.data?.users ?? [];
+    const { userRecords, workspaces, userEmail } = buildUserRecords(
+      users,
+      profiles.data ?? [],
+      members.data ?? [],
+      ws.data ?? [],
+      subs.data ?? [],
+      bots.data ?? [],
+      agents.data ?? [],
+      apiKeys.data ?? [],
+      intg.data ?? [],
+    );
+
+    const movements: AuditMovement[] = [
+      ...(audit.data ?? []).map((u) => {
+        const ev = String(u.event);
+        return {
+          id: `aud-${u.id}`,
+          ts: u.created_at as string,
+          category: (ev.startsWith("security.") ? "security" : "user_event") as AuditMovement["category"],
+          actor: (u.user_email as string | null) ?? (u.user_id ? userEmail.get(u.user_id as string) ?? String(u.user_id) : "anon"),
+          workspace: u.workspace_id ? workspaces.get(u.workspace_id as string) ?? "-" : "-",
+          action: ev,
+          detail: [u.page_path, u.detail, u.ip ? `ip:${u.ip}` : null].filter(Boolean).join(" · "),
+        };
+      }),
+      ...(logs.data ?? []).map((l) => {
+        const act = String(l.action);
+        const cat: AuditMovement["category"] = act.startsWith("api_key.") ? "api_key" : act.startsWith("integration.") || act.startsWith("webhook.") ? "integration" : "activity";
+        return {
+          id: `act-${l.id}`,
+          ts: l.created_at as string,
+          category: cat,
+          actor: l.actor_id ? userEmail.get(l.actor_id as string) ?? String(l.actor_id) : "system",
+          workspace: workspaces.get(l.workspace_id as string) ?? "-",
+          action: act,
+          detail: String(l.detail ?? ""),
+        };
+      }),
+      ...(apiErr.data ?? []).map((r) => ({
+        id: `apilog-${r.id}`,
+        ts: r.created_at as string,
+        category: "api_key" as const,
+        actor: "API Key Bearer",
+        workspace: workspaces.get(r.workspace_id as string) ?? "-",
+        action: `${r.method} ${r.path}`,
+        detail: `HTTP ${r.status_code} · ${r.latency_ms ?? 0}ms`,
+      })),
+    ].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+
+    const securityAlerts = movements.filter(
+      (m) => m.category === "security" || m.action.includes("failed") || m.detail.includes("HTTP 4") || m.detail.includes("HTTP 5"),
+    ).length;
+
+    return {
+      totals: {
+        users: uRes.data?.total ?? userRecords.length,
+        workspaces: ws.count ?? ws.data?.length ?? 0,
+        bots: bots.count ?? bots.data?.length ?? 0,
+        aiAgents: agents.count ?? agents.data?.length ?? 0,
+        apiKeys: apiKeys.count ?? apiKeys.data?.length ?? 0,
+        integrations: intg.count ?? intg.data?.length ?? 0,
+        securityAlerts,
+      },
+      users: userRecords.slice(0, 8),
+      movements: movements.slice(0, 12),
+    };
+  });
+}
+
+/** Focused user directory loader for `/admin/users` (skips all log/event tables). */
+export async function getAdminUsersData(fresh = false): Promise<{ users: AdminUserRecord[] }> {
+  return cachedAdmin("users", fresh, async () => {
+    const db = createAdminClient();
+    const [usersRes, profilesRes, membersRes, wsRes, subsRes, botsRes, agentsRes, apiKeysRes, intRes] = await runBatched<unknown>([
+      () => db.auth.admin.listUsers({ page: 1, perPage: 150 }),
+      async () => db.from("profiles").select("id, full_name").limit(200),
+      async () => db.from("workspace_members").select("workspace_id, user_id, role").limit(250),
+      async () => db.from("workspaces").select("id, name").limit(200),
+      async () => db.from("subscriptions").select("workspace_id, plan, status").limit(200),
+      async () => db.from("bots").select("workspace_id").limit(300),
+      async () => db.from("ai_agents").select("workspace_id").limit(300),
+      async () => db.from("api_keys").select("workspace_id").limit(300),
+      async () => db.from("integrations").select("workspace_id").limit(300),
+    ], 4);
+
+    type QRes = { data?: Array<Record<string, unknown>> | null };
+    const uRes = usersRes as { data?: { users?: Array<{ id: string; email?: string; created_at: string; last_sign_in_at?: string | null; user_metadata?: Record<string, unknown>; app_metadata?: Record<string, unknown> }> } };
+    const { userRecords } = buildUserRecords(
+      uRes.data?.users ?? [],
+      (profilesRes as QRes).data ?? [],
+      (membersRes as QRes).data ?? [],
+      (wsRes as QRes).data ?? [],
+      (subsRes as QRes).data ?? [],
+      (botsRes as QRes).data ?? [],
+      (agentsRes as QRes).data ?? [],
+      (apiKeysRes as QRes).data ?? [],
+      (intRes as QRes).data ?? [],
+    );
+
+    return { users: userRecords };
+  });
+}
+
+export async function getAdminAuditData(fresh = false): Promise<AdminAuditData> {
+  return cachedAdmin("audit", fresh, async () => {
+    const db = createAdminClient();
+    const [
+      usersRes, profilesRes, membersRes, wsRes, subsRes, botsRes, agentsRes,
+      logsRes, execRes, payRes, aiRes, notifRes, auditRes, apiKeysRes, intRes, apiLogsRes,
+    ] = await runBatched<unknown>([
+      () => db.auth.admin.listUsers({ page: 1, perPage: 120 }),
+      async () => db.from("profiles").select("id, full_name").limit(200),
+      async () => db.from("workspace_members").select("workspace_id, user_id, role").limit(250),
+      async () => db.from("workspaces").select("id, name, created_by").limit(200),
+      async () => db.from("subscriptions").select("workspace_id, plan, status").limit(200),
+      async () => db.from("bots").select("id, workspace_id").limit(300),
+      async () => db.from("ai_agents").select("id, workspace_id").limit(300),
+      async () => db.from("activity_logs").select("id, workspace_id, actor_id, action, detail, created_at").order("created_at", { ascending: false }).limit(60),
+      async () => db.from("executions").select("id, workspace_id, trigger_type, status, duration_ms, started_at").order("started_at", { ascending: false }).limit(35),
+      async () => db.from("payments").select("id, workspace_id, plan, amount, currency, status, method, created_at").order("created_at", { ascending: false }).limit(30),
+      async () => db.from("ai_usage_events").select("id, workspace_id, user_id, source, model_slug, origin, total_tokens, cost_usd, created_at").order("created_at", { ascending: false }).limit(35),
+      async () => db.from("notifications").select("id, workspace_id, user_id, kind, title, created_at").order("created_at", { ascending: false }).limit(35),
+      async () => db.from("user_audit_logs").select("id, user_id, user_email, workspace_id, event, page_path, detail, ip, created_at").order("created_at", { ascending: false }).limit(80),
+      async () => db.from("api_keys").select("id, workspace_id").order("created_at", { ascending: false }).limit(150),
+      async () => db.from("integrations").select("id, workspace_id").order("created_at", { ascending: false }).limit(150),
+      async () => db.from("api_request_logs").select("id, workspace_id, method, path, status_code, latency_ms, created_at").order("created_at", { ascending: false }).limit(35),
+    ], 4);
+
+    type QRes = { data?: Array<Record<string, unknown>> | null };
+    const uRes = usersRes as { data?: { users?: Array<{ id: string; email?: string; created_at: string; last_sign_in_at?: string | null; user_metadata?: Record<string, unknown>; app_metadata?: Record<string, unknown> }> } };
+    const wsData = (wsRes as QRes).data ?? [];
+    const botsData = (botsRes as QRes).data ?? [];
+    const agentsData = (agentsRes as QRes).data ?? [];
+    const apiKeysData = (apiKeysRes as QRes).data ?? [];
+    const intData = (intRes as QRes).data ?? [];
+
+    const { userRecords, workspaces, userEmail } = buildUserRecords(
+      uRes.data?.users ?? [],
+      (profilesRes as QRes).data ?? [],
+      (membersRes as QRes).data ?? [],
+      wsData,
+      (subsRes as QRes).data ?? [],
+      botsData,
+      agentsData,
+      apiKeysData,
+      intData,
+    );
+
+    const movements: AuditMovement[] = [
+      ...((auditRes as QRes).data ?? []).map((u) => {
+        const ev = String(u.event);
+        return {
+          id: `aud-${u.id}`,
+          ts: u.created_at as string,
+          category: (ev.startsWith("security.") ? "security" : "user_event") as AuditMovement["category"],
+          actor: (u.user_email as string | null) ?? (u.user_id ? userEmail.get(u.user_id as string) ?? String(u.user_id) : "anon"),
+          workspace: u.workspace_id ? workspaces.get(u.workspace_id as string) ?? "-" : "-",
+          action: ev,
+          detail: [u.page_path, u.detail, u.ip ? `ip:${u.ip}` : null].filter(Boolean).join(" · "),
+        };
+      }),
+      ...((logsRes as QRes).data ?? []).map((l) => {
+        const act = String(l.action);
+        const cat: AuditMovement["category"] = act.startsWith("api_key.") ? "api_key" : act.startsWith("integration.") || act.startsWith("webhook.") ? "integration" : "activity";
+        return {
+          id: `act-${l.id}`,
+          ts: l.created_at as string,
+          category: cat,
+          actor: l.actor_id ? userEmail.get(l.actor_id as string) ?? String(l.actor_id) : "system",
+          workspace: workspaces.get(l.workspace_id as string) ?? "-",
+          action: act,
+          detail: String(l.detail ?? ""),
+        };
+      }),
+      ...((apiLogsRes as QRes).data ?? []).map((r) => ({
+        id: `apilog-${r.id}`,
+        ts: r.created_at as string,
+        category: "api_key" as const,
+        actor: "API Key Bearer",
+        workspace: workspaces.get(r.workspace_id as string) ?? "-",
+        action: `${r.method} ${r.path}`,
+        detail: `HTTP ${r.status_code} · ${r.latency_ms ?? 0}ms`,
+      })),
+      ...((execRes as QRes).data ?? []).map((e) => ({
+        id: `ex-${e.id}`,
+        ts: e.started_at as string,
+        category: "execution" as const,
+        actor: "bot/workflow",
+        workspace: workspaces.get(e.workspace_id as string) ?? "-",
+        action: `execution.${e.status}`,
+        detail: `${e.trigger_type}${e.duration_ms ? ` (${e.duration_ms} ms)` : ""}`,
+      })),
+      ...((payRes as QRes).data ?? []).map((p) => ({
+        id: `pay-${p.id}`,
+        ts: p.created_at as string,
+        category: "payment" as const,
+        actor: "billing",
+        workspace: workspaces.get(p.workspace_id as string) ?? "-",
+        action: `payment.${p.status}`,
+        detail: `${p.plan} · ${Number(p.amount) / 100} ${p.currency} (${p.method ?? "razorpay"})`,
+      })),
+      ...((aiRes as QRes).data ?? []).map((a) => ({
+        id: `ai-${a.id}`,
+        ts: a.created_at as string,
+        category: "ai" as const,
+        actor: a.user_id ? userEmail.get(a.user_id as string) ?? "-" : "bot",
+        workspace: workspaces.get(a.workspace_id as string) ?? "-",
+        action: `ai.${a.source}.${a.origin}`,
+        detail: `${a.model_slug} · ${a.total_tokens} tokens`,
+      })),
+      ...((notifRes as QRes).data ?? []).map((n) => ({
+        id: `not-${n.id}`,
+        ts: n.created_at as string,
+        category: "notification" as const,
+        actor: n.user_id ? userEmail.get(n.user_id as string) ?? "-" : "workspace",
+        workspace: workspaces.get(n.workspace_id as string) ?? "-",
+        action: `notify.${n.kind}`,
+        detail: String(n.title),
+      })),
+    ].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 150);
+
+    return {
+      totals: {
+        users: userRecords.length,
+        workspaces: wsData.length,
+        bots: botsData.length,
+        aiAgents: agentsData.length,
+        apiKeys: apiKeysData.length,
+        integrations: intData.length,
+        securityAlerts: movements.filter((m) => m.category === "security" || m.action.includes("failed") || m.detail.includes("HTTP 4") || m.detail.includes("HTTP 5")).length,
+      },
+      users: userRecords,
+      movements,
+    };
+  });
 }
 
 export interface ServiceProbe {
@@ -259,64 +507,69 @@ export async function getAdminServicesHealth(): Promise<ServiceProbe[]> {
   const brv = brevoEnv();
   const db = createAdminClient();
 
-  const [auth, database, storage, milvus, nvidia, vercel, telegram, redis, kafka] = await Promise.all([
-    timedProbe(async () => {
+  const [auth, database, storage, milvus, nvidia, vercel, telegram, redis, kafka] = await runBatched<unknown>([
+    () => timedProbe(async () => {
       if (!pub.NEXT_PUBLIC_SUPABASE_URL || !pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) return { ok: false, status: "unconfigured", detail: "Missing NEXT_PUBLIC_SUPABASE_URL" };
-      const res = await fetch(`${pub.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/health`, { headers: { apikey: pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }, signal: AbortSignal.timeout(5000) });
+      const res = await fetch(`${pub.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/health`, { headers: { apikey: pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }, signal: AbortSignal.timeout(3500) });
       return { ok: res.ok, detail: res.ok ? `HTTP ${res.status} · GoTrue healthy` : `HTTP ${res.status}` };
     }),
-    timedProbe(async () => {
+    () => timedProbe(async () => {
       if (!pub.NEXT_PUBLIC_SUPABASE_URL) return { ok: false, status: "unconfigured", detail: "Missing Supabase config" };
       const { count, error } = await db.from("workspaces").select("id", { count: "exact", head: true });
       return error ? { ok: false, detail: error.message } : { ok: true, detail: `Connected · ${count ?? 0} workspaces` };
     }),
-    timedProbe(async () => {
+    () => timedProbe(async () => {
       if (!pub.NEXT_PUBLIC_SUPABASE_URL) return { ok: false, status: "unconfigured", detail: "Missing Supabase config" };
       const { data, error } = await db.storage.listBuckets();
       return error ? { ok: false, detail: error.message } : { ok: true, detail: `${data?.length ?? 0} buckets (${(data ?? []).map((b) => b.name).join(", ")})` };
     }),
-    timedProbe(async () => {
+    () => timedProbe(async () => {
       if (!vec) return { ok: false, status: "unconfigured", detail: "Keyword fallback active (set MILVUS_URI for vector search)" };
       const headers: Record<string, string> = { accept: "application/json" };
       if (vec.token) headers.authorization = `Bearer ${vec.token}`;
       const res = await fetch(`${vec.uri}/v2/vectordb/collections/list`, {
-        method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(vec.dbName ? { dbName: vec.dbName } : {}), signal: AbortSignal.timeout(5000),
+        method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(vec.dbName ? { dbName: vec.dbName } : {}), signal: AbortSignal.timeout(3500),
       }).catch(() => null);
       if (!res) return { ok: false, detail: `Unreachable at ${vec.uri}` };
       return { ok: res.ok, detail: res.ok ? `Reachable · collection ${vec.collection}` : `HTTP ${res.status}` };
     }),
-    timedProbe(async () => {
+    () => timedProbe(async () => {
       if (!keys.nvidia) return { ok: false, status: "unconfigured", detail: "NVIDIA_API_KEY not set" };
-      const res = await fetch("https://integrate.api.nvidia.com/v1/models", { headers: { authorization: `Bearer ${keys.nvidia}` }, signal: AbortSignal.timeout(6000) });
+      const res = await fetch("https://integrate.api.nvidia.com/v1/models", { headers: { authorization: `Bearer ${keys.nvidia}` }, signal: AbortSignal.timeout(4000) });
       return { ok: res.ok, detail: res.ok ? "API key valid · integrate.api.nvidia.com reachable" : `Rejected (HTTP ${res.status})` };
     }),
-    timedProbe(async () => {
+    () => timedProbe(async () => {
       if (!keys.gateway) return { ok: false, status: "unconfigured", detail: "AI_GATEWAY_API_KEY not set" };
-      const res = await fetch("https://ai-gateway.vercel.sh/v1/credits", { headers: { authorization: `Bearer ${keys.gateway}` }, signal: AbortSignal.timeout(6000) });
+      const res = await fetch("https://ai-gateway.vercel.sh/v1/credits", { headers: { authorization: `Bearer ${keys.gateway}` }, signal: AbortSignal.timeout(4000) });
       if (!res.ok) return { ok: false, detail: `Rejected (HTTP ${res.status})` };
       const j = (await res.json()) as { balance?: string; total_used?: string };
       return { ok: true, detail: `Balance $${Number(j.balance ?? 0).toFixed(2)} · Used $${Number(j.total_used ?? 0).toFixed(2)}` };
     }),
-    timedProbe(async () => {
-      const res = await fetch(`${srv.TELEGRAM_API_BASE_URL}/`, { signal: AbortSignal.timeout(5000) });
+    () => timedProbe(async () => {
+      const res = await fetch(`${srv.TELEGRAM_API_BASE_URL}/`, { signal: AbortSignal.timeout(3500) });
       return { ok: res.status > 0 && res.status < 500, detail: `Reachable (${srv.TELEGRAM_API_BASE_URL})` };
     }),
-    redisPing(),
-    kafkaPing(),
-  ]);
+    () => redisPing(),
+    () => kafkaPing(),
+  ], 4);
+
+  type ProbeRes = { status: "up" | "down" | "unconfigured"; latencyMs: number; detail: string };
+  type PingRes = { ok: boolean; detail: string; latencyMs: number };
+  const redisRes = redis as PingRes;
+  const kafkaRes = kafka as PingRes;
 
   const probes: ServiceProbe[] = [
     { id: "frontend", name: "Frontend (Next.js App)", group: "core", status: "up", latencyMs: 1, detail: `Serving at ${pub.NEXT_PUBLIC_APP_URL}` },
     { id: "backend", name: "Backend API & Scheduler", group: "core", status: srv.ENCRYPTION_KEY ? "up" : "down", latencyMs: 1, detail: `Encryption ${srv.ENCRYPTION_KEY ? "ready" : "missing"} · Cron ${cronSecret() ? "protected" : "unset"}` },
-    { id: "supabase_auth", name: "Supabase Auth", group: "database", ...auth, keyMask: mask(pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) },
-    { id: "supabase_db", name: "Supabase PostgreSQL DB", group: "database", ...database, keyMask: mask(srv.SUPABASE_SECRET_KEY) },
-    { id: "supabase_storage", name: "Supabase Storage", group: "database", ...storage },
-    { id: "milvus", name: "Milvus / Zilliz Vector DB", group: "database", ...milvus, keyMask: mask(vec?.token) },
-    { id: "redis", name: "Redis Cache & Rate Limit", group: "database", status: redis.ok ? "up" : redis.detail.includes("In-memory") ? "unconfigured" : "down", latencyMs: redis.latencyMs, detail: redis.detail },
-    { id: "kafka", name: "Kafka Event Bus", group: "database", status: kafka.ok ? "up" : kafka.detail.includes("Not set") ? "unconfigured" : "down", latencyMs: kafka.latencyMs, detail: kafka.detail },
-    { id: "nvidia", name: "NVIDIA Build API", group: "ai", ...nvidia, keyMask: mask(keys.nvidia) },
-    { id: "vercel_gateway", name: "Vercel AI Gateway", group: "ai", ...vercel, keyMask: mask(keys.gateway) },
-    { id: "telegram", name: "Telegram Bot API", group: "integrations", ...telegram },
+    { id: "supabase_auth", name: "Supabase Auth", group: "database", ...(auth as ProbeRes), keyMask: mask(pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) },
+    { id: "supabase_db", name: "Supabase PostgreSQL DB", group: "database", ...(database as ProbeRes), keyMask: mask(srv.SUPABASE_SECRET_KEY) },
+    { id: "supabase_storage", name: "Supabase Storage", group: "database", ...(storage as ProbeRes) },
+    { id: "milvus", name: "Milvus / Zilliz Vector DB", group: "database", ...(milvus as ProbeRes), keyMask: mask(vec?.token) },
+    { id: "redis", name: "Redis Cache & Rate Limit", group: "database", status: redisRes.ok ? "up" : redisRes.detail.includes("In-memory") ? "unconfigured" : "down", latencyMs: redisRes.latencyMs, detail: redisRes.detail },
+    { id: "kafka", name: "Kafka Event Bus", group: "database", status: kafkaRes.ok ? "up" : kafkaRes.detail.includes("Not set") ? "unconfigured" : "down", latencyMs: kafkaRes.latencyMs, detail: kafkaRes.detail },
+    { id: "nvidia", name: "NVIDIA Build API", group: "ai", ...(nvidia as ProbeRes), keyMask: mask(keys.nvidia) },
+    { id: "vercel_gateway", name: "Vercel AI Gateway", group: "ai", ...(vercel as ProbeRes), keyMask: mask(keys.gateway) },
+    { id: "telegram", name: "Telegram Bot API", group: "integrations", ...(telegram as ProbeRes) },
     { id: "razorpay", name: "Razorpay Billing", group: "integrations", status: rzp.keyId && rzp.keySecret ? "up" : "unconfigured", latencyMs: null, detail: rzp.keyId ? `Mode: ${rzp.keyId.startsWith("rzp_live_") ? "Live" : "Test"} · Webhook ${rzp.webhookSecret ? "signed" : "missing"}` : "RAZORPAY_KEY_ID not set", keyMask: mask(rzp.keyId) },
     { id: "brevo", name: "Brevo Email API", group: "integrations", status: brv.apiKey && brv.fromAddress ? "up" : "unconfigured", latencyMs: null, detail: brv.apiKey ? `Sender: ${brv.fromAddress ?? "missing"}` : "BREVO_API_KEY not set", keyMask: mask(brv.apiKey) },
     { id: "ga4", name: "Google Analytics 4", group: "integrations", status: process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID ? "up" : "unconfigured", latencyMs: null, detail: process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || "NEXT_PUBLIC_GA_MEASUREMENT_ID not set" },
@@ -330,8 +583,8 @@ export async function getAdminLogsData(section: string = "all", level: string = 
   const live = getConsoleLogs(section, level);
   const db = createAdminClient();
   const [aiRes, actRes, kbRes] = await Promise.all([
-    db.from("ai_usage_events").select("id, source, model_slug, origin, total_tokens, latency_ms, cost_usd, created_at").order("created_at", { ascending: false }).limit(40),
-    db.from("activity_logs").select("id, action, detail, created_at").order("created_at", { ascending: false }).limit(40),
+    db.from("ai_usage_events").select("id, source, model_slug, origin, total_tokens, latency_ms, cost_usd, created_at").order("created_at", { ascending: false }).limit(35),
+    db.from("activity_logs").select("id, action, detail, created_at").order("created_at", { ascending: false }).limit(35),
     db.from("kb_documents").select("id, name, status, chunk_count, error_message, updated_at").order("updated_at", { ascending: false }).limit(25),
   ]);
 
@@ -360,7 +613,7 @@ export async function getAdminLogsData(section: string = "all", level: string = 
     })),
   ].filter((e) => (section === "all" || e.section === section) && (level === "all" || e.level === level));
 
-  const merged = [...live, ...persisted].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 250);
+  const merged = [...live, ...persisted].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)).slice(0, 200);
   return { entries: merged };
 }
 
@@ -387,9 +640,9 @@ export async function getAdminKeysData() {
   ];
 
   const [wsRes, apiKeysRes, apiLogsRes] = await Promise.all([
-    db.from("workspaces").select("id, name"),
-    db.from("api_keys").select("id, workspace_id, name, key_prefix, environment, scopes, status, request_count, last_used_at, expires_at, created_at").order("created_at", { ascending: false }).limit(150),
-    db.from("api_request_logs").select("id, workspace_id, method, path, status_code, latency_ms, created_at").order("created_at", { ascending: false }).limit(50),
+    db.from("workspaces").select("id, name").limit(200),
+    db.from("api_keys").select("id, workspace_id, name, key_prefix, environment, scopes, status, request_count, last_used_at, expires_at, created_at").order("created_at", { ascending: false }).limit(100),
+    db.from("api_request_logs").select("id, workspace_id, method, path, status_code, latency_ms, created_at").order("created_at", { ascending: false }).limit(40),
   ]);
 
   const wsMap = new Map((wsRes.data ?? []).map((w) => [w.id as string, (w.name as string) ?? "Workspace"]));
@@ -422,13 +675,15 @@ export async function getAdminKeysData() {
 
 export async function getAdminSecurityWarningsData() {
   const db = createAdminClient();
-  const [auditRes, apiLogsRes, intErrRes, botHistRes, apiKeyRes] = await Promise.all([
-    db.from("user_audit_logs").select("id, user_email, event, page_path, detail, ip, created_at").order("created_at", { ascending: false }).limit(100),
-    db.from("api_request_logs").select("id, workspace_id, method, path, status_code, created_at").gte("status_code", 400).order("created_at", { ascending: false }).limit(50),
-    db.from("integrations").select("id, name, provider, last_error, last_tested_at").not("last_error", "is", null).order("last_tested_at", { ascending: false }).limit(30),
-    db.from("bot_history").select("id, bot_name, telegram_username, event, occurred_at").eq("event", "deleted_on_telegram").order("occurred_at", { ascending: false }).limit(30),
-    db.from("api_keys").select("id, name, key_prefix, status, revoked_at").eq("status", "revoked").order("revoked_at", { ascending: false }).limit(30),
-  ]);
+  const [auditRes, apiLogsRes, intErrRes, botHistRes, apiKeyRes] = await runBatched<unknown>([
+    async () => db.from("user_audit_logs").select("id, user_email, event, page_path, detail, ip, created_at").like("event", "security.%").order("created_at", { ascending: false }).limit(80),
+    async () => db.from("api_request_logs").select("id, workspace_id, method, path, status_code, created_at").gte("status_code", 400).order("created_at", { ascending: false }).limit(40),
+    async () => db.from("integrations").select("id, name, provider, last_error, last_tested_at").not("last_error", "is", null).order("last_tested_at", { ascending: false }).limit(25),
+    async () => db.from("bot_history").select("id, bot_name, telegram_username, event, occurred_at").eq("event", "deleted_on_telegram").order("occurred_at", { ascending: false }).limit(25),
+    async () => db.from("api_keys").select("id, name, key_prefix, status, revoked_at").eq("status", "revoked").order("revoked_at", { ascending: false }).limit(25),
+  ], 4);
+
+  type QRes = { data?: Array<Record<string, unknown>> | null };
 
   const controls: AdminSecurityControl[] = [
     { id: "csp_hsts", title: "Strict CSP, HSTS Preload & Frame Denial", category: "Transport & XSS", status: "enforced", detail: "X-Frame-Options DENY, object-src 'none', HSTS 1yr, no-store on /admin & /api." },
@@ -441,7 +696,7 @@ export async function getAdminSecurityWarningsData() {
 
   const warnings: AdminSecurityWarningItem[] = [];
 
-  for (const r of auditRes.data ?? []) {
+  for (const r of (auditRes as QRes).data ?? []) {
     const ev = String(r.event);
     if (ev.startsWith("security.")) {
       warnings.push({
@@ -456,7 +711,7 @@ export async function getAdminSecurityWarningsData() {
     }
   }
 
-  for (const log of apiLogsRes.data ?? []) {
+  for (const log of (apiLogsRes as QRes).data ?? []) {
     const code = Number(log.status_code);
     warnings.push({
       id: `apifail-${log.id}`,
@@ -468,7 +723,7 @@ export async function getAdminSecurityWarningsData() {
     });
   }
 
-  for (const errInt of intErrRes.data ?? []) {
+  for (const errInt of (intErrRes as QRes).data ?? []) {
     warnings.push({
       id: `int-${errInt.id}`,
       ts: (errInt.last_tested_at as string | null) ?? new Date().toISOString(),
@@ -479,7 +734,7 @@ export async function getAdminSecurityWarningsData() {
     });
   }
 
-  for (const bh of botHistRes.data ?? []) {
+  for (const bh of (botHistRes as QRes).data ?? []) {
     warnings.push({
       id: `tgdel-${bh.id}`,
       ts: bh.occurred_at as string,
@@ -490,7 +745,7 @@ export async function getAdminSecurityWarningsData() {
     });
   }
 
-  for (const k of apiKeyRes.data ?? []) {
+  for (const k of (apiKeyRes as QRes).data ?? []) {
     warnings.push({
       id: `rev-${k.id}`,
       ts: (k.revoked_at as string | null) ?? new Date().toISOString(),

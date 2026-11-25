@@ -19,7 +19,7 @@ export function AppFooter() {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="font-semibold text-foreground/90">RelayNest {APP_VERSION_TAG}</span>
           <span aria-hidden className="text-border">|</span>
-          <Link href="/docs" className="transition hover:text-lavender">Documentation</Link>
+          <Link href="/docs" prefetch={false} className="transition hover:text-lavender">Documentation</Link>
         </div>
 
         <span className="flex items-center gap-1.5 font-medium text-foreground/85">
@@ -33,7 +33,7 @@ export function AppFooter() {
         {LEGAL_STRIP_LINKS.map((item, idx) => (
           <span key={item.href} className="inline-flex items-center gap-2.5">
             {idx > 0 && <span aria-hidden className="text-border">|</span>}
-            <Link href={item.href} className="transition hover:text-lavender hover:underline">
+            <Link href={item.href} prefetch={false} className="transition hover:text-lavender hover:underline">
               {item.label}
             </Link>
           </span>

@@ -1,33 +1,13 @@
 "use client";
 
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Bot, CheckCircle2, Gauge, Layers, XCircle } from "lucide-react";
 import Link from "next/link";
 import type { AnalyticsData } from "@backend/server/services/workspace-data";
-import { SuccessDonut, TrendChart } from "@/components/charts/lazy-charts";
-import { axisTick, chartTooltipStyle } from "@/components/charts/trend-chart";
+import { StatusBars, SuccessDonut, TrendChart } from "@/components/charts/lazy-charts";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { InfoTip } from "@/components/ui/tooltip";
-
-function StatusBars({ data }: { data: { day: string; succeeded: number; failed: number }[] }) {
-  return (
-    <div style={{ height: 220 }} role="img" aria-label="Succeeded and failed runs per day" className="text-muted">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
-          <CartesianGrid stroke="currentColor" strokeOpacity={0.18} vertical={false} />
-          <XAxis dataKey="day" tick={axisTick} axisLine={false} tickLine={false} />
-          <YAxis tick={axisTick} axisLine={false} tickLine={false} />
-          <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: "currentColor", fillOpacity: 0.08 }} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="succeeded" name="Succeeded" stackId="s" fill="#22C55E" />
-          <Bar dataKey="failed" name="Failed" stackId="s" fill="#EF4444" radius={[4, 4, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
 
 export function LiveAnalytics({ a }: { a: AnalyticsData }) {
   const rate = a.total ? Math.round((a.succeeded / a.total) * 100) : 0;

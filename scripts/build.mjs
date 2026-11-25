@@ -16,10 +16,14 @@ console.log(
   `[build] Target: ${useCloudflare ? "Cloudflare Workers (@opennextjs/cloudflare)" : "Next.js (frontend)"}`,
 );
 
+const buildEnv = useCloudflare
+  ? { ...process.env, RELAYNEST_DEPLOY_TARGET: "cloudflare" }
+  : process.env;
+
 const res = spawnSync("pnpm", cmdArgs, {
   stdio: "inherit",
   shell: process.platform === "win32",
-  env: process.env,
+  env: buildEnv,
 });
 
 process.exit(res.status ?? 1);

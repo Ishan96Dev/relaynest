@@ -102,7 +102,7 @@ export function NotificationBell({ demo }: { demo: boolean }) {
                 );
               })}
           </ul>
-          <Link href="/settings/notifications" onClick={() => setOpen(false)} className="block border-t border-border/70 px-4 py-2.5 text-center text-xs font-semibold text-lavender hover:bg-foreground/5">Notification settings</Link>
+          <Link href="/settings/notifications" prefetch={false} onClick={() => setOpen(false)} className="block border-t border-border/70 px-4 py-2.5 text-center text-xs font-semibold text-lavender hover:bg-foreground/5">Notification settings</Link>
         </div>
       )}
     </div>

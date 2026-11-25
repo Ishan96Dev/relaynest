@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCw, Search, Trash2 } from "lucide-react";
+import { AlertCircle, RefreshCw, Search, Trash2 } from "lucide-react";
 import * as React from "react";
 import type { ConsoleLogEntry } from "@backend/server/logger";
 import { Badge } from "@/components/ui/badge";
@@ -22,25 +22,30 @@ const SECTIONS = [
   ["queue", "Kafka & Redis"],
 ] as const;
 
-export function AdminLogsView({ initial }: { initial: ConsoleLogEntry[] }) {
-  const [entries, setEntries] = React.useState(initial);
+export function AdminLogsView({ initial }: { initial?: ConsoleLogEntry[] }) {
+  const [entries, setEntries] = React.useState<ConsoleLogEntry[]>(initial ?? []);
+  const [loading, setLoading] = React.useState(!initial);
   const [section, setSection] = React.useState<string>("all");
   const [level, setLevel] = React.useState<string>("all");
   const [q, setQ] = React.useState("");
-  const [auto, setAuto] = React.useState(true);
+  const [auto, setAuto] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string>();
 
   const load = React.useCallback(async () => {
     setBusy(true);
+    setError(undefined);
     const r = await api<{ entries: ConsoleLogEntry[] }>(`/api/admin/logs?section=${section}&level=${level}`);
     setBusy(false);
+    setLoading(false);
     if (r.ok) setEntries(r.data.entries);
+    else setError(r.message);
   }, [section, level]);
 
   React.useEffect(() => { void load(); }, [load]);
   React.useEffect(() => {
     if (!auto) return;
-    const t = setInterval(() => void load(), 5000);
+    const t = setInterval(() => void load(), 10_000);
     return () => clearInterval(t);
   }, [auto, load]);
 
@@ -60,7 +65,7 @@ export function AdminLogsView({ initial }: { initial: ConsoleLogEntry[] }) {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant={auto ? "primary" : "outline"} size="sm" onClick={() => setAuto((a) => !a)}>
-            {auto ? "Live (5s)" : "Paused"}
+            {auto ? "Live (10s)" : "Auto-Refresh Off"}
           </Button>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={busy}>
             <RefreshCw className={busy ? "size-3.5 animate-spin" : "size-3.5"} />Refresh
@@ -70,6 +75,13 @@ export function AdminLogsView({ initial }: { initial: ConsoleLogEntry[] }) {
           </Button>
         </div>
       </div>
+
+      {error && (
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-bad">
+          <span className="flex items-center gap-2"><AlertCircle className="size-4 shrink-0" aria-hidden />{error}</span>
+          <Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-1.5 rounded-xl border border-border bg-surface p-1.5">
         {SECTIONS.map(([id, label]) => (
@@ -92,7 +104,9 @@ export function AdminLogsView({ initial }: { initial: ConsoleLogEntry[] }) {
 
       <Card className="overflow-hidden">
         <div className="max-h-[640px] divide-y divide-border/50 overflow-y-auto font-mono text-xs">
-          {shown.length === 0 ? (
+          {loading ? (
+            <p className="p-8 text-center font-sans text-sm text-muted">Loading console logs...</p>
+          ) : shown.length === 0 ? (
             <p className="p-8 text-center font-sans text-sm text-muted">No logs in this section yet.</p>
           ) : (
             shown.map((e) => (

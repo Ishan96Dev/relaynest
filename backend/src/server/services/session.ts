@@ -1,11 +1,21 @@
 import "server-only";
+import { unstable_cache } from "next/cache";
 import { PLANS, type PlanId } from "../../lib/billing/plans";
 import { isSupabaseConfigured } from "../../lib/env/public";
 import { createAdminClient } from "../../lib/supabase/admin";
 import { BUCKETS, publicStorageUrl } from "../../lib/supabase/storage";
-import { requireAuth } from "../auth/context";
+import { MEMBERSHIP_TAG, requireAuth } from "../auth/context";
 import { getIdentity } from "../auth/identity";
 import { getEntitlements } from "../billing/entitlements";
+
+const lookupWorkspaceName = unstable_cache(
+  async (workspaceId: string): Promise<string | null> => {
+    const { data } = await createAdminClient().from("workspaces").select("name").eq("id", workspaceId).maybeSingle();
+    return data?.name ? String(data.name) : null;
+  },
+  ["workspace-name"],
+  { revalidate: 60, tags: [MEMBERSHIP_TAG] },
+);
 
 export interface SessionUser {
   name: string;
@@ -50,12 +60,12 @@ export async function getSessionUser(): Promise<SessionUser> {
   let workspaceName = "My Workspace";
   try {
     const ctx = await requireAuth();
-    const [ent, ws] = await Promise.all([
+    const [ent, wsName] = await Promise.all([
       getEntitlements(ctx.workspaceId),
-      createAdminClient().from("workspaces").select("name").eq("id", ctx.workspaceId).maybeSingle(),
+      lookupWorkspaceName(ctx.workspaceId),
     ]);
     planId = ent.planId;
-    if (ws.data?.name) workspaceName = String(ws.data.name);
+    if (wsName) workspaceName = wsName;
   } catch {
     // Keep safe defaults if workspace lookup is unavailable during sign-out or cold boot.
   }
