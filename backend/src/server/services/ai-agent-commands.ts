@@ -1,16 +1,24 @@
 import "server-only";
 import { Errors } from "@backend/lib/http/api";
-import { clampReply, type AgentCommand, type AgentConfig } from "@backend/server/ai/agent";
-import { formatTelegramHtmlReply, formatTelegramPlainReply } from "@backend/server/ai/citations";
+import { buildSystemPrompt, clampReply, type AgentCommand, type AgentConfig } from "@backend/server/ai/agent";
+import {
+  escapeTelegramHtml,
+  formatTelegramHtmlChunks,
+  formatTelegramPlainChunks,
+  pickFeaturedLinkPreviewUrl,
+} from "@backend/server/ai/citations";
 import { imagePrompt, usageText } from "@backend/server/ai/commands";
-import { analyzeImage, base64ToBytes, generateImage, rateLimit, sniffImageMime } from "@backend/server/ai/provider";
-import { getDbDefaultImageModel } from "@backend/server/services/ai-models";
+import { analyzeImage, base64ToBytes, chat, generateImage, rateLimit, sniffImageMime } from "@backend/server/ai/provider";
+import { buildWebSearchSystemContext, webSearchToCitations } from "@backend/server/ai/web-search-types";
+import { searchOpenWeb } from "@backend/server/search/web-search";
+import { getDbDefaultImageModel, getDbFastChatModel } from "@backend/server/services/ai-models";
 import {
   downloadFile,
   sendChatAction,
-  sendFormattedMessage,
+  sendFormattedMessages,
   sendMessage,
   sendPhoto,
+  sendPhotoGallery,
   type TelegramDocument,
   type TelegramPhotoSize,
 } from "@backend/server/telegram/client";
@@ -37,7 +45,7 @@ export interface MediaCommandArgs {
   document?: TelegramDocument;
 }
 
-/** Runs an image or describe command and sends the result to the chat. Usage hints are sent as plain messages. */
+/** Runs an image, describe, or open-source web search command and delivers rich formatted Telegram output. */
 export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
   const say = (text: string) => sendMessage(a.token, a.chatId, clampReply(text));
 
@@ -52,6 +60,58 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
     const { mime, ext } = sniffImageMime(img.imageBase64);
     const bytes = base64ToBytes(img.imageBase64);
     await sendPhoto(a.token, a.chatId, bytes, a.input.slice(0, 200), `image.${ext}`, mime);
+    return;
+  }
+
+  if (a.command.kind === "search") {
+    if (!a.input) return void (await say(usageText(a.command)));
+    const model = a.config.model ?? (await getDbFastChatModel());
+    if (!model) return void (await say("No AI model is configured for this agent yet."));
+    rateLimit(`search:${a.botId}:${a.chatId}`, 12, 60_000);
+    void sendChatAction(a.token, a.chatId, "typing").catch(() => undefined);
+
+    const bundle = await searchOpenWeb(a.input, { maxResults: 6, maxImages: 3, maxVideos: 4 });
+    const citations = webSearchToCitations(bundle.results);
+    const extraGuide = a.command.instruction.trim() ? `\n\nExtra search instructions: ${a.command.instruction.trim()}` : "";
+    const system = `${buildSystemPrompt(a.config, [], new Date(), [])}\n\n${buildWebSearchSystemContext(bundle)}${extraGuide}`;
+
+    const r = await chat(
+      model,
+      [
+        { role: "system", content: system },
+        { role: "user", content: a.input.slice(0, 1000) },
+      ],
+      {
+        temperature: Math.min(a.config.temperature, 0.45),
+        maxTokens: Math.min(Math.max(a.config.maxTokens, 1536), 3072),
+        thinking: false,
+        timeoutMs: 20_000,
+        allowFallback: true,
+      },
+    );
+
+    const mediaLinks = { videos: bundle.videos };
+    const htmlChunks = formatTelegramHtmlChunks(r.text, citations, mediaLinks);
+    const plainChunks = formatTelegramPlainChunks(r.text, citations, mediaLinks);
+    const previewUrl = pickFeaturedLinkPreviewUrl(r.text, citations, mediaLinks);
+
+    await sendFormattedMessages(a.token, a.chatId, htmlChunks, plainChunks, {
+      linkPreviewUrl: previewUrl,
+      preferLargeMedia: bundle.videos.length > 0,
+    });
+
+    // Follow up with crisp image previews from Wikimedia Commons / Openverse / Wikipedia when available.
+    if (bundle.images.length > 0) {
+      void sendChatAction(a.token, a.chatId, "upload_photo").catch(() => undefined);
+      const photos = bundle.images.slice(0, 3).map((im, idx) => ({
+        url: im.thumbnailUrl || im.imageUrl,
+        caption:
+          idx === 0
+            ? `<b>🖼 ${escapeTelegramHtml(im.title)}</b>\n<i>Source: ${escapeTelegramHtml(im.source)}</i> · <a href="${im.sourceUrl.replace(/"/g, "&quot;")}">Open image</a>`
+            : `<b>${escapeTelegramHtml(im.title)}</b> <i>(${escapeTelegramHtml(im.source)})</i>`,
+      }));
+      await sendPhotoGallery(a.token, a.chatId, photos).catch(() => undefined);
+    }
     return;
   }
 
@@ -77,10 +137,10 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
       : baseTask;
 
     const system = [
-      `You are ${a.config.name}, an accurate multimodal AI assistant on Telegram.`,
+      `You are ${a.config.name}, an accurate, thorough multimodal AI assistant on Telegram.`,
       `Primary language: ${a.config.language}.${a.config.tools.matchLanguage ? " Match the user's language if they wrote in another language." : ""}`,
       "Examine the image carefully. Read exact visible text, numbers, ticker symbols, dates, metrics, and chart movements accurately.",
-      "Give a clear, thorough, well-structured answer (bullet points where helpful, under 3,500 characters). Never answer 'unanswerable' or give vague one-line captions.",
+      "Give a detailed, well-structured answer using bold headings, bullet points, and Markdown tables for structured metrics or comparisons. Never answer 'unanswerable' or give vague one-line captions.",
       a.config.instructions.trim() ? `Additional agent instructions: ${a.config.instructions.trim()}` : "",
     ]
       .filter(Boolean)
@@ -88,10 +148,12 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
 
     const r = await analyzeImage(prompt.slice(0, 1500), dataUrl, {
       system,
-      maxTokens: Math.min(Math.max(a.config.maxTokens, 768), 1536),
+      maxTokens: Math.min(Math.max(a.config.maxTokens, 1536), 2048),
       temperature: 0.25,
       timeoutMs: 20_000,
     });
-    await sendFormattedMessage(a.token, a.chatId, formatTelegramHtmlReply(r.text, []), formatTelegramPlainReply(r.text, []));
+    const htmlChunks = formatTelegramHtmlChunks(r.text, []);
+    const plainChunks = formatTelegramPlainChunks(r.text, []);
+    await sendFormattedMessages(a.token, a.chatId, htmlChunks, plainChunks);
   }
 }

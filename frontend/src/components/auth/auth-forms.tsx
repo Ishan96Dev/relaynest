@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertCircle, ArrowLeft, Check, Eye, EyeOff, Lock, Mail, User } from "lucide-react";
+import { landingPathFor, parsePreferences } from "@backend/lib/preferences";
 import { assessPasswordStrength } from "@backend/lib/security/password";
 import { AuthTransition } from "@/components/auth/auth-transition";
 import { Checkbox } from "@/components/ui/choice";
@@ -140,11 +141,29 @@ export function LoginForm() {
     if (error) { setBusy(false); return setErr("Invalid email or password."); } // do not reveal which one
     const metaName = (data.user?.user_metadata?.full_name as string | undefined) || (data.user?.user_metadata?.name as string | undefined) || email.split("@")[0] || "there";
     setTransitionName(metaName);
+    const explicitNext = sp.get("next");
+    let targetPath = safeRedirectPath(explicitNext, "/dashboard");
+    const prefsPromise = !explicitNext
+      ? fetch("/api/v1/settings/preferences")
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => {
+            if (j?.data?.preferences) {
+              const p = parsePreferences(j.data.preferences);
+              targetPath = landingPathFor(p.landing);
+              try {
+                localStorage.setItem("rn:preferences", JSON.stringify(p));
+                localStorage.setItem("rn-theme", p.theme);
+              } catch { /* ignore */ }
+            }
+          })
+          .catch(() => undefined)
+      : Promise.resolve();
     void fetch("/api/v1/notifications", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ event: "login_detected" }) }).catch(() => undefined);
     void fetch("/api/v1/audit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ event: "auth.login", pagePath: "/login", detail: "Email & password sign-in" }) }).catch(() => undefined);
+    await Promise.race([prefsPromise, new Promise((r) => setTimeout(r, 900))]);
     setTimeout(() => {
-      router.replace(safeRedirectPath(sp.get("next")));
-    }, 1150);
+      router.replace(targetPath);
+    }, 850);
   }
 
   return (

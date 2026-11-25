@@ -23,7 +23,19 @@ function toBlob(base64: string, type: string): Blob {
 /** Providers return raw base64 without a type, so read it from the first bytes. */
 const sniffMime = (b64: string) => (b64.startsWith("iVBOR") ? "image/png" : b64.startsWith("UklGR") ? "image/webp" : "image/jpeg");
 
-export function ImageResult({ base64, prompt, name, seconds }: { base64: string; prompt: string; name: string; seconds?: number }) {
+export function ImageResult({
+  base64,
+  prompt,
+  revisedPrompt,
+  name,
+  seconds,
+}: {
+  base64: string;
+  prompt: string;
+  revisedPrompt?: string;
+  name: string;
+  seconds?: number;
+}) {
   const mime = sniffMime(base64);
   const src = `data:${mime};base64,${base64}`;
   const [size, setSize] = React.useState<{ w: number; h: number } | null>(null);
@@ -86,10 +98,16 @@ export function ImageResult({ base64, prompt, name, seconds }: { base64: string;
         <Button size="sm" onClick={download}><Download className="size-3.5" aria-hidden />Download</Button>
       </figcaption>
       {copied === "error" && <p role="alert" className="text-xs text-bad">Your browser blocked copying the image. Use Download instead.</p>}
+      {revisedPrompt && (
+        <details className="rounded-xl border border-border/80 bg-surface-2/60 px-3 py-2 text-xs text-muted">
+          <summary className="cursor-pointer font-semibold text-foreground/80">Enhanced detail prompt used</summary>
+          <p className="mt-1.5 leading-relaxed text-muted">{revisedPrompt}</p>
+        </details>
+      )}
 
       <Modal open={open} onClose={() => setOpen(false)} title={name} className="max-h-[92vh] max-w-4xl overflow-y-auto">
         <img src={src} alt={prompt} className="mx-auto block h-auto max-h-[75vh] w-auto max-w-full rounded-lg object-contain" />
-        <p className="mt-3 text-xs text-muted">{prompt}</p>
+        <p className="mt-3 text-xs text-muted">{revisedPrompt || prompt}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={copy}><Copy className="size-3.5" aria-hidden />Copy image</Button>
           <Button size="sm" onClick={download}><Download className="size-3.5" aria-hidden />Download</Button>

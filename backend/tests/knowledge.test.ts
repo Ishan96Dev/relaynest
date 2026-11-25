@@ -1,7 +1,16 @@
 import { describe, it } from "node:test";
 import { expect } from "./expect";
 import { buildCitationSources, buildSystemPrompt, DEFAULT_TOOLS, type AgentConfig } from "../src/server/ai/agent";
-import { extractCitedIndices, formatTelegramHtmlReply, formatTelegramPlainReply, orderSourcesByCitation } from "../src/server/ai/citations";
+import {
+  extractCitedIndices,
+  formatTelegramHtmlChunks,
+  formatTelegramHtmlReply,
+  formatTelegramPlainReply,
+  orderSourcesByCitation,
+  pickFeaturedLinkPreviewUrl,
+} from "../src/server/ai/citations";
+import { buildWebSearchSystemContext, webSearchToCitations } from "../src/server/ai/web-search-types";
+import { extractVisualQuery, parseRssItems } from "../src/server/search/web-search";
 import { chunkText } from "../src/server/knowledge/chunk";
 import { htmlToText, kindFromFilename } from "../src/server/knowledge/extract";
 import { extractTerms, isOverviewQuery, keywordQuery, lexicalScore } from "../src/server/knowledge/query";
@@ -119,6 +128,69 @@ describe("RAG query helpers and citations formatting", () => {
     const plain = formatTelegramPlainReply("Answer [1]", sources);
     expect(plain).toContain("Sources & Citations:");
     expect(plain).toContain("[1] Profile <test>.pdf");
+  });
+
+  it("formats Telegram tables, fenced code blocks, hyperlinks, videos, and multi-chunk splitting safely", () => {
+    const md = [
+      "### Specs Overview",
+      "",
+      "| Model | Chip | Display |",
+      "| --- | --- | --- |",
+      "| iPhone 16 Pro | A18 Pro | 6.3 inch |",
+      "",
+      "```ts",
+      "const price = 999;",
+      "console.log(price < 1000);",
+      "```",
+      "",
+      "See [Apple Specs](https://support.apple.com/en-us/121031) and ignore [bad](javascript:alert(1)) [1].",
+      "",
+      "> Verified from official documentation.",
+    ].join("\n");
+    const sources = webSearchToCitations([
+      { index: 1, title: "Apple Support", url: "https://support.apple.com/en-us/121031", domain: "support.apple.com", snippet: "6.3-inch display and A18 Pro." },
+    ]);
+    const videos = [{ title: "iPhone 16 Pro Review", url: "https://www.dailymotion.com/video/x9aaje8", channel: "Tom's Guide", duration: "13:15", source: "Dailymotion" }];
+    const chunks = formatTelegramHtmlChunks(md, sources, { videos });
+    expect(chunks.length).toBe(1);
+    const html = chunks[0]!;
+    expect(html).toContain("<pre>Model");
+    expect(html).toContain("A18 Pro");
+    expect(html).toContain('<pre><code class="language-ts">const price = 999;\nconsole.log(price &lt; 1000);</code></pre>');
+    expect(html).toContain('<a href="https://support.apple.com/en-us/121031">Apple Specs</a>');
+    expect(html).not.toContain('href="javascript:');
+    expect(html).toContain("<blockquote>Verified from official documentation.</blockquote>");
+    expect(html).toContain("Related Videos");
+    expect(html).toContain('href="https://www.dailymotion.com/video/x9aaje8"');
+    expect(pickFeaturedLinkPreviewUrl(md, sources, { videos })).toBe("https://www.dailymotion.com/video/x9aaje8");
+
+    // Splits long detailed text cleanly into <= 3950 char chunks without breaking tags.
+    const longMd = Array.from({ length: 45 }, (_, i) => `### Section ${i + 1}\n${"Detailed factual analysis sentence. ".repeat(4)}`).join("\n\n");
+    const multi = formatTelegramHtmlChunks(longMd, sources);
+    expect(multi.length > 1).toBe(true);
+    expect(multi.every((c) => c.length <= 3950)).toBe(true);
+  });
+
+  it("parses RSS search items cleanly and builds web search prompt context", () => {
+    const xml = `<rss><channel><item><title>Next.js &amp; Docs</title><link>https://nextjs.org/docs</link><description><![CDATA[React <b>framework</b> for web.]]></description><pubDate>Wed, 25 Nov 2026 01:00:00 GMT</pubDate></item><item><title>Local</title><link>http://127.0.0.1/secret</link><description>blocked</description></item></channel></rss>`;
+    const items = parseRssItems(xml);
+    expect(items.length).toBe(1);
+    expect(items[0]!.title).toBe("Next.js & Docs");
+    expect(items[0]!.url).toBe("https://nextjs.org/docs");
+    expect(items[0]!.snippet).toBe("React framework for web.");
+    expect(items[0]!.publishedAt).toBe("2026-11-25");
+    expect(extractVisualQuery("iPhone 16 Pro specs and review")).toBe("iPhone 16 Pro");
+
+    const ctx = buildWebSearchSystemContext({
+      query: "Next.js",
+      engine: "Open Web",
+      results: [{ index: 1, title: "Next.js Docs", url: "https://nextjs.org/docs", domain: "nextjs.org", snippet: "React framework." }],
+      images: [],
+      videos: [],
+      searchedAt: "2026-11-25T16:00:00Z",
+    });
+    expect(ctx).toContain("[1] Next.js Docs");
+    expect(ctx).toContain("Markdown table");
   });
 });
 

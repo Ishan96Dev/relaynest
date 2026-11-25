@@ -7,8 +7,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
+import { landingPathFor } from "@backend/lib/preferences";
 import type { SessionUser } from "@backend/server/services/session";
 import { AuthTransition } from "@/components/auth/auth-transition";
+import { usePreferences } from "@/components/providers/preferences-provider";
 import { Tooltip } from "@/components/ui/tooltip";
 import { initialsOf } from "@/lib/initials";
 import { HeaderSearch } from "./header-search";
@@ -24,6 +26,8 @@ const labels: Record<string, string> = {
 };
 
 export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<SessionUser, "name" | "initials" | "avatarUrl" | "plan" | "demo"> }) {
+  const { prefs } = usePreferences();
+  const homeHref = landingPathFor(prefs.landing);
   const router = useRouter();
   const pathname = usePathname();
   const [signingOut, setSigningOut] = React.useState(false);
@@ -64,7 +68,7 @@ export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<Sessio
       <header className="sticky top-0 z-30 flex h-[68px] items-center gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur-md sm:gap-4 lg:px-8">
       <button aria-label="Open menu" onClick={onMenu} className="grid-cols-1 grid size-10 place-items-center rounded-lg text-muted transition hover:bg-foreground/5 hover:text-foreground lg:hidden"><Menu className="size-5" /></button>
       <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-2 text-sm text-muted xl:flex">
-        <Link href="/dashboard" prefetch={false} aria-label="Home" className="transition hover:text-foreground"><Home className="size-[18px]" /></Link>
+        <Link href={homeHref} prefetch={false} aria-label="Home" className="transition hover:text-foreground"><Home className="size-[18px]" /></Link>
         {segments.map((s, i) => (
           <React.Fragment key={s + i}>
             <ChevronRight className="size-3.5 shrink-0 opacity-60" aria-hidden />

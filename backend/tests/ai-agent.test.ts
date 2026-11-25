@@ -2,7 +2,14 @@ import { describe, it } from "node:test";
 import { expect } from "./expect";
 import { buildSystemPrompt, clampReply, DEFAULT_TOOLS, parseTools, type AgentConfig } from "../src/server/ai/agent";
 import { canPowerAgent, executionMode, MODEL_CATALOG, PROVIDER_CATALOG, supportsImageInput } from "../src/server/ai/model-catalog";
-import { base64ToBytes, sniffImageMime, stripThinkTags } from "../src/server/ai/provider";
+import {
+  base64ToBytes,
+  cleanRawImagePrompt,
+  isFilteredOrBlankImage,
+  pickImageDimensions,
+  sniffImageMime,
+  stripThinkTags,
+} from "../src/server/ai/provider";
 import { resolveModelFromDb } from "../src/server/services/ai-models";
 import { updateAiAgentInput } from "../src/lib/validation/schemas";
 
@@ -71,6 +78,18 @@ describe("model execution", () => {
     expect(sniffImageMime("iVBORw0KGgo")).toEqual({ mime: "image/png", ext: "png" });
     expect(sniffImageMime("/9j/4AAQ")).toEqual({ mime: "image/jpeg", ext: "jpg" });
     expect(base64ToBytes("SGk=").length).toBe(2);
+  });
+
+  it("guards against CONTENT_FILTERED black frames, cleans image prompts, and picks aspect dimensions", () => {
+    expect(isFilteredOrBlankImage({ artifacts: [{ finishReason: "CONTENT_FILTERED", base64: "/9j/" + "A".repeat(20_000) }] }, "/9j/" + "A".repeat(20_000)).blocked).toBe(true);
+    expect(isFilteredOrBlankImage({ artifacts: [{ finishReason: "SUCCESS" }] }, "/9j/" + "A".repeat(8_000)).blocked).toBe(true);
+    expect(isFilteredOrBlankImage({ artifacts: [{ finishReason: "SUCCESS" }] }, "/9j/" + "A".repeat(25_000)).blocked).toBe(false);
+    expect(cleanRawImagePrompt("Generate iPhone Image")).toBe("iPhone");
+    expect(cleanRawImagePrompt("Please create an hd photo of a red fox")).toBe("a red fox");
+    expect(pickImageDimensions("A wide cinematic landscape banner")).toEqual({ width: 1280, height: 768 });
+    expect(pickImageDimensions("Vertical phone wallpaper poster")).toEqual({ width: 896, height: 1152 });
+    expect(pickImageDimensions("A studio portrait of a ceramic vase")).toEqual({ width: 896, height: 1152 });
+    expect(pickImageDimensions("A red fox in snow")).toEqual({ width: 1024, height: 1024 });
   });
 });
 

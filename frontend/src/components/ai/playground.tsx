@@ -1,13 +1,15 @@
 "use client";
 /* The generated image is a base64 data URL, which next/image cannot optimise. */
 /* eslint-disable @next/next/no-img-element */
-import { ArrowUp, BookOpen, Bot, BrainCircuit, Eraser, ImagePlus, Loader2, Sparkles, User, Zap } from "lucide-react";
+import { ArrowUp, BookOpen, Bot, BrainCircuit, Eraser, Globe, ImagePlus, Loader2, Sparkles, User, Zap } from "lucide-react";
 import * as React from "react";
 import type { CitationSource, RetrievalMode } from "@backend/server/ai/citations";
 import { executionMode, supportsImageInput, type ModelDto } from "@backend/server/ai/model-catalog";
+import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
 import { CitedText, SourcesPanel } from "@/components/ai/citations-panel";
 import { ImageResult } from "@/components/ai/image-result";
 import { ProviderMark } from "@/components/ai/provider-mark";
+import { WebMediaPanel } from "@/components/ai/web-media-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -20,9 +22,9 @@ import { cn } from "@/lib/utils";
 
 interface Usage { promptTokens: number; completionTokens: number; totalTokens: number }
 type RunResult =
-  | { kind: "chat"; text: string; usage: Usage; ms: number; sources?: CitationSource[]; retrieval?: RetrievalMode; modelUsed?: string }
+  | { kind: "chat"; text: string; usage: Usage; ms: number; sources?: CitationSource[]; retrieval?: RetrievalMode; webMedia?: WebMediaPayload; modelUsed?: string }
   | { kind: "embedding"; dimensions: number; preview: number[]; norm: number; usage: Usage; ms: number }
-  | { kind: "image"; imageBase64: string; ms: number }
+  | { kind: "image"; imageBase64: string; revisedPrompt?: string; modelUsed?: string; ms: number }
   | { kind: "decision"; probability: number; ms: number };
 
 interface Turn {
@@ -33,6 +35,7 @@ interface Turn {
   meta?: string;
   sources?: CitationSource[];
   retrieval?: RetrievalMode;
+  webMedia?: WebMediaPayload;
   streaming?: boolean;
 }
 export interface PlaygroundCollection { id: string; name: string; documents: number }
@@ -45,6 +48,7 @@ const RETRIEVAL_META: Record<RetrievalMode, string> = {
   keyword: "keyword RAG",
   overview: "document RAG",
   agent: "agent knowledge",
+  web: "open web search",
   none: "no KB match",
 };
 
@@ -52,6 +56,7 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
   const [kb, setKb] = React.useState<string[]>([]);
   const [image, setImage] = React.useState<string | null>(null);
   const [thinking, setThinking] = React.useState(false);
+  const [webSearch, setWebSearch] = React.useState(false);
   // Default model comes directly from Supabase `public.ai_models` ordering (`sort_order`, `is_featured`).
   const [slug, setSlug] = React.useState(() => (models.some((m) => m.slug === initialSlug) ? initialSlug! : (models.find((m) => m.isFeatured && executionMode(m) === "chat") ?? models.find((m) => executionMode(m) === "chat") ?? models[0])?.slug ?? ""));
   const model = models.find((m) => m.slug === slug);
@@ -117,6 +122,7 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
       temperature,
       maxTokens: Number(maxTokens),
       thinking,
+      webSearch,
       stream: true,
       ...(kb.length ? { collectionIds: kb } : {}),
       ...(attached ? { image: attached } : {}),
@@ -148,6 +154,7 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
             meta: `${(r.ms / 1000).toFixed(1)}s \u2022 ${r.usage.totalTokens || "?"} tokens${r.retrieval ? ` \u2022 ${RETRIEVAL_META[r.retrieval]}` : ""}`,
             sources: r.sources?.length ? r.sources : undefined,
             retrieval: r.retrieval,
+            webMedia: r.webMedia,
           },
         ]);
         setBusy(false);
@@ -161,6 +168,7 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
       let currentEvent = "message";
       let streamSources: CitationSource[] | undefined;
       let streamRetrieval: RetrievalMode | undefined;
+      let streamMedia: WebMediaPayload | undefined;
       let finished = false;
 
       const patchBot = (patch: Partial<Turn>) => {
@@ -187,6 +195,9 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
             streamRetrieval = payload.retrieval as RetrievalMode | undefined;
             streamSources = s.length ? s : undefined;
             patchBot({ sources: streamSources, retrieval: streamRetrieval });
+          } else if (currentEvent === "media") {
+            streamMedia = payload as unknown as WebMediaPayload;
+            patchBot({ webMedia: streamMedia });
           } else if (currentEvent === "delta") {
             const chunk = typeof payload.text === "string" ? payload.text : "";
             if (chunk) {
@@ -200,11 +211,13 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
             const usage = (payload.usage as Usage | undefined) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
             const finalSources = (payload.sources as CitationSource[] | undefined) ?? streamSources;
             const finalRetrieval = (payload.retrieval as RetrievalMode | undefined) ?? streamRetrieval;
+            const finalMedia = (payload.webMedia as WebMediaPayload | undefined) ?? streamMedia;
             patchBot({
               content: finalText,
               streaming: false,
               sources: finalSources?.length ? finalSources : undefined,
               retrieval: finalRetrieval,
+              webMedia: finalMedia,
               meta: `${(ms / 1000).toFixed(1)}s \u2022 ${usage.totalTokens || "?"} tokens${finalRetrieval ? ` \u2022 ${RETRIEVAL_META[finalRetrieval]}` : ""}`,
             });
           } else if (currentEvent === "error") {
@@ -287,11 +300,29 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
               {thinking ? "Deep thinking" : "Fast streaming"}
             </Badge>
           )}
+          {mode === "chat" && webSearch && (
+            <Badge tone="info" className="rounded-full">
+              <Globe className="size-3" aria-hidden />
+              Web search
+            </Badge>
+          )}
           {canAttachImage && <Badge tone="neutral" className="rounded-full">Vision</Badge>}
         </div>
 
         {mode === "chat" && (
           <>
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface-2/60 p-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-xs font-bold">
+                  <Globe className="size-3.5 text-lavender" aria-hidden />
+                  Open Web Search
+                </p>
+                <p className="text-[11px] text-muted">
+                  {webSearch ? "Live web articles, images, videos & citations." : "Search the open web with rich media & sources."}
+                </p>
+              </div>
+              <Switch label="Open Web Search" checked={webSearch} onCheckedChange={setWebSearch} />
+            </div>
             {model.isThinking && (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface-2/60 p-3">
                 <div className="min-w-0">
@@ -365,7 +396,11 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
                     <Sparkles className="mx-auto mb-2 size-8 text-lavender" aria-hidden />
                     <p className="text-sm font-medium text-foreground/85">Send a message to start chatting with {model.name}.</p>
                     <p className="mt-1 text-xs text-muted">
-                      {kb.length > 0 ? `Grounded in ${kb.length} selected knowledge ${kb.length === 1 ? "collection" : "collections"} with live citations.` : "Responses stream token-by-token in real time."}
+                      {webSearch
+                        ? "Live Open Web Search active — replies include web sources, tables, images & videos."
+                        : kb.length > 0
+                          ? `Grounded in ${kb.length} selected knowledge ${kb.length === 1 ? "collection" : "collections"} with live citations.`
+                          : "Responses stream token-by-token in real time."}
                     </p>
                   </div>
                 </div>
@@ -380,7 +415,7 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
                       {t.role === "assistant" && t.streaming && !t.content ? (
                         <span className="inline-flex items-center gap-2 text-xs text-muted">
                           <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                          {kb.length > 0 ? "Searching knowledge & generating..." : `${model.name} is replying...`}
+                          {webSearch ? "Searching open web, images & videos..." : kb.length > 0 ? "Searching knowledge & generating..." : `${model.name} is replying...`}
                         </span>
                       ) : t.role === "assistant" ? (
                         <CitedText
@@ -393,6 +428,9 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
                         />
                       ) : (
                         <p className="whitespace-pre-wrap break-words">{t.content}</p>
+                      )}
+                      {t.role === "assistant" && t.webMedia && (t.webMedia.images.length > 0 || t.webMedia.videos.length > 0) && (
+                        <WebMediaPanel media={t.webMedia} variant="playground" />
                       )}
                       {t.role === "assistant" && t.sources && t.sources.length > 0 && (
                         <SourcesPanel
@@ -420,7 +458,7 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
               </div>
             )}
             <form onSubmit={sendChat} className="mt-3 flex items-end gap-2">
-              <Textarea aria-label="Message" rows={2} maxLength={8000} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={kb.length > 0 ? "Ask about your knowledge base..." : "Type a message..."} className="min-h-[52px] flex-1"
+              <Textarea aria-label="Message" rows={2} maxLength={8000} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={webSearch ? "Search the open web for news, specs, guides, images & videos..." : kb.length > 0 ? "Ask about your knowledge base..." : "Type a message..."} className="min-h-[52px] flex-1"
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} />
               <Button type="submit" disabled={busy || !draft.trim()} aria-label="Send message" className="size-11 px-0"><ArrowUp className="size-5" aria-hidden /></Button>
             </form>
@@ -441,7 +479,15 @@ export function Playground({ models, initialSlug, collections = [] }: { models: 
                 <p className="break-all font-mono text-xs text-muted">[{result.preview.map((v) => v.toFixed(4)).join(", ")}, ...]</p>
               </div>
             )}
-            {result?.kind === "image" && <ImageResult base64={result.imageBase64} prompt={prompt} name={model.name} seconds={result.ms / 1000} />}
+            {result?.kind === "image" && (
+              <ImageResult
+                base64={result.imageBase64}
+                prompt={prompt}
+                revisedPrompt={result.revisedPrompt}
+                name={model.name}
+                seconds={result.ms / 1000}
+              />
+            )}
             {result?.kind === "decision" && (
               <div className="space-y-2 rounded-xl border border-border bg-surface-2/70 p-4">
                 <p className="text-sm">Probability of &ldquo;yes&rdquo;: <span className="text-lg font-extrabold">{(result.probability * 100).toFixed(1)}%</span></p>

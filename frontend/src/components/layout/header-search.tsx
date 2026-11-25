@@ -3,6 +3,7 @@
 import { BookOpen, CornerDownLeft, FileQuestion, History, LifeBuoy, Plus, Search, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
+import { usePreferences } from "@/components/providers/preferences-provider";
 import { cn } from "@/lib/utils";
 import { aiNav, mainNav, settingsNav } from "./nav";
 
@@ -51,6 +52,7 @@ function Highlight({ text, q }: { text: string; q: string }) {
 }
 
 export function HeaderSearch() {
+  const { prefs } = usePreferences();
   const router = useRouter();
   const inputRef = React.useRef<HTMLInputElement>(null);
   const wrapRef = React.useRef<HTMLDivElement>(null);
@@ -93,7 +95,9 @@ export function HeaderSearch() {
         placeholder="Search bots, automations, templates..." value={value}
         onChange={(e) => { setValue(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onKeyDown={onKeyDown}
         className="h-11 w-full rounded-xl border border-border bg-surface-2/80 pl-10 pr-16 text-sm text-foreground placeholder:text-muted transition hover:border-lavender/40 focus:border-lavender focus:outline-none focus:ring-2 focus:ring-primary/30" />
-      <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/60 px-1.5 py-0.5 text-[10px] text-muted">Ctrl K</kbd>
+      {prefs.keyHints && (
+        <kbd className="rn-key-hint pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/60 px-1.5 py-0.5 text-[10px] text-muted">Ctrl K</kbd>
+      )}
 
       {open && (
         <div className="card pop-in absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden p-1.5 shadow-2xl">
@@ -128,11 +132,13 @@ export function HeaderSearch() {
               })}
             </ul>
           )}
-          <div className="mt-1 flex items-center gap-3 border-t border-border/70 px-2.5 pb-1 pt-2 text-[11px] text-muted">
-            <span className="flex items-center gap-1"><kbd className="rounded border border-border px-1">↑</kbd><kbd className="rounded border border-border px-1">↓</kbd>navigate</span>
-            <span className="flex items-center gap-1"><kbd className="rounded border border-border px-1">↵</kbd>open</span>
-            <span className="flex items-center gap-1"><kbd className="rounded border border-border px-1">esc</kbd>close</span>
-          </div>
+          {prefs.keyHints && (
+            <div className="rn-key-hint mt-1 flex items-center gap-3 border-t border-border/70 px-2.5 pb-1 pt-2 text-[11px] text-muted">
+              <span className="flex items-center gap-1"><kbd className="rounded border border-border px-1">↑</kbd><kbd className="rounded border border-border px-1">↓</kbd>navigate</span>
+              <span className="flex items-center gap-1"><kbd className="rounded border border-border px-1">↵</kbd>open</span>
+              <span className="flex items-center gap-1"><kbd className="rounded border border-border px-1">esc</kbd>close</span>
+            </div>
+          )}
         </div>
       )}
     </div>

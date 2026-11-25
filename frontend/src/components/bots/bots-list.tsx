@@ -7,8 +7,10 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
+import { formatUserDate, type UserPreferences } from "@backend/lib/preferences";
 import { BotAvatar } from "@/components/bots/bot-avatar";
 import { StatusBadge } from "@/components/bots/status-badge";
+import { usePreferences } from "@/components/providers/preferences-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -19,22 +21,25 @@ import { EmptyState } from "@/components/ui/page-header";
 import { toast } from "@/components/ui/toast";
 import type { Bot, BotHistoryEntry } from "@/types";
 
-function relTime(iso: string | null) {
+function relTime(iso: string | null, prefs?: Pick<UserPreferences, "dateFormat" | "timezone" | "language">) {
   if (!iso) return "Just now";
   const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
   if (mins < 1) return "Just now";
   if (mins < 60) return `${mins} min ago`;
   if (mins < 1440) return `${Math.round(mins / 60)} hours ago`;
-  return new Date(iso).toLocaleDateString();
+  return prefs ? formatUserDate(iso, prefs) : new Date(iso).toLocaleDateString();
 }
 
 export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bot[]; initialHistory?: BotHistoryEntry[]; demo?: boolean }) {
+  const { prefs } = usePreferences();
   const router = useRouter();
   const [items, setItems] = React.useState(bots);
   const [history, setHistory] = React.useState(initialHistory);
   const [historyFilter, setHistoryFilter] = React.useState<"all" | "created" | "deleted">("all");
   const [q, setQ] = React.useState("");
-  const [status, setStatus] = React.useState("all");
+  const defaultStatus = prefs.botView === "Active Bots" ? "active" : "all";
+  const [status, setStatus] = React.useState(defaultStatus);
+  const userChangedFilter = React.useRef(false);
   const [sort, setSort] = React.useState("recent");
   const [syncing, setSyncing] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<Bot | null>(null);
@@ -42,6 +47,9 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
 
   React.useEffect(() => { setItems(bots); }, [bots]);
   React.useEffect(() => { setHistory(initialHistory); }, [initialHistory]);
+  React.useEffect(() => {
+    if (!userChangedFilter.current) setStatus(prefs.botView === "Active Bots" ? "active" : "all");
+  }, [prefs.botView]);
 
   const rows = React.useMemo(() => {
     const f = items.filter((b) => (status === "all" || b.status === status) && (b.name + b.username).toLowerCase().includes(q.toLowerCase()));
@@ -201,7 +209,7 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_170px_170px_auto]">
         <Input aria-label="Search bots" icon={<Search />} placeholder="Search bots..." className="h-11" value={q} onChange={(e) => setQ(e.target.value)} />
-        <Select aria-label="Filter by status" className="h-11" value={status} onChange={(e) => setStatus(e.target.value)}>
+        <Select aria-label="Filter by status" className="h-11" value={status} onChange={(e) => { userChangedFilter.current = true; setStatus(e.target.value); }}>
           <option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Paused</option><option value="draft">Draft</option><option value="error">Error / Sync Alert</option>
         </Select>
         <Select aria-label="Sort bots" className="h-11" value={sort} onChange={(e) => setSort(e.target.value)}><option value="recent">Recent activity</option><option value="name">Name</option></Select>
@@ -386,8 +394,8 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted sm:flex-col sm:items-end">
-                      <span className="inline-flex items-center gap-1 font-medium"><Clock className="size-3.5" />{relTime(h.occurredAt)}</span>
-                      {h.botCreatedAt && <span>Created {new Date(h.botCreatedAt).toLocaleDateString()}</span>}
+                      <span className="inline-flex items-center gap-1 font-medium"><Clock className="size-3.5" />{relTime(h.occurredAt, prefs)}</span>
+                      {h.botCreatedAt && <span>Created {formatUserDate(h.botCreatedAt, prefs)}</span>}
                     </div>
                   </li>
                 );

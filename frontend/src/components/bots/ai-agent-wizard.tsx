@@ -8,6 +8,7 @@ import * as React from "react";
 import { DEFAULT_TOOLS } from "@backend/server/ai/agent";
 import type { CitationSource } from "@backend/server/ai/citations";
 import type { ModelDto } from "@backend/server/ai/model-catalog";
+import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
 import type { AiAgentDto, KnowledgeDto } from "@backend/server/services/ai-agents";
 import { createClient } from "@backend/lib/supabase/lazy";
 import { BUCKETS, publicStorageUrl } from "@backend/lib/supabase/storage";
@@ -240,9 +241,9 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
   const onAsk = React.useMemo(() => {
     if (!agent || !form.modelSlug || demo) return undefined;
     return async (history: { role: "user" | "assistant"; content: string }[], message: string) => {
-      const r = await api<{ reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number }>(`/api/v1/ai-agents/${agent.id}/test`, { body: { message, history } });
+      const r = await api<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number }>(`/api/v1/ai-agents/${agent.id}/test`, { body: { message, history } });
       return r.ok
-        ? { ok: true as const, reply: r.data.reply, imageBase64: r.data.imageBase64, sources: r.data.sources, ms: r.data.ms }
+        ? { ok: true as const, reply: r.data.reply, imageBase64: r.data.imageBase64, sources: r.data.sources, webMedia: r.data.webMedia, ms: r.data.ms }
         : { ok: false as const, message: r.message };
     };
   }, [agent, form.modelSlug, demo]);

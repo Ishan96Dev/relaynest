@@ -25,7 +25,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { themeColor: "#08081A" };
 
-const themeScript = `try{var d=document.documentElement;d.classList.add("js");var t=localStorage.getItem("rn-theme");var p=JSON.parse(localStorage.getItem("rn:preferences")||"{}");if(t==="light"||(t==="system"&&!matchMedia("(prefers-color-scheme: dark)").matches))d.classList.add("light");if(p.reduceMotion)d.classList.add("reduce-motion");if(p.highContrast)d.classList.add("high-contrast")}catch(e){}`;
+const themeScript = `try{var d=document.documentElement;d.classList.add("js");var p=JSON.parse(localStorage.getItem("rn:preferences")||"{}");var t=p.theme||localStorage.getItem("rn-theme")||"dark";if(t==="light"||(t==="system"&&!matchMedia("(prefers-color-scheme: dark)").matches))d.classList.add("light");if(p.reduceMotion)d.classList.add("reduce-motion");if(p.highContrast)d.classList.add("high-contrast");if(p.compact)d.classList.add("compact-ui");if(p.keyHints===false)d.classList.add("hide-key-hints");if(p.density)d.dataset.density=p.density}catch(e){}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

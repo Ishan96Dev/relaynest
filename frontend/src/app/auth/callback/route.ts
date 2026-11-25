@@ -1,18 +1,26 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isSupabaseConfigured } from "@backend/lib/env/public";
+import { landingPathFor } from "@backend/lib/preferences";
 import { safeRedirectPath } from "@/lib/safe-redirect";
 import { createClient } from "@backend/lib/supabase/server";
 import { recordUserAudit } from "@backend/server/audit";
+import { getUserPreferencesForUserId } from "@backend/server/services/preferences";
 
 /** Completes email-link flows (signup confirm, password recovery). */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
-  const next = safeRedirectPath(url.searchParams.get("next"), "/dashboard");
+  const rawNext = url.searchParams.get("next");
   if (code && isSupabaseConfigured()) {
     const sb = await createClient();
     const { data, error } = await sb.auth.exchangeCodeForSession(code);
     if (!error) {
+      let defaultDest = "/dashboard";
+      if (!rawNext && data.user?.id) {
+        const prefs = await getUserPreferencesForUserId(data.user.id);
+        defaultDest = landingPathFor(prefs.landing);
+      }
+      const next = safeRedirectPath(rawNext, defaultDest);
       await recordUserAudit({
         userId: data.user?.id,
         userEmail: data.user?.email,

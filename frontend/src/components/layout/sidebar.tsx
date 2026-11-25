@@ -4,7 +4,9 @@ import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
+import { landingPathFor } from "@backend/lib/preferences";
 import { Logo } from "@/components/brand/logo";
+import { usePreferences } from "@/components/providers/preferences-provider";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { aiNav, mainNav, promoFor, settingsNav, type NavItem, type Promo } from "./nav";
@@ -58,6 +60,8 @@ export function Sidebar({
   onNavigate?: () => void;
   onClose?: () => void;
 }) {
+  const { prefs } = usePreferences();
+  const homeHref = landingPathFor(prefs.landing);
   const pathname = usePathname();
   const inSettings = pathname.startsWith("/settings");
   const [settingsOpen, setSettingsOpen] = React.useState(inSettings);
@@ -104,7 +108,7 @@ export function Sidebar({
   return (
     <div className="flex h-full flex-col gap-3 border-r border-border/70 bg-sidebar p-4">
       <div className={cn("flex items-center pb-2", collapsed ? "justify-center" : "justify-between")}>
-        {collapsed ? <Logo href="/dashboard" iconOnly /> : <Logo href="/dashboard" />}
+        {collapsed ? <Logo href={homeHref} iconOnly /> : <Logo href={homeHref} />}
         {!collapsed && (onToggle || onClose) && (
           <Tooltip content={onClose ? "Close menu" : "Collapse sidebar"} side="bottom">
             <button aria-label={onClose ? "Close menu" : "Collapse sidebar"} onClick={onClose ?? onToggle} className="grid-cols-1 grid size-8 place-items-center rounded-lg border border-border text-muted transition hover:border-lavender/60 hover:text-foreground">

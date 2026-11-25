@@ -21,4 +21,10 @@ export function commandTask(command: Pick<AgentCommand, "command" | "description
 }
 
 export const usageText = (c: Pick<AgentCommand, "command" | "kind">) =>
-  c.kind === "image" ? `Usage: /${c.command} <what to draw>` : c.kind === "describe" ? `Send a photo with the caption /${c.command}` : `Usage: /${c.command} <your text>`;
+  c.kind === "image"
+    ? `Usage: /${c.command} <what to draw>`
+    : c.kind === "describe"
+      ? `Send a photo with the caption /${c.command}`
+      : c.kind === "search"
+        ? `Usage: /${c.command} <what to search on the web>`
+        : `Usage: /${c.command} <your text>`;

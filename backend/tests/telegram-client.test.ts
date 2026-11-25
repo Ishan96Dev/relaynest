@@ -28,6 +28,7 @@ before(async () => {
       if (req.url?.includes("/file/bot")) { res.setHeader("content-type", "image/jpeg"); return void res.end(PHOTO); }
       if (req.url?.endsWith("/getUpdates")) return ok([{ update_id: 7, message: { message_id: 1, text: "hi", chat: { id: 5, type: "private" } } }]);
       if (req.url?.endsWith("/sendPhoto")) return ok({ message_id: 9 });
+      if (req.url?.endsWith("/sendMediaGroup")) return ok([{ message_id: 10 }, { message_id: 11 }]);
       ok(true);
     });
   });
@@ -98,6 +99,37 @@ describe("telegram client against a fake Bot API", () => {
       caught = e;
     }
     expect(isTelegramBotDeletedError(caught)).toBe(true);
+  });
+
+  it("sends rich formatted multi-part messages with link_preview_options and photo galleries via sendMediaGroup", async () => {
+    const { sendFormattedMessages, sendPhotoGallery } = await import("../src/server/telegram/client");
+    seen.length = 0;
+    await sendFormattedMessages(TOKEN, 42, ["<b>Part 1</b>", "<b>Part 2</b>"], ["Part 1", "Part 2"], {
+      linkPreviewUrl: "https://example.com/article",
+      preferLargeMedia: true,
+    });
+    expect(seen.length).toBe(2);
+    const first = JSON.parse(seen[0]!.body.toString());
+    const second = JSON.parse(seen[1]!.body.toString());
+    expect(first.parse_mode).toBe("HTML");
+    expect(first.link_preview_options.is_disabled).toBe(true);
+    expect(second.link_preview_options).toEqual({
+      is_disabled: false,
+      url: "https://example.com/article",
+      prefer_large_media: true,
+      prefer_small_media: false,
+    });
+
+    seen.length = 0;
+    await sendPhotoGallery(TOKEN, 42, [
+      { url: "https://images.example.com/one.jpg", caption: "<b>One</b>" },
+      { url: "https://images.example.com/two.jpg", caption: "Two" },
+    ]);
+    expect(seen.at(-1)!.url).toBe(`/bot${TOKEN}/sendMediaGroup`);
+    const groupPayload = JSON.parse(seen.at(-1)!.body.toString());
+    expect(groupPayload.media.length).toBe(2);
+    expect(groupPayload.media[0].type).toBe("photo");
+    expect(groupPayload.media[0].parse_mode).toBe("HTML");
   });
 });
 

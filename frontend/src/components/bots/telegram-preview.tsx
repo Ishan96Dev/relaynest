@@ -4,7 +4,9 @@
 import { ArrowLeft, Bot, MoreVertical, Paperclip, Send, Smile } from "lucide-react";
 import * as React from "react";
 import type { CitationSource } from "@backend/server/ai/citations";
+import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
 import { CitedText, SourcesPanel } from "@/components/ai/citations-panel";
+import { WebMediaPanel } from "@/components/ai/web-media-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { IconTile } from "@/components/ui/icon-tile";
@@ -18,6 +20,7 @@ interface Msg {
   error?: boolean;
   image?: string;
   sources?: CitationSource[];
+  webMedia?: WebMediaPayload;
   ms?: number;
 }
 
@@ -35,7 +38,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
   onAsk?: (
     history: { role: "user" | "assistant"; content: string }[],
     message: string,
-  ) => Promise<{ ok: true; reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number } | { ok: false; message: string }>;
+  ) => Promise<{ ok: true; reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number } | { ok: false; message: string }>;
   note?: string;
 }) {
   const title = name || "Your AI Agent";
@@ -76,6 +79,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
             time: nowTime(),
             image: r.imageBase64 ? `data:${sniffMime(r.imageBase64)};base64,${r.imageBase64}` : undefined,
             sources: r.sources?.length ? r.sources : undefined,
+            webMedia: r.webMedia,
             ms: r.ms,
           }
         : { id: Date.now() + 1, from: "bot", text: r.message, time: nowTime(), error: true },
@@ -119,7 +123,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
                 <div className={cn("max-w-[84%] rounded-2xl px-3 py-2 text-sm", m.from === "user" ? "btn-primary-bg rounded-br-sm text-white" : m.error ? "rounded-bl-sm bg-danger/10 text-bad ring-1 ring-danger/40" : "rounded-bl-sm bg-surface text-foreground ring-1 ring-border")}>
                   {m.image && <img src={m.image} alt={m.text || "Generated image"} className="mb-1.5 h-auto max-h-64 w-full rounded-lg object-contain" />}
                   {(m.text || !m.image) && (
-                    m.from === "bot" && m.sources?.length ? (
+                    m.from === "bot" && !m.error ? (
                       <CitedText
                         text={m.text}
                         sources={m.sources}
@@ -130,6 +134,9 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
                     ) : (
                       <p className="whitespace-pre-wrap break-words">{m.text}</p>
                     )
+                  )}
+                  {m.from === "bot" && !m.error && (m.webMedia || m.sources?.some((s) => s.sourceUrl)) && (
+                    <WebMediaPanel media={m.webMedia} sources={m.sources} variant="telegram" />
                   )}
                   {m.from === "bot" && m.sources && m.sources.length > 0 && (
                     <SourcesPanel
@@ -160,7 +167,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
 
         <form onSubmit={send} className="flex items-center gap-2 border-t border-border p-2.5">
           <Smile className="size-5 shrink-0 text-muted" aria-hidden />
-          <input aria-label="Type a message to preview" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={500} placeholder="Type a message or /imagine ..."
+          <input aria-label="Type a message to preview" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={500} placeholder="Type a message, /search ..., or /imagine ..."
             className="h-9 min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted focus:outline-none" />
           <Paperclip className="size-5 shrink-0 text-muted" aria-hidden />
           <button type="submit" aria-label="Send" disabled={!draft.trim() || typing} className="btn-primary-bg grid size-9 shrink-0 place-items-center rounded-full text-white transition disabled:opacity-50">

@@ -230,6 +230,7 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
 }
 
 const TOOL_ROWS: { key: keyof AgentTools; title: string; body: string }[] = [
+  { key: "webSearch", title: "Open Web Search (/search)", body: "Lets users run /search <topic> to fetch live open-web answers, tables, links, images and videos with citations." },
   { key: "datetime", title: "Date and time awareness", body: "Tells the agent the current date and time (UTC) so it can answer \"today\" and \"tomorrow\"." },
   { key: "matchLanguage", title: "Reply in the user's language", body: "Answers in the language the person writes in, even if it differs from the primary language." },
   { key: "mentionOnly", title: "Groups: reply only when mentioned", body: "In group chats the agent stays quiet unless someone mentions its @username." },
@@ -249,13 +250,20 @@ export function validateCommands(list: AgentCommand[]): string | undefined {
   return undefined;
 }
 
-const KIND_LABEL: Record<AgentCommand["kind"], string> = { chat: "Chat reply", image: "Generate image", describe: "Describe a photo" };
+const KIND_LABEL: Record<AgentCommand["kind"], string> = {
+  chat: "Chat reply",
+  search: "Open Web Search",
+  image: "Generate image",
+  describe: "Describe a photo",
+};
 const KIND_HINT: Record<AgentCommand["kind"], string> = {
   chat: "What should the model do with the text after the command?",
-  image: "Optional style. Use {input} where the person&apos;s text goes, for example: A minimalist logo of {input}",
+  search: "Optional focus for web research, e.g. Emphasize technical specs, pricing tables, and video tutorials.",
+  image: "Optional style. Use {input} where the person's text goes, for example: A minimalist logo of {input}",
   describe: "What should the model look for? For example: Read all the text in this image.",
 };
 const PRESETS: AgentCommand[] = [
+  { command: "search", description: "Search the web with details, images & videos", kind: "search", instruction: "" },
   { command: "imagine", description: "Generate an image from a description", kind: "image", instruction: "" },
   { command: "describe", description: "Describe a photo you send", kind: "describe", instruction: "Describe this image." },
   { command: "translate", description: "Translate text", kind: "chat", instruction: "Translate the text. Use the language the person names, or English if none is named." },

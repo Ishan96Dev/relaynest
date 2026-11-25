@@ -212,7 +212,7 @@ export function parseAgentImport(text: string): ImportResult<Partial<AgentPreset
   if (o.tools && typeof o.tools === "object") {
     const t = o.tools as Record<string, unknown>;
     const tools: Partial<AgentTools> = {};
-    for (const k of ["datetime", "matchLanguage", "mentionOnly", "typing"] as const) if (typeof t[k] === "boolean") tools[k] = t[k];
+    for (const k of ["datetime", "matchLanguage", "mentionOnly", "typing", "webSearch"] as const) if (typeof t[k] === "boolean") tools[k] = t[k];
     out.tools = tools;
   }
   if (!Object.keys(out).length) return { ok: false, message: "No known fields found. Use keys such as name, description, instructions and welcomeMessage." };

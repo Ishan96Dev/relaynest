@@ -262,10 +262,10 @@ const BASE_MODELS: BaseModel[] = [
  * keeping interactive Playground and Telegram replies crisp (under 1-2s).
  */
 const TUNING: Record<string, { thinking: boolean; temperature: number; maxTokens: number }> = {
-  "nemotron-3-5-lightning-30b-a3b": { thinking: true, temperature: 0.6, maxTokens: 1024 },
-  "nemotron-3-5-super-vl-120b-a12b": { thinking: true, temperature: 0.5, maxTokens: 1536 },
-  "nemotron-3-5-bolt-e4b": { thinking: true, temperature: 0.5, maxTokens: 1024 },
-  "nemotron-3-nano-omni-30b-a3b-reasoning": { thinking: true, temperature: 0.5, maxTokens: 1024 },
+  "nemotron-3-5-lightning-30b-a3b": { thinking: true, temperature: 0.6, maxTokens: 2048 },
+  "nemotron-3-5-super-vl-120b-a12b": { thinking: true, temperature: 0.5, maxTokens: 2048 },
+  "nemotron-3-5-bolt-e4b": { thinking: true, temperature: 0.5, maxTokens: 2048 },
+  "nemotron-3-nano-omni-30b-a3b-reasoning": { thinking: true, temperature: 0.5, maxTokens: 2048 },
   "nemotron-3-embed-1b": { thinking: false, temperature: 0, maxTokens: 256 },
   "kimi-k3-1-pro": { thinking: true, temperature: 0.6, maxTokens: 2048 },
   "glm-5-3-flash": { thinking: true, temperature: 0.6, maxTokens: 2048 },

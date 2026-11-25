@@ -1,7 +1,7 @@
 import "server-only";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import { buildCitationSources, buildSystemPrompt, clampReply, type AgentCommand, type KnowledgeItem } from "@backend/server/ai/agent";
-import { formatTelegramHtmlReply, formatTelegramPlainReply } from "@backend/server/ai/citations";
+import { formatTelegramHtmlChunks, formatTelegramPlainChunks, pickFeaturedLinkPreviewUrl } from "@backend/server/ai/citations";
 import { commandTask, parseCommandText, usageText } from "@backend/server/ai/commands";
 import { chat, rateLimit, type ChatMessage } from "@backend/server/ai/provider";
 import { logEvent } from "@backend/server/logger";
@@ -9,7 +9,7 @@ import { AGENT_COLUMNS, toAgentConfig } from "@backend/server/services/ai-agents
 import { runMediaCommand } from "@backend/server/services/ai-agent-commands";
 import { loadToken } from "@backend/server/services/bots";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
-import { sendChatAction, sendFormattedMessage, sendMessage, type TelegramUpdate } from "@backend/server/telegram/client";
+import { sendChatAction, sendFormattedMessages, sendMessage, type TelegramUpdate } from "@backend/server/telegram/client";
 
 interface BotRef { id: string; workspace_id: string; telegram_username: string | null }
 
@@ -26,6 +26,13 @@ const DEFAULT_IMAGINE_CMD: AgentCommand = {
   command: "imagine",
   description: "Generate an image from a prompt",
   kind: "image",
+  instruction: "",
+};
+
+const DEFAULT_SEARCH_CMD: AgentCommand = {
+  command: "search",
+  description: "Search the open web with details, images & videos",
+  kind: "search",
   instruction: "",
 };
 
@@ -65,7 +72,9 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
       await send(config.welcomeMessage ?? `Hi! I'm ${config.name}. ${config.description}`);
     } else if (cmd === "help") {
       trigger = "command:/help";
-      await send(`I'm ${config.name}. Send me a message or photo and I'll answer. Use /imagine <prompt> to generate an image, /describe with a photo to analyze it, or /reset to clear our conversation.`);
+      await send(
+        `I'm ${config.name}. Send me a message or photo and I'll answer in detail.\n\nCommands:\n• /search <topic> — search the open web with detailed summaries, tables, links, images & videos\n• /imagine <prompt> — generate a high-detail image\n• /describe (with a photo) — analyze images, text & charts\n• /reset — clear our conversation`,
+      );
     } else if (cmd === "reset") {
       trigger = "command:/reset";
       await admin.from("ai_agent_messages").delete().eq("agent_id", config.id).eq("chat_id", chatId);
@@ -73,6 +82,13 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
     } else if (custom && custom.kind !== "chat") {
       trigger = `command:/${custom.command}`;
       await runMediaCommand({ ...media, command: custom });
+    } else if (!custom && cmd === "search") {
+      trigger = "command:/search";
+      if (config.tools.webSearch === false) {
+        await send("Web search is currently disabled for this bot. Enable Open Web Search in Agent Tools to use /search.");
+      } else {
+        await runMediaCommand({ ...media, command: DEFAULT_SEARCH_CMD });
+      }
     } else if (!custom && cmd === "imagine") {
       trigger = "command:/imagine";
       await runMediaCommand({ ...media, command: DEFAULT_IMAGINE_CMD });
@@ -117,18 +133,21 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
         { role: "user", content: text.slice(0, 4000) },
       ];
 
-      // Run in fast non-thinking mode with tight timeout + resilient NVIDIA fallback so Telegram stays snappy and never hangs.
+      // Run in fast non-thinking mode with generous token budget + resilient NVIDIA fallback so Telegram answers are rich & fast.
       const r = await chat(config.model, messages, {
         temperature: config.temperature,
-        maxTokens: Math.min(config.maxTokens, 1536),
+        maxTokens: Math.min(Math.max(config.maxTokens, 1536), 3072),
         thinking: false,
-        timeoutMs: 18_000,
+        timeoutMs: 20_000,
         allowFallback: true,
       });
 
-      const htmlReply = formatTelegramHtmlReply(r.text, citations);
-      const plainReply = formatTelegramPlainReply(r.text, citations);
-      await sendFormattedMessage(token, msg.chat.id, htmlReply, plainReply);
+      const htmlChunks = formatTelegramHtmlChunks(r.text, citations);
+      const plainChunks = formatTelegramPlainChunks(r.text, citations);
+      const previewUrl = pickFeaturedLinkPreviewUrl(r.text, citations);
+      await sendFormattedMessages(token, msg.chat.id, htmlChunks, plainChunks, {
+        linkPreviewUrl: previewUrl,
+      });
 
       if (config.memoryTurns > 0) {
         await admin.from("ai_agent_messages").insert([

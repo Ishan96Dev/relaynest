@@ -3,9 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
+import type { UserPreferences } from "@backend/lib/preferences";
+import { DEFAULT_PREFERENCES } from "@backend/lib/preferences";
 import type { SessionUser } from "@backend/server/services/session";
 import { LEGAL_STRIP_LINKS } from "@/components/marketing/legal-shell";
 import { RouteProgress } from "@/components/motion/route-progress";
+import { PreferencesProvider } from "@/components/providers/preferences-provider";
 import { APP_VERSION_TAG } from "@/lib/app-version";
 import { AuditTracker } from "./audit-tracker";
 import { Header } from "./header";
@@ -44,7 +47,17 @@ export function AppFooter() {
 }
 
 /** One shell for every authenticated page, including Settings, so navigation and spacing stay identical. */
-export function DashboardShell({ children, user }: { children: React.ReactNode; user: SessionUser }) {
+export function DashboardShell({
+  children,
+  user,
+  initialPreferences = DEFAULT_PREFERENCES,
+  initialPreferencesUpdatedAt = null,
+}: {
+  children: React.ReactNode;
+  user: SessionUser;
+  initialPreferences?: UserPreferences;
+  initialPreferencesUpdatedAt?: string | null;
+}) {
   const [open, setOpen] = React.useState(false);
   const [collapsed, setCollapsed] = React.useState(false);
   const pathname = usePathname();
@@ -61,29 +74,31 @@ export function DashboardShell({ children, user }: { children: React.ReactNode; 
   }, [open]);
 
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-[var(--sb)_minmax(0,1fr)] lg:transition-[grid-template-columns] lg:duration-300 lg:ease-out" style={{ "--sb": collapsed ? "84px" : "264px" } as React.CSSProperties}>
-      <RouteProgress />
-      <AuditTracker demo={user.demo} />
-      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-white">Skip to content</a>
-      <aside className="sticky top-0 hidden h-screen lg:block" aria-label="Sidebar"><Sidebar collapsed={collapsed} planId={user.planId} onToggle={toggle} /></aside>
-      {open && (
-        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
-          <button aria-label="Close menu" className="absolute inset-0 bg-black/70" style={{ animation: "rn-fade-in 0.25s ease both" }} onClick={() => setOpen(false)} />
-          <div className="relative h-full w-[84vw] max-w-[310px]" style={{ animation: "rn-slide-in-left 0.35s var(--ease-out-expo) both" }}>
-            <Sidebar planId={user.planId} onNavigate={() => setOpen(false)} onClose={() => setOpen(false)} />
-          </div>
-        </div>
-      )}
-      <div className="flex min-h-screen min-w-0 flex-col">
-        <Header onMenu={() => setOpen(true)} user={user} />
-        {user.demo && (
-          <div role="status" className="border-b border-warning/30 bg-warning/10 px-4 py-2 text-center text-xs text-warn lg:px-8">
-            Demo mode: Supabase is not configured, so sample data is shown and nothing is saved. See .env.example.
+    <PreferencesProvider initial={initialPreferences} initialUpdatedAt={initialPreferencesUpdatedAt} demo={user.demo}>
+      <div className="min-h-screen lg:grid lg:grid-cols-[var(--sb)_minmax(0,1fr)] lg:transition-[grid-template-columns] lg:duration-300 lg:ease-out" style={{ "--sb": collapsed ? "84px" : "264px" } as React.CSSProperties}>
+        <RouteProgress />
+        <AuditTracker demo={user.demo} />
+        <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-white">Skip to content</a>
+        <aside className="sticky top-0 hidden h-screen lg:block" aria-label="Sidebar"><Sidebar collapsed={collapsed} planId={user.planId} onToggle={toggle} /></aside>
+        {open && (
+          <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+            <button aria-label="Close menu" className="absolute inset-0 bg-black/70" style={{ animation: "rn-fade-in 0.25s ease both" }} onClick={() => setOpen(false)} />
+            <div className="relative h-full w-[84vw] max-w-[310px]" style={{ animation: "rn-slide-in-left 0.35s var(--ease-out-expo) both" }}>
+              <Sidebar planId={user.planId} onNavigate={() => setOpen(false)} onClose={() => setOpen(false)} />
+            </div>
           </div>
         )}
-        <main id="main" tabIndex={-1} className="min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8 lg:py-8">{children}</main>
-        <AppFooter />
+        <div className="flex min-h-screen min-w-0 flex-col">
+          <Header onMenu={() => setOpen(true)} user={user} />
+          {user.demo && (
+            <div role="status" className="border-b border-warning/30 bg-warning/10 px-4 py-2 text-center text-xs text-warn lg:px-8">
+              Demo mode: Supabase is not configured, so sample data is shown and nothing is saved. See .env.example.
+            </div>
+          )}
+          <main id="main" tabIndex={-1} className="rn-main min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8 lg:py-8">{children}</main>
+          <AppFooter />
+        </div>
       </div>
-    </div>
+    </PreferencesProvider>
   );
 }

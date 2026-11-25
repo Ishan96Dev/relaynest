@@ -2,6 +2,7 @@
 import { BookOpen, ChevronDown, ChevronUp, ExternalLink, Sparkles } from "lucide-react";
 import * as React from "react";
 import { orderSourcesByCitation, type CitationSource, type RetrievalMode } from "@backend/server/ai/citations";
+import { RichMessage } from "@/components/ai/rich-message";
 
 const MODE_LABELS: Record<RetrievalMode, string> = {
   hybrid: "Hybrid RAG",
@@ -9,12 +10,13 @@ const MODE_LABELS: Record<RetrievalMode, string> = {
   keyword: "Keyword RAG",
   overview: "Document RAG",
   agent: "Agent Knowledge",
+  web: "Open Web Search",
   none: "Knowledge",
 };
 
 /**
- * Splits assistant text on bracketed citation markers like [1] or [1, 2] and turns valid markers
- * into interactive citation pills (custom CSS for Playground and Telegram Preview).
+ * Renders assistant Markdown (tables, fenced code blocks, hyperlinks, lists, blockquotes)
+ * alongside interactive inline [1] / [1, 2] citation pills in Playground and Telegram Preview.
  */
 export function CitedText({
   text,
@@ -31,46 +33,15 @@ export function CitedText({
   variant?: "playground" | "telegram";
   streaming?: boolean;
 }) {
-  const byIdx = React.useMemo(() => new Map((sources ?? []).map((s) => [s.index, s])), [sources]);
-  const chipClass = variant === "telegram" ? "rn-tg-cite" : "rn-cite-chip";
-
-  const nodes = React.useMemo(() => {
-    if (!sources?.length) return text;
-    const parts: React.ReactNode[] = [];
-    const re = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      const nums = m[1]!.split(",").map((x) => Number.parseInt(x.trim(), 10));
-      if (!nums.every((n) => byIdx.has(n))) continue;
-      if (m.index > last) parts.push(text.slice(last, m.index));
-      nums.forEach((n, j) => {
-        const src = byIdx.get(n)!;
-        parts.push(
-          <button
-            key={`${m!.index}-${n}-${j}`}
-            type="button"
-            className={chipClass}
-            data-active={activeIndex === n ? "true" : undefined}
-            title={`[${n}] ${src.document}${src.collection ? ` (${src.collection})` : ""}`}
-            aria-label={`Citation ${n}: ${src.document}`}
-            onClick={() => onSelect(n)}
-          >
-            [{n}]
-          </button>,
-        );
-      });
-      last = m.index + m[0].length;
-    }
-    if (last < text.length) parts.push(text.slice(last));
-    return parts;
-  }, [text, sources, byIdx, chipClass, activeIndex, onSelect]);
-
   return (
-    <p className="whitespace-pre-wrap break-words">
-      {nodes}
-      {streaming && <span className="rn-stream-cursor" aria-hidden />}
-    </p>
+    <RichMessage
+      text={text}
+      sources={sources}
+      activeIndex={activeIndex}
+      onSelect={onSelect}
+      variant={variant}
+      streaming={streaming}
+    />
   );
 }
 
@@ -102,6 +73,7 @@ export function SourcesPanel({
   const hiddenCount = ordered.length - visible.length;
 
   const scoreText = (s: CitationSource) => {
+    if (s.retrieval === "web") return "Web";
     if (s.retrieval === "agent") return "Direct";
     if (s.retrieval === "overview" || s.score < 0.15) return "Doc";
     if (s.score > 0 && s.score <= 1) return `${Math.round(s.score * 100)}%`;

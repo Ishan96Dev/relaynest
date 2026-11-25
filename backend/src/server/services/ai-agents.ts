@@ -3,12 +3,14 @@ import { z } from "zod";
 import { Errors } from "@backend/lib/http/api";
 import type { createAiAgentInput, knowledgeInput, testInput, updateAiAgentInput } from "@backend/lib/validation/schemas";
 import { requireWrite, type AuthContext } from "@backend/server/auth/context";
-import { buildCitationSources, buildSystemPrompt, clampReply, parseCommands, parseTools, type AgentCommand, type AgentConfig, type AgentTools, type KnowledgeItem } from "@backend/server/ai/agent";
+import { buildCitationSources, buildSystemPrompt, parseCommands, parseTools, type AgentCommand, type AgentConfig, type AgentTools, type KnowledgeItem } from "@backend/server/ai/agent";
 import type { CitationSource } from "@backend/server/ai/citations";
 import { canPowerAgent } from "@backend/server/ai/model-catalog";
 import { commandTask, imagePrompt, parseCommandText, usageText } from "@backend/server/ai/commands";
 import { chat, generateImage, rateLimit, type ChatMessage } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
+import { buildWebSearchSystemContext, webSearchToCitations, type WebMediaPayload } from "@backend/server/ai/web-search-types";
+import { searchOpenWeb } from "@backend/server/search/web-search";
 import { getDbDefaultImageModel } from "@backend/server/services/ai-models";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
 import { activateBot, createBot, deactivateBot, deleteBot, loadToken, updateBotDetails } from "@backend/server/services/bots";
@@ -234,17 +236,24 @@ export async function updateAiAgent(ctx: AuthContext, id: string, patch: UpdateA
     }).catch((e) => console.error("[ai-agents] bot sync failed:", e instanceof Error ? e.message : e));
   }
   // The command menu in Telegram follows the saved commands while the agent is live (best effort).
-  if (patch.commands !== undefined && data.status === "active" && data.bot_id) await syncTelegramCommands(ctx.workspaceId, data.bot_id as string, parseCommands(data.commands)).catch(() => undefined);
+  if ((patch.commands !== undefined || patch.tools !== undefined) && data.status === "active" && data.bot_id) {
+    await syncTelegramCommands(ctx.workspaceId, data.bot_id as string, parseCommands(data.commands), parseTools(data.tools)).catch(() => undefined);
+  }
   return toAgentDto(data);
 }
 
 /** Publishes the built-in and custom commands as the bot's menu in Telegram. */
-export async function syncTelegramCommands(workspaceId: string, botId: string, commands: AgentCommand[]): Promise<void> {
+export async function syncTelegramCommands(workspaceId: string, botId: string, commands: AgentCommand[], tools?: AgentTools): Promise<void> {
   const token = await loadToken(botId, workspaceId);
+  const hasSearch = commands.some((c) => c.command === "search");
+  const extras = !hasSearch && tools?.webSearch !== false
+    ? [{ command: "search", description: "Search the web with details, images & videos" }]
+    : [];
   await setMyCommands(token, [
     { command: "start", description: "Start the conversation" },
     { command: "help", description: "How to use this bot" },
     { command: "reset", description: "Clear our conversation" },
+    ...extras,
     ...commands.map((c) => ({ command: c.command, description: c.description.slice(0, 256) })),
   ]);
 }
@@ -331,7 +340,7 @@ export async function activateAiAgent(ctx: AuthContext, id: string): Promise<AiA
   if (!a.botId) throw Errors.invalid("Connect a Telegram bot first.");
   if (!a.modelSlug) throw Errors.invalid("Choose a model for this agent first.");
   await activateBot(ctx, a.botId);
-  await syncTelegramCommands(ctx.workspaceId, a.botId, a.commands).catch(() => undefined);
+  await syncTelegramCommands(ctx.workspaceId, a.botId, a.commands, a.tools).catch(() => undefined);
   const { data, error } = await ctx.supabase.from("ai_agents").update({ status: "active" }).eq("id", id).eq("workspace_id", ctx.workspaceId).select(COLUMNS).single();
   if (error) throw new Error("Failed to activate the AI agent");
   return toAgentDto(data);
@@ -346,31 +355,62 @@ export async function deactivateAiAgent(ctx: AuthContext, id: string): Promise<A
   return toAgentDto(data);
 }
 
-/** One reply from the agent for the in-app chat preview. Uses the saved configuration, agent knowledge and linked KB collections. */
+/** One reply from the agent for the in-app chat preview. Uses the saved configuration, agent knowledge, open web search and linked KB collections. */
 export function testAiAgent(
   ctx: AuthContext,
   id: string,
   input: z.infer<typeof testInput>,
-): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number }> {
+): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number }> {
   return withUsageScope({ workspaceId: ctx.workspaceId, userId: ctx.userId, origin: "agent" }, () => testAiAgentInner(ctx, id, input));
 }
 async function testAiAgentInner(
   ctx: AuthContext,
   id: string,
   input: z.infer<typeof testInput>,
-): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; ms?: number }> {
+): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number }> {
   const started = Date.now();
   rateLimit(`agent-test:${ctx.userId}`, 30, 60_000);
   const [, row] = await Promise.all([assertExecutionLimit(ctx.workspaceId), loadRow(ctx, id)]);
   const config = toAgentConfig(row, ctx.workspaceId);
   if (!config.model) throw Errors.invalid("Choose a model for this agent first (step 3).");
-  // Slash commands behave like they do in Telegram: image commands draw, chat commands get a task, describe needs a photo.
+  // Slash commands behave like they do in Telegram: search fetches live web/media, image draws, describe needs a photo.
   const { cmd, input: commandInput } = parseCommandText(input.message);
   const custom = cmd ? config.commands.find((c) => c.command === cmd) : undefined;
   if (custom?.kind === "describe" || (!custom && cmd === "describe")) {
     return { reply: `Send a photo with the caption /${custom?.command ?? "describe"} in Telegram. The preview cannot attach pictures.` };
   }
   if (custom && !commandInput) return { reply: usageText(custom) };
+  if (custom?.kind === "search" || (!custom && cmd === "search")) {
+    if (!commandInput) return { reply: `Usage: /${custom?.command ?? "search"} <what to search on the web>` };
+    if (!custom && config.tools.webSearch === false) {
+      return { reply: "Open Web Search is turned off for this agent. Enable it in Tools & Capabilities to use /search." };
+    }
+    rateLimit(`agent-search:${ctx.userId}`, 12, 60_000);
+    const bundle = await searchOpenWeb(commandInput, { maxResults: 6, maxImages: 4, maxVideos: 4 });
+    const citations = webSearchToCitations(bundle.results);
+    const extraGuide = custom?.instruction?.trim() ? `\n\nExtra search instructions: ${custom.instruction.trim()}` : "";
+    const system = `${buildSystemPrompt(config, [], new Date(), [])}\n\n${buildWebSearchSystemContext(bundle)}${extraGuide}`;
+    const r = await chat(
+      config.model,
+      [
+        { role: "system", content: system },
+        { role: "user", content: commandInput },
+      ],
+      {
+        temperature: Math.min(config.temperature, 0.45),
+        maxTokens: Math.min(Math.max(config.maxTokens, 1536), 3072),
+        thinking: false,
+        timeoutMs: 22_000,
+        allowFallback: true,
+      },
+    );
+    return {
+      reply: r.text.slice(0, 8000),
+      ...(citations.length ? { sources: citations } : {}),
+      webMedia: { query: bundle.query, engine: bundle.engine, images: bundle.images, videos: bundle.videos },
+      ms: Date.now() - started,
+    };
+  }
   if (custom?.kind === "image" || (!custom && cmd === "imagine")) {
     if (!commandInput) return { reply: `Usage: /${custom?.command ?? "imagine"} <what to draw>` };
     const imageModel = config.imageModel ?? (await getDbDefaultImageModel());
@@ -395,13 +435,13 @@ async function testAiAgentInner(
   ];
   const r = await chat(config.model, messages, {
     temperature: config.temperature,
-    maxTokens: Math.min(config.maxTokens, 1536),
+    maxTokens: Math.min(Math.max(config.maxTokens, 1536), 3072),
     thinking: false,
-    timeoutMs: 20_000,
+    timeoutMs: 22_000,
     allowFallback: true,
   });
   return {
-    reply: clampReply(r.text),
+    reply: r.text.slice(0, 8000),
     ...(citations.length ? { sources: citations } : {}),
     ms: Date.now() - started,
   };

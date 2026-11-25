@@ -24,6 +24,7 @@ describe("command text", () => {
     expect(commandTask({ command: "solve", description: "Solve", instruction: "Show steps" })).toContain("Show steps");
     expect(usageText({ command: "imagine", kind: "image" })).toContain("<what to draw>");
     expect(usageText({ command: "describe", kind: "describe" })).toContain("Send a photo");
+    expect(usageText({ command: "search", kind: "search" })).toContain("<what to search on the web>");
   });
 });
 
@@ -32,6 +33,7 @@ describe("command schema", () => {
 
   it("accepts valid commands and normalises case", () => {
     expect(agentCommandSchema.parse({ ...ok, command: "Imagine" }).command).toBe("imagine");
+    expect(agentCommandSchema.parse({ command: "search", description: "Search web", kind: "search", instruction: "" }).kind).toBe("search");
   });
 
   it("rejects reserved, malformed and duplicate names", () => {

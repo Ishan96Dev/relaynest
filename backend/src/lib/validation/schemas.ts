@@ -79,6 +79,7 @@ export const toolsSchema = z.object({
   mentionOnly: z.boolean().default(true),
   typing: z.boolean().default(true),
   matchLanguage: z.boolean().default(true),
+  webSearch: z.boolean().default(true),
 });
 
 /** Slash commands that start with the bot menu entries. start, help and reset are built in. */
@@ -86,8 +87,8 @@ export const RESERVED_COMMANDS = ["start", "help", "reset"];
 export const agentCommandSchema = z.object({
   command: z.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_]{0,31}$/, "Use 1-32 lowercase letters, digits or underscores, starting with a letter.").refine((c) => !RESERVED_COMMANDS.includes(c), "start, help and reset are built in."),
   description: z.string().trim().min(1, "Add a short description.").max(100),
-  /** chat: answer with the language model. image: generate a picture. describe: read a photo sent with the command. */
-  kind: z.enum(["chat", "image", "describe"]),
+  /** chat: answer with the language model. image: generate a picture. describe: read a photo sent with the command. search: live open-source web search with images, videos & sources. */
+  kind: z.enum(["chat", "image", "describe", "search"]),
   /** Extra guidance for this command. For image commands, {input} is replaced by what the person typed. */
   instruction: z.string().trim().max(1000).default(""),
 });

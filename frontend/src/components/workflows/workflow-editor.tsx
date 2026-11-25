@@ -11,6 +11,9 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
+import { formatUserDateTime, formatUserTime } from "@backend/lib/preferences";
+import { usePreferences } from "@/components/providers/preferences-provider";
+import { Modal } from "@/components/ui/modal";
 import { toast } from "@/components/ui/toast";
 import { api } from "@/lib/api-client";
 import { Badge } from "@/components/ui/badge";
@@ -67,20 +70,41 @@ const seed = (blank = false): Snap => ({
 
 const STORAGE = "rn-workflow-draft:";
 
-function ZoomPanel({ showMap, setShowMap }: { showMap: boolean; setShowMap: (v: boolean) => void }) {
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
+function ZoomPanel({
+  showMap,
+  setShowMap,
+  defaultZoom,
+}: {
+  showMap: boolean;
+  setShowMap: (v: boolean) => void;
+  defaultZoom: number;
+}) {
+  const { zoomIn, zoomOut, fitView, zoomTo } = useReactFlow();
   const { zoom } = useViewport();
+  const appliedInitial = React.useRef(false);
+
+  // Apply the user's Default Canvas Zoom preference once when the editor mounts or defaultZoom changes.
+  React.useEffect(() => {
+    const target = Math.min(1.5, Math.max(0.5, defaultZoom / 100));
+    const timer = window.setTimeout(() => {
+      void zoomTo(target, { duration: appliedInitial.current ? 200 : 0 });
+      appliedInitial.current = true;
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [defaultZoom, zoomTo]);
+
   const btn = "grid size-8 place-items-center rounded-md text-foreground/85 hover:bg-foreground/10";
   return (
     <Panel position="top-right" className="!m-3 flex items-center gap-1.5">
-      <button aria-label="Fit view" className={cn(btn, "card")} onClick={() => fitView({ padding: 0.2, maxZoom: 0.9, duration: 300 })}><Maximize2 className="size-4" /></button>
+      <button aria-label="Fit view" className={cn(btn, "card")} onClick={() => fitView({ padding: 0.2, maxZoom: defaultZoom / 100, duration: 300 })}><Maximize2 className="size-4" /></button>
       <button aria-label="Toggle minimap" aria-pressed={showMap} className={cn(btn, "card")} onClick={() => setShowMap(!showMap)}><MapIcon className="size-4" /></button>
-      <div className="card flex items-center gap-1 px-1"><button aria-label="Zoom out" className={btn} onClick={() => zoomOut()}><Minus className="size-4" /></button><span className="w-12 text-center text-xs font-semibold tabular-nums">{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" className={btn} onClick={() => zoomIn()}><Plus className="size-4" /></button></div>
+      <div className="card flex items-center gap-1 px-1"><button aria-label="Zoom out" className={btn} onClick={() => zoomOut()}><Minus className="size-4" /></button><button type="button" title={`Reset zoom to default (${defaultZoom}%)`} onClick={() => void zoomTo(defaultZoom / 100, { duration: 200 })} className="w-12 text-center text-xs font-semibold tabular-nums hover:text-lavender">{Math.round(zoom * 100)}%</button><button aria-label="Zoom in" className={btn} onClick={() => zoomIn()}><Plus className="size-4" /></button></div>
     </Panel>
   );
 }
 
 function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; initial?: EditorInitial; persisted: boolean; bots: BotOption[] }) {
+  const { prefs } = usePreferences();
   const init = React.useMemo(() => (initial ? fromDefinition(initial.definition) : seed(persisted)), [initial, persisted]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(init.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(init.edges);
@@ -92,7 +116,10 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
   const [info, setInfo] = React.useState<Info | null>(initial ? { webhook: initial.webhook, schedule: initial.schedule, runs: initial.runs } : null);
   const [secret, setSecret] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<"save" | "publish" | "unpublish" | "secret" | null>(null);
-  const setNotice = (m: { tone: "ok" | "bad"; text: string } | null) => { if (m) toast[m.tone === "ok" ? "success" : "error"](m.text); };
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const setNotice = React.useCallback((m: { tone: "ok" | "bad"; text: string } | null) => {
+    if (m) toast[m.tone === "ok" ? "success" : "error"](m.text);
+  }, []);
   const [editingName, setEditingName] = React.useState(false);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [panelTab, setPanelTab] = React.useState<"config" | "advanced">("config");
@@ -188,26 +215,42 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
     setStats((s) => (res.status === "succeeded" ? { ...s, ok: s.ok + 1 } : { ...s, failed: s.failed + 1 }));
   }
 
-  const fail = (message: string, details?: { message?: string }[]) => setNotice({ tone: "bad", text: details?.[0]?.message ? `${message} ${details[0].message}` : message });
+  const fail = React.useCallback(
+    (message: string, details?: { message?: string }[]) =>
+      setNotice({ tone: "bad", text: details?.[0]?.message ? `${message} ${details[0].message}` : message }),
+    [setNotice],
+  );
   /** Saves to the server (or to this browser in demo mode). Returns the automation ID, or null when saving failed. */
-  async function save(): Promise<string | null> {
-    const at = new Date().toLocaleTimeString();
+  const save = React.useCallback(async (silent = false): Promise<string | null> => {
+    const at = formatUserTime(new Date(), prefs);
     if (!persisted) {
       localStorage.setItem(STORAGE + workflowId, JSON.stringify({ nodes, edges, configs, name, savedAt: at }));
       setDirty(false); setSavedAt(at);
       return workflowId;
     }
-    setBusy("save"); setNotice(null);
+    setBusy("save"); if (!silent) setNotice(null);
     const body = { name, description, definition };
     const res = wfId ? await api<EditorInitial>(`/api/v1/automations/${wfId}`, { method: "PUT", body }) : await api<EditorInitial>("/api/v1/automations", { body });
     setBusy(null);
-    if (!res.ok) { fail(res.message, res.details); return null; }
+    if (!res.ok) { if (!silent) fail(res.message, res.details); return null; }
     if (!wfId) window.history.replaceState(null, "", `/workflows/${res.data.id}`);
     setWfId(res.data.id); setStatus(res.data.status); setInfo({ webhook: res.data.webhook, schedule: res.data.schedule, runs: res.data.runs });
     setDirty(false); setSavedAt(at);
     return res.data.id;
-  }
-  async function publish() {
+  }, [configs, definition, description, edges, fail, name, nodes, persisted, prefs, setNotice, wfId, workflowId]);
+
+  // Honor Editor Preference: Auto-save (debounced 2.5s after changes when enabled).
+  React.useEffect(() => {
+    if (!prefs.autosave || !dirty || busy !== null) return;
+    if (!name.trim() || nodes.length === 0) return;
+    const timer = window.setTimeout(() => {
+      void save(true);
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [prefs.autosave, dirty, busy, name, nodes.length, save]);
+
+  async function publishConfirmed() {
+    setConfirmOpen(false);
     const r = validate();
     if (!r.valid) { fail("Fix the highlighted issues before publishing."); return; }
     const id = dirty || !wfId ? await save() : wfId;
@@ -220,6 +263,16 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
     setStatus(a.status); setInfo({ webhook: a.webhook, schedule: a.schedule, runs: a.runs });
     if (res.data.webhookSecret) setSecret(res.data.webhookSecret);
     setNotice({ tone: "ok", text: a.schedule?.enabled ? "Published. The schedule is now running." : "Published. This automation is live." });
+  }
+
+  function requestPublish() {
+    const r = validate();
+    if (!r.valid) { fail("Fix the highlighted issues before publishing."); return; }
+    if (prefs.confirmPublish) {
+      setConfirmOpen(true);
+    } else {
+      void publishConfirmed();
+    }
   }
   async function unpublish() {
     if (!wfId) return;
@@ -270,8 +323,18 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
             : <p className="text-sm text-foreground/75">{description || (persisted ? "No description. Click the pencil to add one." : "")}</p>}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {dirty ? <span role="status" className="mr-1 flex items-center gap-1.5 text-xs font-medium text-bad"><span className="size-2 rounded-full bg-[#FF4D7E]" aria-hidden />Unsaved changes</span>
-            : savedAt && <span role="status" className="mr-1 text-xs text-ok">{persisted ? "Saved" : "Draft saved locally"} at {savedAt}</span>}
+          {dirty ? (
+            <span role="status" className="mr-1 flex items-center gap-1.5 text-xs font-medium text-bad">
+              <span className="size-2 rounded-full bg-[#FF4D7E]" aria-hidden />
+              {prefs.autosave ? "Unsaved (auto-saving…)" : "Unsaved changes"}
+            </span>
+          ) : savedAt ? (
+            <span role="status" className="mr-1 text-xs text-ok">
+              {persisted ? "Saved" : "Draft saved locally"} at {savedAt}
+            </span>
+          ) : prefs.autosave ? (
+            <span className="mr-1 text-xs text-muted">Auto-save on</span>
+          ) : null}
           <Button variant="outline" size="sm" aria-label="Undo" onClick={undo} disabled={!past.current.length} className="px-2.5"><Undo2 className="size-4" /></Button>
           <Button variant="outline" size="sm" aria-label="Redo" onClick={redo} disabled={!future.current.length} className="px-2.5"><Redo2 className="size-4" /></Button>
           <Button variant="outline" onClick={test} title="Run this workflow once with sample data. Nothing is published."><Play className="size-4" />Test</Button>
@@ -280,7 +343,7 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
             ? <Button disabled title="Publishing needs an account and a connected database."><Zap className="size-4" />Publish</Button>
             : status === "active" && !dirty
               ? <Button variant="outline" onClick={() => void unpublish()} title="Pause this automation. Triggers and schedules stop running." disabled={busy !== null}><Lock className="size-4" />{busy === "unpublish" ? "Pausing..." : "Unpublish"}</Button>
-              : <Button onClick={() => void publish()} title="Make this automation live so its triggers and schedule start running." disabled={busy !== null}><Zap className="size-4" />{busy === "publish" ? "Publishing..." : "Publish"}</Button>}
+              : <Button onClick={requestPublish} title="Make this automation live so its triggers and schedule start running." disabled={busy !== null}><Zap className="size-4" />{busy === "publish" ? "Publishing..." : "Publish"}</Button>}
           <Button variant="outline" aria-label="More options" title="More options" className="px-2.5"><MoreVertical className="size-4" /></Button>
         </div>
       </div>
@@ -310,7 +373,11 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
           </div>
         </aside>
 
-        <div className="card grid-bg relative min-h-[460px] overflow-hidden" aria-label="Workflow canvas">
+        <div
+          data-editor-theme={prefs.editorTheme}
+          className={cn("card relative min-h-[460px] overflow-hidden", prefs.grid && "grid-bg")}
+          aria-label="Workflow canvas"
+        >
           {nodes.length === 0 && <p className="grid-cols-1 pointer-events-none absolute inset-0 z-10 grid place-items-center text-sm text-muted">Add a trigger from the Node Library to begin.</p>}
           <ReactFlow
             nodes={nodes} edges={edges} nodeTypes={nodeTypes}
@@ -318,11 +385,26 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
             onNodeDragStart={snapshot} onNodeDragStop={touch}
             onNodesDelete={touch} onEdgesDelete={touch}
             onNodeClick={(_, n) => { setSelectedId(n.id); }} onPaneClick={() => setSelectedId(null)}
-            fitView fitViewOptions={{ padding: 0.2, maxZoom: 0.9, minZoom: 0.4 }} minZoom={0.3} maxZoom={1.8} deleteKeyCode={["Backspace", "Delete"]} proOptions={{ hideAttribution: true }}
+            fitView fitViewOptions={{ padding: 0.2, maxZoom: prefs.zoom / 100, minZoom: 0.4 }} minZoom={0.3} maxZoom={1.8} deleteKeyCode={["Backspace", "Delete"]} proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} />
-            <ZoomPanel showMap={showMap} setShowMap={setShowMap} />
-            {showMap && <MiniMap pannable zoomable className="!bottom-3 !right-3" maskColor="rgb(var(--rn-background) / 0.7)" nodeColor="#6C47FF" />}
+            {prefs.grid && (
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={22}
+                size={prefs.editorTheme === "contrast" ? 1.8 : 1.2}
+                color={prefs.editorTheme === "light" ? "#94A3B8" : prefs.editorTheme === "contrast" ? "#C4B5FD" : undefined}
+              />
+            )}
+            <ZoomPanel showMap={showMap} setShowMap={setShowMap} defaultZoom={prefs.zoom} />
+            {showMap && (
+              <MiniMap
+                pannable
+                zoomable
+                className="!bottom-3 !right-3"
+                maskColor={prefs.editorTheme === "light" ? "rgb(241 245 249 / 0.72)" : "rgb(var(--rn-background) / 0.7)"}
+                nodeColor={prefs.editorTheme === "contrast" ? "#38BDF8" : "#6C47FF"}
+              />
+            )}
           </ReactFlow>
         </div>
 
@@ -387,7 +469,7 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
         <section className="card min-w-0 p-3 text-xs" aria-label="Triggers and runs">
           {persisted && info && status === "active" ? (
             <div className="space-y-1.5">
-              {info.schedule?.enabled && <p><span className="font-bold">Schedule</span> <code>{info.schedule.cron}</code> ({info.schedule.timezone}){info.schedule.nextRunAt ? <> &middot; next {new Date(info.schedule.nextRunAt).toLocaleString("en-US", { timeZone: info.schedule.timezone, dateStyle: "medium", timeStyle: "short" })}</> : null}</p>}
+              {info.schedule?.enabled && <p><span className="font-bold">Schedule</span> <code>{info.schedule.cron}</code> ({info.schedule.timezone}){info.schedule.nextRunAt ? <> &middot; next {formatUserDateTime(info.schedule.nextRunAt, prefs)}</> : null}</p>}
               {info.webhook?.enabled && (
                 <div className="space-y-1">
                   <p className="font-bold">Webhook URL</p>
@@ -424,6 +506,29 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
           )}
         </div>
       )}
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title="Publish Workflow?"
+        icon={<IconTile tone="primary" size="md"><Zap /></IconTile>}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button onClick={() => void publishConfirmed()} disabled={busy !== null}>
+              <Zap className="size-4" />{busy === "publish" ? "Publishing..." : "Confirm & Publish"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2.5 text-sm text-foreground/85">
+          <p>
+            You are about to publish <span className="font-bold text-foreground">&ldquo;{name}&rdquo;</span> ({nodes.length} nodes, {edges.length} connections).
+          </p>
+          <p className="text-xs text-muted">
+            Once live, its triggers, webhooks, or schedules will start running immediately. You can disable this confirmation dialog anytime in Settings &rarr; Preferences.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

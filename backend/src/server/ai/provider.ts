@@ -6,6 +6,7 @@ import {
   getDbConfiguredFallback,
   getDbDefaultImageModel,
   getDbFallbackModels,
+  getDbFastChatModel,
   getDbVisionModels,
   resolveModelFromDb,
   type DbRunnableModel,
@@ -162,7 +163,7 @@ function hasImagePart(messages: ChatMessage[]): boolean {
 
 function buildChatRequest(model: RunnableModel, provider: ProviderRecord, messages: ChatMessage[], opts: ChatOptions, stream: boolean) {
   const deepThink = Boolean(opts.thinking && model.isThinking);
-  const maxTokens = deepThink ? Math.max(opts.maxTokens ?? 1024, THINKING_MIN_TOKENS) : (opts.maxTokens ?? 1024);
+  const maxTokens = deepThink ? Math.max(opts.maxTokens ?? 2048, THINKING_MIN_TOKENS) : (opts.maxTokens ?? 2048);
   const body: Record<string, unknown> = {
     model: model.apiModelId,
     messages,
@@ -380,58 +381,196 @@ export async function embedMany(model: RunnableModel, inputs: string[], inputTyp
   return { vectors: data.map((d) => d.embedding as number[]), usage };
 }
 
-function extractImageBase64(json: Record<string, unknown>): string | null {
-  const artifact = (json.artifacts as { base64?: string }[] | undefined)?.[0]?.base64;
-  if (typeof artifact === "string" && artifact.length > 64) return artifact;
+function extractImageArtifact(json: Record<string, unknown>): { base64: string | null; finishReason?: string } {
+  const firstArtifact = (json.artifacts as { base64?: string; finishReason?: string }[] | undefined)?.[0];
+  if (firstArtifact) {
+    return {
+      base64: typeof firstArtifact.base64 === "string" && firstArtifact.base64.length > 64 ? firstArtifact.base64 : null,
+      finishReason: typeof firstArtifact.finishReason === "string" ? firstArtifact.finishReason : undefined,
+    };
+  }
   const b64Img = json.b64_image;
-  if (typeof b64Img === "string" && b64Img.length > 64) return b64Img;
+  if (typeof b64Img === "string" && b64Img.length > 64) return { base64: b64Img };
   const img = json.image;
-  if (typeof img === "string" && img.length > 64) return img;
+  if (typeof img === "string" && img.length > 64) return { base64: img };
   const dataB64 = (json.data as { b64_json?: string }[] | undefined)?.[0]?.b64_json;
-  if (typeof dataB64 === "string" && dataB64.length > 64) return dataB64;
-  return null;
+  if (typeof dataB64 === "string" && dataB64.length > 64) return { base64: dataB64 };
+  return { base64: null };
 }
 
-async function callImageEndpoint(model: RunnableModel, provider: ProviderRecord, prompt: string, startedAt: number): Promise<{ imageBase64: string }> {
+/**
+ * NVIDIA FLUX returns HTTP 200 with finishReason="CONTENT_FILTERED" and a solid-black ~6.4 KB JPEG (~8.5k base64 chars)
+ * when a prompt hits trademark or content filters. Never return a solid-black frame to the user.
+ */
+export function isFilteredOrBlankImage(json: Record<string, unknown>, base64: string | null): { blocked: boolean; reason?: string } {
+  const finishReason = (json.artifacts as { finishReason?: string }[] | undefined)?.[0]?.finishReason;
+  if (finishReason && finishReason.toUpperCase() !== "SUCCESS") {
+    return { blocked: true, reason: finishReason };
+  }
+  if (!base64) return { blocked: true, reason: "EMPTY" };
+  // A valid 768x768..1280x1024 JPEG from FLUX is typically 45 KB–350 KB; solid-black frames compress to ~6.4 KB (~8.6k base64 chars).
+  if (base64.startsWith("/9j/") && base64.length < 14_000) {
+    return { blocked: true, reason: "BLANK_FRAME" };
+  }
+  return { blocked: false };
+}
+
+/** Removes conversational wrapper phrases like "Generate iPhone Image" -> "iPhone" so diffusion models focus on the subject. */
+export function cleanRawImagePrompt(raw: string): string {
+  let s = raw.trim().replace(/\s+/g, " ");
+  const hadVerb = /^(?:please\s+)?(?:generate|create|make|draw|render|produce|show(?:\s+me)?|give\s+me)\s+/i.test(s);
+  if (hadVerb) {
+    s = s.replace(/^(?:please\s+)?(?:generate|create|make|draw|render|produce|show(?:\s+me)?|give\s+me)\s+/i, "");
+    s = s.replace(/^(?:an?\s+)?(?:hd\s+|high[\s-]?(?:res|resolution|quality)\s+|detailed\s+|realistic\s+)?(?:image|picture|photo|photograph|illustration|artwork|drawing)\s+(?:of\s+)?/i, "");
+    s = s.replace(/\s+(?:image|picture|photo|photograph)$/i, "");
+  }
+  return (s.trim() || raw.trim()).slice(0, 1800);
+}
+
+/** Picks FLUX-supported aspect ratio dimensions (valid NVIDIA NIM sizes: 768..1344 in steps of 64). */
+export function pickImageDimensions(prompt: string): { width: number; height: number } {
+  const p = prompt.toLowerCase();
+  if (/\b(portrait|vertical|poster|phone wallpaper|9:16|story|reel|mobile wallpaper|headshot)\b/.test(p)) {
+    return { width: 896, height: 1152 };
+  }
+  if (/\b(landscape|widescreen|wide shot|banner|desktop wallpaper|16:9|panorama|panoramic|cinematic wide|header)\b/.test(p)) {
+    return { width: 1280, height: 768 };
+  }
+  return { width: 1024, height: 1024 };
+}
+
+/** Deterministic detailing suffix used when LLM prompt enrichment is skipped or unavailable. */
+function fallbackEnhancedPrompt(subject: string): string {
+  const words = subject.split(/\s+/).filter(Boolean).length;
+  if (words >= 24) return subject;
+  return `${subject}, intricate fine textures, balanced studio and natural lighting, crisp sharp focus, rich realistic color depth, thoughtful composition, ultra-detailed high-resolution photography`;
+}
+
+/**
+ * Expands short or brand-named prompts into vivid, richly detailed visual prompts via the active fast DB chat model.
+ * Describing visual geometry/materials instead of trademarked brand names prevents NVIDIA FLUX CONTENT_FILTERED black frames
+ * while dramatically improving visual sharpness, lighting, and detail.
+ */
+async function enhanceImagePrompt(rawPrompt: string, strictVisualRewrite = false): Promise<string> {
+  const cleaned = cleanRawImagePrompt(rawPrompt);
+  const words = cleaned.split(/\s+/).filter(Boolean).length;
+  const looksShortOrGeneric = words < 20;
+  // Common consumer trademarks that frequently trip NVIDIA FLUX's CONTENT_FILTERED black-frame guard.
+  const hasBrandRisk = /\b(iphone|ipad|macbook|apple|airpods|samsung|galaxy|nike|adidas|gucci|rolex|ferrari|lamborghini|porsche|tesla|mercedes|bmw|coca[\s-]?cola|pepsi|starbucks|disney|marvel|pokemon|mario|lego|playstation|xbox|nintendo)\b/i.test(cleaned);
+
+  if (!strictVisualRewrite && !looksShortOrGeneric && !hasBrandRisk) {
+    return cleaned;
+  }
+
+  try {
+    const fastModel = await getDbFastChatModel();
+    if (!fastModel) return fallbackEnhancedPrompt(cleaned);
+    const system = strictVisualRewrite
+      ? "You are a professional photography art director. Rewrite the user's image request into one rich, vivid, 55–85 word visual scene description for a text-to-image model. CRITICAL: Do NOT include any brand names, trademarks, logos, or copyrighted character names — instead describe the exact physical design, materials, silhouette, colors, textures, studio/natural lighting, camera lens, depth of field, and atmosphere so the image looks breathtaking and unmistakable. Output ONLY the final prompt text, no quotes or commentary."
+      : "You are a master visual prompt engineer for FLUX.1 image generation. Expand the user's request into one richly detailed, 45–80 word visual prompt with specific subject details, surface textures, lighting direction, environment/background, composition, color harmony, and sharp photographic or artistic quality. If the request mentions a trademarked consumer product or brand (like iPhone, Nike, Tesla, etc.), describe its signature physical design, materials, and form visually WITHOUT writing the trademarked word itself so the image safety filter never blocks it. Output ONLY the final prompt text, no quotes, labels, or markdown.";
+    const r = await chat(
+      fastModel,
+      [
+        { role: "system", content: system },
+        { role: "user", content: `User image request: ${cleaned}` },
+      ],
+      { temperature: 0.45, maxTokens: 180, thinking: false, timeoutMs: 4_500, allowFallback: false },
+    );
+    const expanded = r.text.replace(/^["'`]+|["'`]+$/g, "").replace(/\s+/g, " ").trim();
+    if (expanded.length >= 25 && expanded.length <= 1600) return expanded;
+  } catch {
+    // Fall back gracefully to deterministic high-detail styling if the fast model is busy.
+  }
+  return fallbackEnhancedPrompt(cleaned);
+}
+
+async function postFluxOnce(
+  url: string,
+  provider: ProviderRecord,
+  prompt: string,
+  dims: { width: number; height: number },
+): Promise<{ json: Record<string, unknown>; base64: string | null; blocked: boolean; reason?: string }> {
+  let lastErr: unknown;
+  for (let i = 0; i < IMAGE_ATTEMPTS; i++) {
+    // Keep full resolution on first two tries; only drop slightly to 896x896 on final retry after timeouts.
+    const width = i < 2 ? dims.width : 896;
+    const height = i < 2 ? dims.height : 896;
+    try {
+      const json = await post(url, provider, { prompt, width, height, steps: 4 }, IMAGE_ATTEMPT_MS);
+      const { base64 } = extractImageArtifact(json);
+      const check = isFilteredOrBlankImage(json, base64);
+      return { json, base64, blocked: check.blocked, reason: check.reason };
+    } catch (e) {
+      lastErr = e;
+      const retryable = e instanceof ApiError && (e.code === "PROVIDER_TIMEOUT" || e.code === "PROVIDER_BUSY" || e.code === "UPSTREAM_ERROR");
+      if (!retryable) throw e;
+    }
+  }
+  throw lastErr;
+}
+
+async function callImageEndpoint(
+  model: RunnableModel,
+  provider: ProviderRecord,
+  rawPrompt: string,
+  startedAt: number,
+): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed: string }> {
   const base = provider.mediaBaseUrl || provider.chatBaseUrl;
   const noTokens: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const isFlux = model.apiModelId.includes("flux") || (model.endpointPath ?? "").includes("/genai/");
   const path = model.endpointPath || (isFlux ? `/genai/${model.apiModelId}` : `/cosmos/${model.apiModelId}`);
   const url = `${base}${path}`;
 
-  let json: Record<string, unknown>;
   if (isFlux) {
-    let lastErr: unknown;
-    let out: Record<string, unknown> | null = null;
-    for (let i = 0; i < IMAGE_ATTEMPTS; i++) {
-      // Attempt 0 uses 1024x1024; if NVIDIA stalls under load, retries drop to 768x768 for faster turnaround.
-      const size = i === 0 ? 1024 : 768;
-      try {
-        out = await post(url, provider, { prompt, width: size, height: size, steps: 4 }, IMAGE_ATTEMPT_MS);
-        break;
-      } catch (e) {
-        lastErr = e;
-        const retryable = e instanceof ApiError && (e.code === "PROVIDER_TIMEOUT" || e.code === "PROVIDER_BUSY" || e.code === "UPSTREAM_ERROR");
-        if (!retryable) throw e;
+    const dims = pickImageDimensions(rawPrompt);
+    let activePrompt = await enhanceImagePrompt(rawPrompt, false);
+    let attempt = await postFluxOnce(url, provider, activePrompt, dims);
+
+    // If NVIDIA's safety/trademark filter still produced a CONTENT_FILTERED black frame, rewrite cleanly once and retry.
+    if (attempt.blocked) {
+      logEvent("llm", "warn", `Image generation blocked (${attempt.reason ?? "FILTERED"}) on ${model.apiModelId}; rewriting prompt for visual retry`);
+      const rewritten = await enhanceImagePrompt(rawPrompt, true);
+      if (rewritten !== activePrompt) {
+        activePrompt = rewritten;
+        attempt = await postFluxOnce(url, provider, activePrompt, dims);
       }
     }
-    if (!out) throw lastErr;
-    json = out;
-  } else {
-    json = await postWithRetry(url, provider, { model_mode: "text2image", prompt, resolution: "480_1_1", num_frames: 1 }, 1, IMAGE_ATTEMPT_MS);
+
+    if (attempt.blocked || !attempt.base64) {
+      throw new ApiError(
+        422,
+        "IMAGE_CONTENT_FILTERED",
+        "The image model's safety filter blocked this prompt (trademarked brand names or restricted terms can trigger it). Try describing the object visually instead.",
+      );
+    }
+
+    meterNonBlocking(model, "image", noTokens, startedAt);
+    return {
+      imageBase64: attempt.base64,
+      revisedPrompt: activePrompt !== rawPrompt.trim() ? activePrompt : undefined,
+      modelUsed: model.apiModelId,
+    };
   }
 
-  const image = extractImageBase64(json);
-  if (!image) throw Errors.upstream("The model returned no image (the prompt may have been filtered).");
+  const json = await postWithRetry(url, provider, { model_mode: "text2image", prompt: rawPrompt, resolution: "480_1_1", num_frames: 1 }, 1, IMAGE_ATTEMPT_MS);
+  const { base64 } = extractImageArtifact(json);
+  const check = isFilteredOrBlankImage(json, base64);
+  if (check.blocked || !base64) {
+    throw new ApiError(422, "IMAGE_CONTENT_FILTERED", "The image model could not generate this prompt. Try describing the scene in visual detail.");
+  }
   meterNonBlocking(model, "image", noTokens, startedAt);
-  return { imageBase64: image };
+  return { imageBase64: base64, modelUsed: model.apiModelId };
 }
 
 /**
  * Text-to-image driven by Supabase `ai_providers` + `ai_models`.
- * Follows the DB-configured `fallback_model_slug` (or the top active DB image model) if the selected model returns 404/410/503.
+ * Follows the DB-configured `fallback_model_slug` (or the top active DB image model) if the selected model returns 404/410/503,
+ * enhances short prompts for high visual detailing, and guards against CONTENT_FILTERED black frames.
  */
-export async function generateImage(model: RunnableModel, prompt: string): Promise<{ imageBase64: string }> {
+export async function generateImage(
+  model: RunnableModel,
+  prompt: string,
+): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed?: string }> {
   const startedAt = Date.now();
   const cleanPrompt = prompt.trim().slice(0, 2000);
   if (!cleanPrompt) throw Errors.invalid("Describe the image you want to generate.");
@@ -484,7 +623,7 @@ export async function analyzeImage(
   if (!visionModels.length) throw Errors.upstream("No active vision model is configured in the model catalog.");
   const systemPrompt =
     opts.system?.trim() ||
-    "You are a precise visual analyst. Examine the image carefully, read all visible text, numbers, labels, ticker symbols, dates, and chart trends accurately, and directly answer the user's request with clear, structured, factual detail. Never reply with 'unanswerable' or vague generic descriptions.";
+    "You are a precise, thorough visual analyst. Examine the image carefully, read all visible text, numbers, labels, ticker symbols, dates, and chart trends accurately, and provide a well-structured, detailed analysis (using bold headings, bullet points, and Markdown tables when summarizing structured metrics). Never reply with 'unanswerable' or vague generic descriptions.";
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
     {
@@ -497,7 +636,7 @@ export async function analyzeImage(
   ];
   return chat(visionModels[0]!, messages, {
     temperature: opts.temperature ?? 0.25,
-    maxTokens: opts.maxTokens ?? 1024,
+    maxTokens: opts.maxTokens ?? 1536,
     thinking: false,
     timeoutMs: opts.timeoutMs ?? 20_000,
     allowFallback: true,
