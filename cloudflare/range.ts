@@ -149,9 +149,17 @@ export async function serveAssetWithRange(
   const rangeHeader = request.headers.get("range");
   const isHead = request.method === "HEAD";
 
+  // Request uncompressed identity bytes from ASSETS so byte offsets always match raw file bytes.
+  const assetHeaders = new Headers(request.headers);
+  assetHeaders.set("accept-encoding", "identity");
+  const assetRequest = new Request(request.url, {
+    method: request.method,
+    headers: assetHeaders,
+  });
+
   // Forward the request to Cloudflare's ASSETS binding. If Cloudflare honors Range natively,
   // pass the 206 through cleanly with Accept-Ranges preserved.
-  const assetRes = await assets.fetch(request);
+  const assetRes = await assets.fetch(assetRequest);
 
   if (assetRes.status === 206) {
     const headers = new Headers(assetRes.headers);
@@ -167,13 +175,17 @@ export async function serveAssetWithRange(
   }
 
   const baseHeaders = buildBaseMediaHeaders(assetRes.headers, url.pathname);
+  const contentEncoding = assetRes.headers.get("content-encoding");
   const contentLengthHeader = assetRes.headers.get("content-length");
   const knownSize =
     contentLengthHeader && /^\d+$/.test(contentLengthHeader) ? Number(contentLengthHeader) : null;
 
-  if (!rangeHeader) {
+  if (!rangeHeader || (contentEncoding && contentEncoding.toLowerCase() !== "identity")) {
     if (knownSize !== null) {
       baseHeaders.set("content-length", String(knownSize));
+    }
+    if (contentEncoding) {
+      baseHeaders.set("content-encoding", contentEncoding);
     }
     return new Response(isHead ? null : assetRes.body, {
       status: 200,

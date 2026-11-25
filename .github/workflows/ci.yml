@@ -55,23 +55,31 @@ jobs:
         id: creds
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK_URL }}
         run: |
+          status() { [ -n "$1" ] && echo "set" || echo "missing"; }
+          echo "CLOUDFLARE_API_TOKEN: $(status "$CF_TOKEN")"
+          echo "CLOUDFLARE_ACCOUNT_ID: $(status "$CF_ACCOUNT")"
+          echo "CLOUDFLARE_DEPLOY_HOOK_URL: $(status "$CF_HOOK")"
           if [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCOUNT" ]; then
             echo "mode=wrangler" >> "$GITHUB_OUTPUT"
           elif [ -n "$CF_HOOK" ]; then
             echo "mode=hook" >> "$GITHUB_OUTPUT"
           else
             echo "mode=missing" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Cloudflare CI Secrets Missing::Add CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (or CLOUDFLARE_DEPLOY_HOOK_URL) under GitHub Repo Settings -> Secrets and variables -> Actions -> Secrets to deploy from GitHub Actions."
+            echo "::warning title=Cloudflare CI Secrets Missing::Add CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (or CLOUDFLARE_DEPLOY_HOOK_URL) under GitHub Repo Settings -> Secrets and variables -> Actions -> Repository secrets to deploy from GitHub Actions."
             {
               echo "### Cloudflare Workers CI Deploy Not Configured Yet"
-              echo "Add either of the following in **Settings -> Secrets and variables -> Actions -> Secrets**:"
+              echo "- \`CLOUDFLARE_API_TOKEN\`: $(status "$CF_TOKEN")"
+              echo "- \`CLOUDFLARE_ACCOUNT_ID\`: $(status "$CF_ACCOUNT")"
+              echo "- \`CLOUDFLARE_DEPLOY_HOOK_URL\`: $(status "$CF_HOOK")"
+              echo ""
+              echo "Add either of the following in **Settings -> Secrets and variables -> Actions -> Repository secrets** (not Environment secrets):"
               echo "- \`CLOUDFLARE_API_TOKEN\` + \`CLOUDFLARE_ACCOUNT_ID\` *(builds OpenNext in CI and runs \`wrangler deploy\`)*"
               echo "- OR \`CLOUDFLARE_DEPLOY_HOOK_URL\` *(triggers Cloudflare Workers Builds)*"
               echo ""
-              echo "> Note: If Cloudflare Workers Builds GitHub integration is connected, Cloudflare still deploys \`main\` automatically on push."
+              echo "> Note: If Cloudflare Workers Builds GitHub integration already deploys \`main\` automatically, set \`CLOUDFLARE_DEPLOY=false\` in Repository Variables to disable this job."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -101,16 +109,16 @@ jobs:
         if: steps.creds.outputs.mode == 'wrangler'
         run: pnpm build:cloudflare
         env:
-          NEXT_PUBLIC_APP_URL: ${{ vars.CLOUDFLARE_APP_URL || vars.NEXT_PUBLIC_APP_URL || secrets.NEXT_PUBLIC_APP_URL }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID || secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.CLOUDFLARE_APP_URL || vars.NEXT_PUBLIC_APP_URL || secrets.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || secrets.NEXT_PUBLIC_SUPABASE_URL || '' }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '' }}
+          NEXT_PUBLIC_GA_MEASUREMENT_ID: ${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID || secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID || '' }}
       - name: Deploy Backend & Frontend Worker
         if: steps.creds.outputs.mode == 'wrangler'
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: pnpm
           wranglerVersion: "4.168.0"
           command: deploy
@@ -119,7 +127,7 @@ jobs:
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: pnpm
           wranglerVersion: "4.168.0"
           command: pages deploy frontend/.open-next/assets --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}
@@ -139,29 +147,41 @@ jobs:
       vars.VERCEL_DEPLOY != 'false'
     runs-on: ubuntu-latest
     env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID || vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
     steps:
       - name: Check Vercel deploy credentials
         id: creds
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID || vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
+          status() { [ -n "$1" ] && echo "set" || echo "missing"; }
+          echo "VERCEL_TOKEN: $(status "$VERCEL_TOKEN")"
+          echo "VERCEL_ORG_ID: $(status "$VERCEL_ORG_ID")"
+          echo "VERCEL_PROJECT_ID: $(status "$VERCEL_PROJECT_ID")"
+          echo "VERCEL_DEPLOY_HOOK_URL: $(status "$VERCEL_DEPLOY_HOOK_URL")"
           if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
             echo "mode=cli" >> "$GITHUB_OUTPUT"
           elif [ -n "$VERCEL_DEPLOY_HOOK_URL" ]; then
             echo "mode=hook" >> "$GITHUB_OUTPUT"
           else
             echo "mode=missing" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Vercel CI Secrets Missing::Add VERCEL_TOKEN + VERCEL_ORG_ID + VERCEL_PROJECT_ID (or VERCEL_DEPLOY_HOOK_URL) under GitHub Repo Settings -> Secrets and variables -> Actions -> Secrets to deploy to Vercel from GitHub Actions."
+            echo "::warning title=Vercel CI Secrets Missing::Add VERCEL_TOKEN + VERCEL_ORG_ID + VERCEL_PROJECT_ID (or VERCEL_DEPLOY_HOOK_URL) under GitHub Repo Settings -> Secrets and variables -> Actions -> Repository secrets to deploy to Vercel from GitHub Actions."
             {
               echo "### Vercel Synced CI Deploy Not Configured Yet"
-              echo "Add either of the following in **Settings -> Secrets and variables -> Actions -> Secrets**:"
+              echo "- \`VERCEL_TOKEN\`: $(status "$VERCEL_TOKEN")"
+              echo "- \`VERCEL_ORG_ID\`: $(status "$VERCEL_ORG_ID")"
+              echo "- \`VERCEL_PROJECT_ID\`: $(status "$VERCEL_PROJECT_ID")"
+              echo "- \`VERCEL_DEPLOY_HOOK_URL\`: $(status "$VERCEL_DEPLOY_HOOK_URL")"
+              echo ""
+              echo "Add either of the following in **Settings -> Secrets and variables -> Actions -> Repository secrets** (not Environment secrets):"
               echo "- \`VERCEL_TOKEN\`, \`VERCEL_ORG_ID\`, \`VERCEL_PROJECT_ID\` *(prebuilt CLI deploy)*"
               echo "- OR \`VERCEL_DEPLOY_HOOK_URL\` *(triggers Vercel production deploy hook)*"
+              echo ""
+              echo "> Note: If Vercel's GitHub integration already deploys \`main\` automatically, set \`VERCEL_DEPLOY=false\` in Repository Variables to disable this job."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -191,8 +211,8 @@ jobs:
         if: steps.creds.outputs.mode == 'cli'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID || vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
         run: |
           pnpm dlx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
           pnpm dlx vercel@latest build --prod --token="$VERCEL_TOKEN"
