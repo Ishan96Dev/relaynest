@@ -333,6 +333,10 @@ export const LinkPreview = React.memo(function LinkPreview({
     [scheduleOpen],
   );
 
+  const handleImgRef = React.useCallback((el: HTMLImageElement | null) => {
+    if (el?.complete && el.naturalWidth > 0) setImgLoaded(true);
+  }, []);
+
   if (!safe) {
     return <span className={className}>{children}</span>;
   }
@@ -376,11 +380,9 @@ export const LinkPreview = React.memo(function LinkPreview({
                 <div className="rn-lp-media">
                   {!imgLoaded && <div className="skeleton absolute inset-0 rounded-none" aria-hidden />}
                   <img
-                    ref={(el) => {
-                      if (el?.complete && el.naturalWidth > 0) setImgLoaded(true);
-                    }}
                     src={preview.image}
                     alt={preview.title}
+                    ref={handleImgRef}
                     loading="eager"
                     referrerPolicy="no-referrer"
                     onLoad={() => setImgLoaded(true)}
