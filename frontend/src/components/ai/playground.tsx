@@ -883,6 +883,7 @@ export function Playground({
                           title={user?.name}
                           width={32}
                           height={32}
+                          referrerPolicy="no-referrer"
                           onError={() => setAvatarFailed(true)}
                           className="size-8 shrink-0 rounded-full object-cover ring-2 ring-primary/60"
                         />
