@@ -1,7 +1,17 @@
 import { describe, it } from "node:test";
 import { expect } from "./expect";
 import { buildSystemPrompt, clampReply, DEFAULT_TOOLS, parseTools, type AgentConfig } from "../src/server/ai/agent";
-import { canPowerAgent, executionMode, MODEL_CATALOG, PROVIDER_CATALOG, supportsImageInput } from "../src/server/ai/model-catalog";
+import {
+  canPowerAgent,
+  computeReasoningBudget,
+  DEEP_THINKING_DEFAULT_TOKENS,
+  executionMode,
+  MODEL_CATALOG,
+  PROVIDER_CATALOG,
+  recommendedMaxTokens,
+  supportsImageInput,
+  supportsReasoningBudget,
+} from "../src/server/ai/model-catalog";
 import {
   base64ToBytes,
   cleanRawImagePrompt,
@@ -9,6 +19,7 @@ import {
   pickImageDimensions,
   sniffImageMime,
   stripThinkTags,
+  ThinkStreamParser,
 } from "../src/server/ai/provider";
 import { resolveModelFromDb } from "../src/server/services/ai-models";
 import { updateAiAgentInput } from "../src/lib/validation/schemas";
@@ -90,6 +101,39 @@ describe("model execution", () => {
     expect(pickImageDimensions("Vertical phone wallpaper poster")).toEqual({ width: 896, height: 1152 });
     expect(pickImageDimensions("A studio portrait of a ceramic vase")).toEqual({ width: 896, height: 1152 });
     expect(pickImageDimensions("A red fox in snow")).toEqual({ width: 1024, height: 1024 });
+  });
+
+  it("dynamically scales Deep Thinking token budgets and splits chunk-boundary <think> tags safely", () => {
+    const lightning = MODEL_CATALOG.find((m) => m.slug === "nemotron-3-5-lightning-30b-a3b")!;
+    const mistral = MODEL_CATALOG.find((m) => m.slug === "mistral-large-4-1t-a52b")!;
+    const paligemma = MODEL_CATALOG.find((m) => m.slug === "paligemma")!;
+
+    expect(recommendedMaxTokens(lightning, false)).toBe(lightning.defaultMaxTokens);
+    expect(recommendedMaxTokens(lightning, true)).toBe(DEEP_THINKING_DEFAULT_TOKENS);
+    expect(recommendedMaxTokens(paligemma, true)).toBe(paligemma.defaultMaxTokens);
+    expect(computeReasoningBudget(8192)).toBe(2048);
+    expect(computeReasoningBudget(4096)).toBe(1024);
+    expect(supportsReasoningBudget(lightning)).toBe(true);
+    expect(supportsReasoningBudget(mistral)).toBe(false);
+
+    expect(stripThinkTags("<think>unclosed reasoning trace")).toBe("");
+    expect(stripThinkTags("Prefix <think>hidden</think> Answer")).toBe("Prefix  Answer");
+
+    // Simulate SSE tokens splitting both <think> and </think> across chunk boundaries.
+    const parser = new ThinkStreamParser();
+    const chunks = ["<th", "ink>Step 1: check ", "facts.</t", "hink>Final **answer**!"];
+    let thought = "";
+    let answer = "";
+    for (const c of chunks) {
+      const part = parser.push(c);
+      thought += part.thinking;
+      answer += part.answer;
+    }
+    const tail = parser.flush();
+    thought += tail.thinking;
+    answer += tail.answer;
+    expect(thought).toBe("Step 1: check facts.");
+    expect(answer).toBe("Final **answer**!");
   });
 });
 

@@ -229,7 +229,7 @@ export function DocsHub() {
               if (items.length === 0) return null;
               return (
                 <div key={grp} className="mb-3 last:mb-0">
-                  <p className="px-3 pb-1 pt-2 text-[11px] font-bold uppercase tracking-wider text-muted">{grp}</p>
+                  <p className="px-3 pb-1.5 pt-2.5 text-xs font-bold uppercase tracking-[0.08em] text-lavender">{grp}</p>
                   <nav aria-label={grp} className="space-y-0.5">
                     {items.map((s) => {
                       const Icon = ICONS[s.iconKey];

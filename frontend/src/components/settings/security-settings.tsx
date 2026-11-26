@@ -1,8 +1,10 @@
 "use client";
 
 import { Activity, Bell, Check, CheckCircle2, Clock, Eye, EyeOff, KeyRound, Lock, LogOut, Mail, Monitor, Power, QrCode, RefreshCw, ShieldCheck, Smartphone, Trash2, XCircle } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
+import type { NotificationSettings } from "@backend/lib/notifications";
 import { AuthTransition } from "@/components/auth/auth-transition";
 import { toast } from "@/components/ui/toast";
 import { Badge, ComingSoon } from "@/components/ui/badge";
@@ -63,8 +65,48 @@ export function SecuritySettings({ demo, userEmail }: { demo: boolean; userEmail
     if (state.kind === "ok") { toast.success("Password updated"); void fetch("/api/v1/notifications", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ event: "password_changed" }) }); }
     else if (state.kind === "error" && state.msg) toast.error(state.msg);
   }, [state]);
-  const [alerts, setAlerts] = React.useState({ notify: true, suspicious: true });
+  const [alerts, setAlerts] = React.useState({ security: true, loginInapp: false, loginEmail: false, saving: false });
   const [signedOut, setSignedOut] = React.useState(false);
+
+  React.useEffect(() => {
+    if (demo) return;
+    void api<{ settings: NotificationSettings }>("/api/v1/settings/notifications").then((res) => {
+      if (res.ok) {
+        const s = res.data.settings;
+        setAlerts({
+          security: Boolean(s.inapp.security || s.email.accountSecurity),
+          loginInapp: Boolean(s.inapp.login),
+          loginEmail: Boolean(s.email.login),
+          saving: false,
+        });
+      }
+    });
+  }, [demo]);
+
+  async function toggleSecurityAlert(enabled: boolean) {
+    setAlerts((a) => ({ ...a, security: enabled, saving: true }));
+    if (demo) return setAlerts((a) => ({ ...a, saving: false }));
+    const res = await api<{ settings: NotificationSettings }>("/api/v1/settings/notifications", {
+      method: "PATCH",
+      body: { inapp: { security: enabled }, email: { accountSecurity: enabled } },
+    });
+    setAlerts((a) => ({ ...a, saving: false, ...(res.ok ? {} : { security: !enabled }) }));
+    if (res.ok) toast.success(enabled ? "Security notifications enabled" : "Security notifications muted");
+    else toast.error(res.message);
+  }
+
+  async function toggleLoginAlerts(enabled: boolean) {
+    const prev = { loginInapp: alerts.loginInapp, loginEmail: alerts.loginEmail };
+    setAlerts((a) => ({ ...a, loginInapp: enabled, loginEmail: enabled, saving: true }));
+    if (demo) return setAlerts((a) => ({ ...a, saving: false }));
+    const res = await api<{ settings: NotificationSettings }>("/api/v1/settings/notifications", {
+      method: "PATCH",
+      body: { inapp: { login: enabled }, email: { login: enabled } },
+    });
+    setAlerts((a) => ({ ...a, saving: false, ...(res.ok ? {} : prev) }));
+    if (res.ok) toast.success(enabled ? "Login alerts enabled (in-app & email)" : "Login alerts turned off");
+    else toast.error(res.message);
+  }
   const passed = RULES.map(([, f]) => f(pw));
   const score = passed.filter(Boolean).length;
   const mismatch = confirm.length > 0 && pw !== confirm;
@@ -94,7 +136,15 @@ export function SecuritySettings({ demo, userEmail }: { demo: boolean; userEmail
   async function signOutOthers() {
     if (demo) return;
     const { error } = await (await createClient()).auth.signOut({ scope: "others" });
-    if (!error) setSignedOut(true);
+    if (!error) {
+      setSignedOut(true);
+      toast.success("Signed out other devices");
+      void fetch("/api/v1/notifications", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event: "sessions_revoked" }),
+      }).catch(() => undefined);
+    }
   }
 
   async function sendDeleteVerificationMail() {
@@ -213,11 +263,38 @@ export function SecuritySettings({ demo, userEmail }: { demo: boolean; userEmail
           </ol>
         </Card>
         <Card>
-          <CardHeader title="Account Security" description="Configure additional security settings for your account." icon={<Lock />} tile />
+          <CardHeader
+            title="Account Security"
+            description="Synced with your notification preferences in Supabase."
+            icon={<Lock />}
+            tile
+            action={<Link href="/settings/notifications" className="text-xs font-semibold text-lavender hover:underline">All notification options</Link>}
+          />
           <ul className="divide-y divide-border/50 px-5 pb-4">
-            <li className="flex items-center gap-3 py-3"><IconTile size="md" tone="primary"><Bell /></IconTile><div className="flex-1 leading-tight"><p className="font-bold">Security Notifications</p><p className="text-xs text-foreground/70">Get important security updates about your account.</p></div><Switch label="Security notifications" checked={alerts.notify} onCheckedChange={(v) => setAlerts({ ...alerts, notify: v })} /></li>
-            <li className="flex items-center gap-3 py-3"><IconTile size="md" tone="primary"><ShieldCheck /></IconTile><div className="flex-1 leading-tight"><p className="font-bold">Suspicious Login Alerts</p><p className="text-xs text-foreground/70">Get notified when a new or unusual login is detected.</p></div><Switch label="Suspicious login alerts" checked={alerts.suspicious} onCheckedChange={(v) => setAlerts({ ...alerts, suspicious: v })} /></li>
-            <li className="flex items-center gap-3 py-3"><IconTile size="md" tone="primary"><Clock /></IconTile><div className="flex-1 leading-tight"><label htmlFor="to" className="font-bold">Session Timeout</label><p className="text-xs text-foreground/70">Automatically sign out after a period of inactivity.</p></div><Select id="to" className="w-36" defaultValue="30 minutes" disabled><option>30 minutes</option></Select></li>
+            <li className="flex items-center gap-3 py-3">
+              <IconTile size="md" tone="primary"><Bell /></IconTile>
+              <div className="flex-1 leading-tight">
+                <p className="font-bold">Security Notifications</p>
+                <p className="text-xs text-foreground/70">Get in-app and email alerts for password changes and session revocations.</p>
+              </div>
+              <Switch label="Security notifications" checked={alerts.security} disabled={alerts.saving} onCheckedChange={(v) => void toggleSecurityAlert(v)} />
+            </li>
+            <li className="flex items-center gap-3 py-3">
+              <IconTile size="md" tone="primary"><ShieldCheck /></IconTile>
+              <div className="flex-1 leading-tight">
+                <p className="font-bold">New Login Alerts <Badge tone="neutral" className="ml-1.5 px-1.5 py-0 text-[10px]">Optional</Badge></p>
+                <p className="text-xs text-foreground/70">Get notified when a new sign-in is detected (fine-tune email vs in-app in Notifications).</p>
+              </div>
+              <Switch label="New login alerts" checked={alerts.loginInapp || alerts.loginEmail} disabled={alerts.saving} onCheckedChange={(v) => void toggleLoginAlerts(v)} />
+            </li>
+            <li className="flex items-center gap-3 py-3">
+              <IconTile size="md" tone="primary"><Clock /></IconTile>
+              <div className="flex-1 leading-tight">
+                <label htmlFor="to" className="font-bold">Session Timeout</label>
+                <p className="text-xs text-foreground/70">Automatically sign out after a period of inactivity.</p>
+              </div>
+              <Select id="to" className="w-36" defaultValue="30 minutes" disabled><option>30 minutes</option></Select>
+            </li>
           </ul>
         </Card>
       </div>

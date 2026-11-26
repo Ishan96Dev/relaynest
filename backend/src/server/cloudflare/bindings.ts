@@ -1,0 +1,87 @@
+import "server-only";
+
+export interface CloudflareRateLimitResult {
+  allowed: boolean;
+  count: number;
+  remaining: number;
+  resetAtMs: number;
+  retryAfterSec: number;
+}
+
+export interface CloudflareTelegramSlotResult {
+  allowed: boolean;
+  delayMs: number;
+  reason?: "cooldown" | "chat_pace" | "bot_pace";
+}
+
+export interface RelayNestStateStub {
+  ping(): Promise<{ ok: true; engine: "cloudflare-do-sqlite" }>;
+  kvGet(key: string): Promise<string | null>;
+  kvSet(key: string, value: string, ttlSeconds: number): Promise<void>;
+  kvSetNx(key: string, value: string, ttlSeconds: number): Promise<boolean>;
+  kvDel(key: string): Promise<void>;
+  rateLimitCheck(key: string, limit: number, windowMs: number): Promise<CloudflareRateLimitResult>;
+  reserveTelegramSlot(
+    chatId: string,
+    opts?: { isGroup?: boolean; maxImmediateWaitMs?: number },
+  ): Promise<CloudflareTelegramSlotResult>;
+  recordTelegramRateLimit(chatId: string, retryAfterSec: number, scope?: "chat" | "bot"): Promise<void>;
+}
+
+export interface RelayNestStateNamespace {
+  getByName(name: string): RelayNestStateStub;
+}
+
+export interface CloudflareQueueBinding {
+  send(message: unknown, options?: { delaySeconds?: number; contentType?: "json" | "text" | "bytes" | "v8" }): Promise<void>;
+  sendBatch?(
+    messages: Iterable<{ body: unknown; delaySeconds?: number; contentType?: "json" | "text" | "bytes" | "v8" }>,
+    options?: { delaySeconds?: number },
+  ): Promise<void>;
+}
+
+export interface CloudflareRuntimeBindings {
+  RELAYNEST_STATE?: RelayNestStateNamespace;
+  RELAYNEST_QUEUE?: CloudflareQueueBinding;
+}
+
+const CLOUDFLARE_CONTEXT_SYMBOL = Symbol.for("__cloudflare-context__");
+let testOverride: CloudflareRuntimeBindings | null | undefined = undefined;
+
+/** Test-only hook to inject mock Cloudflare bindings during Node unit tests. */
+export function __setTestCloudflareBindings(bindings: CloudflareRuntimeBindings | null | undefined): void {
+  testOverride = bindings;
+}
+
+/**
+ * Safely reads Cloudflare Worker bindings from OpenNext's global context symbol.
+ * Returns `null` outside Cloudflare Workers (local Node dev, Vercel, unit tests) without throwing.
+ */
+export function getCloudflareBindings(): CloudflareRuntimeBindings | null {
+  if (testOverride !== undefined) return testOverride;
+  const ctx = (globalThis as Record<symbol, { env?: CloudflareRuntimeBindings } | undefined>)[CLOUDFLARE_CONTEXT_SYMBOL];
+  const env = ctx?.env;
+  if (!env || typeof env !== "object") return null;
+  if (!env.RELAYNEST_STATE && !env.RELAYNEST_QUEUE) return null;
+  return env;
+}
+
+export function getCloudflareStateStub(shardKey: string): RelayNestStateStub | null {
+  const ns = getCloudflareBindings()?.RELAYNEST_STATE;
+  if (!ns || typeof ns.getByName !== "function") return null;
+  return ns.getByName(shardKey);
+}
+
+export function getCloudflareQueue(): CloudflareQueueBinding | null {
+  const q = getCloudflareBindings()?.RELAYNEST_QUEUE;
+  if (!q || typeof q.send !== "function") return null;
+  return q;
+}
+
+export function isCloudflareStateConfigured(): boolean {
+  return Boolean(getCloudflareBindings()?.RELAYNEST_STATE);
+}
+
+export function isCloudflareQueueConfigured(): boolean {
+  return Boolean(getCloudflareBindings()?.RELAYNEST_QUEUE);
+}

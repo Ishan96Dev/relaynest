@@ -5,9 +5,11 @@ import { publicEnv } from "@backend/lib/env/public";
 import { serverEnv } from "@backend/lib/env/server";
 import { milvusConfig } from "@backend/lib/env/vector";
 import { createAdminClient } from "@backend/lib/supabase/admin";
-import { redisPing } from "@backend/server/cache/redis";
+import { redisBackendKind, redisPing } from "@backend/server/cache/redis";
+import { probeBrevoHealth } from "@backend/server/email/mailer";
 import { clearConsoleLogs, getConsoleLogs, logEvent, type ConsoleLogEntry, type LogLevel, type LogSection } from "@backend/server/logger";
-import { kafkaPing } from "@backend/server/queue/kafka";
+import { kafkaPing, queueBackendKind } from "@backend/server/queue/kafka";
+import { isDistributedRateLimitActive } from "@backend/server/security/rate-limit";
 
 export interface AdminUserRecord {
   id: string;
@@ -507,7 +509,7 @@ export async function getAdminServicesHealth(): Promise<ServiceProbe[]> {
   const brv = brevoEnv();
   const db = createAdminClient();
 
-  const [auth, database, storage, milvus, nvidia, vercel, telegram, redis, kafka] = await runBatched<unknown>([
+  const [auth, database, storage, milvus, nvidia, vercel, telegram, brevo, redis, kafka] = await runBatched<unknown>([
     () => timedProbe(async () => {
       if (!pub.NEXT_PUBLIC_SUPABASE_URL || !pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) return { ok: false, status: "unconfigured", detail: "Missing NEXT_PUBLIC_SUPABASE_URL" };
       const res = await fetch(`${pub.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/health`, { headers: { apikey: pub.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }, signal: AbortSignal.timeout(3500) });
@@ -549,6 +551,7 @@ export async function getAdminServicesHealth(): Promise<ServiceProbe[]> {
       const res = await fetch(`${srv.TELEGRAM_API_BASE_URL}/`, { signal: AbortSignal.timeout(3500) });
       return { ok: res.status > 0 && res.status < 500, detail: `Reachable (${srv.TELEGRAM_API_BASE_URL})` };
     }),
+    () => timedProbe(() => probeBrevoHealth()),
     () => redisPing(),
     () => kafkaPing(),
   ], 4);
@@ -571,7 +574,7 @@ export async function getAdminServicesHealth(): Promise<ServiceProbe[]> {
     { id: "vercel_gateway", name: "Vercel AI Gateway", group: "ai", ...(vercel as ProbeRes), keyMask: mask(keys.gateway) },
     { id: "telegram", name: "Telegram Bot API", group: "integrations", ...(telegram as ProbeRes) },
     { id: "razorpay", name: "Razorpay Billing", group: "integrations", status: rzp.keyId && rzp.keySecret ? "up" : "unconfigured", latencyMs: null, detail: rzp.keyId ? `Mode: ${rzp.keyId.startsWith("rzp_live_") ? "Live" : "Test"} · Webhook ${rzp.webhookSecret ? "signed" : "missing"}` : "RAZORPAY_KEY_ID not set", keyMask: mask(rzp.keyId) },
-    { id: "brevo", name: "Brevo Email API", group: "integrations", status: brv.apiKey && brv.fromAddress ? "up" : "unconfigured", latencyMs: null, detail: brv.apiKey ? `Sender: ${brv.fromAddress ?? "missing"}` : "BREVO_API_KEY not set", keyMask: mask(brv.apiKey) },
+    { id: "brevo", name: "Brevo Email API", group: "integrations", ...(brevo as ProbeRes), keyMask: mask(brv.apiKey) },
     { id: "ga4", name: "Google Analytics 4", group: "integrations", status: process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID ? "up" : "unconfigured", latencyMs: null, detail: process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || "NEXT_PUBLIC_GA_MEASUREMENT_ID not set" },
   ];
 
@@ -633,9 +636,55 @@ export async function getAdminKeysData() {
     { envKey: "NVIDIA_API_KEY", label: "NVIDIA Build AI Key", group: "AI Gateways", configured: Boolean(keys.nvidia), maskedPreview: mask(keys.nvidia) ?? null, note: "Inference models" },
     { envKey: "AI_GATEWAY_API_KEY", label: "Vercel AI Gateway Key", group: "AI Gateways", configured: Boolean(keys.gateway), maskedPreview: mask(keys.gateway) ?? null, note: "Image/chat routing" },
     { envKey: "MILVUS_TOKEN", label: "Zilliz / Milvus Vector Token", group: "Vector & Cache", configured: Boolean(vec?.token), maskedPreview: mask(vec?.token) ?? null, note: vec ? `Collection: ${vec.collection}` : "Keyword fallback" },
-    { envKey: "UPSTASH_REDIS_REST_TOKEN", label: "Upstash Redis Rate-Limit Token", group: "Vector & Cache", configured: Boolean(process.env.UPSTASH_REDIS_REST_TOKEN?.trim()), maskedPreview: mask(process.env.UPSTASH_REDIS_REST_TOKEN) ?? null, note: "Distributed sliding window" },
+    {
+      envKey: "UPSTASH_REDIS_REST_TOKEN",
+      label: "Distributed Cache & Rate Limit",
+      group: "Vector & Cache",
+      configured: isDistributedRateLimitActive(),
+      maskedPreview: mask(process.env.UPSTASH_REDIS_REST_TOKEN) ?? (redisBackendKind() === "cloudflare-do" ? "CF DO SQLite" : null),
+      note:
+        redisBackendKind() === "upstash"
+          ? "Upstash Redis REST active"
+          : redisBackendKind() === "cloudflare-do"
+            ? "Cloudflare Durable Object SQLite active (free edge tier)"
+            : "In-memory fallback locally",
+    },
+    {
+      envKey: "RELAYNEST_QUEUE",
+      label: "Event Queue & Telegram Pacer",
+      group: "Vector & Cache",
+      configured: queueBackendKind() !== "none",
+      maskedPreview: queueBackendKind() === "cloudflare-queues" ? "relaynest-events" : mask(process.env.KAFKA_REST_PASSWORD || process.env.UPSTASH_KAFKA_REST_PASSWORD) ?? null,
+      note:
+        queueBackendKind() === "cloudflare-queues"
+          ? "Cloudflare Queues + DLQ active (free edge tier)"
+          : queueBackendKind() === "kafka-rest"
+            ? "External Kafka REST active"
+            : "Unconfigured locally (auto-bound on Cloudflare)",
+    },
     { envKey: "RAZORPAY_KEY_ID", label: "Razorpay Merchant Key", group: "Billing & Messaging", configured: Boolean(rzp.keyId), maskedPreview: mask(rzp.keyId) ?? null, note: rzp.webhookSecret ? "Webhook signed" : "Webhook unset" },
-    { envKey: "BREVO_API_KEY", label: "Brevo Email Transactional Key", group: "Billing & Messaging", configured: Boolean(brv.apiKey), maskedPreview: mask(brv.apiKey) ?? null, note: brv.fromAddress ? `Sender: ${brv.fromAddress}` : "Email disabled" },
+    {
+      envKey: "BREVO_API_KEY",
+      label: "Brevo Email Transactional Key",
+      group: "Billing & Messaging",
+      configured: Boolean(brv.apiKey) && !brv.isSmtpKey,
+      maskedPreview: mask(brv.apiKey) ?? null,
+      note: brv.isSmtpKey
+        ? "Wrong key type: xsmtpsib- is an SMTP key (need v3 API key xkeysib-)"
+        : !brv.apiKey
+          ? "Set v3 API key (xkeysib-) & MAIL_FROM_ADDRESS"
+          : brv.fromAddress
+            ? `Sender: ${brv.fromAddress}`
+            : "Key set · add MAIL_FROM_ADDRESS to enable sending",
+    },
+    {
+      envKey: "MAIL_FROM_ADDRESS",
+      label: "Brevo Verified Sender Email",
+      group: "Billing & Messaging",
+      configured: Boolean(brv.fromAddress),
+      maskedPreview: null,
+      note: brv.fromAddress ? `${brv.fromName} <${brv.fromAddress}>` : "Required alongside BREVO_API_KEY (verified in Brevo)",
+    },
     { envKey: "CRON_SECRET", label: "Cron Scheduler Bearer Secret", group: "Scheduler & Admin", configured: Boolean(cronSecret()), maskedPreview: mask(cronSecret()) ?? null, note: "Protects /api/cron/tick" },
   ];
 
@@ -688,7 +737,18 @@ export async function getAdminSecurityWarningsData() {
   const controls: AdminSecurityControl[] = [
     { id: "csp_hsts", title: "Strict CSP, HSTS Preload & Frame Denial", category: "Transport & XSS", status: "enforced", detail: "X-Frame-Options DENY, object-src 'none', HSTS 1yr, no-store on /admin & /api." },
     { id: "pw_hash", title: "PBKDF2-SHA256 Admin Hashing & Password Strength Policy", category: "Authentication", status: "enforced", detail: "100k-iteration PBKDF2-SHA256 admin verification, breached-password blocklist on signup, HTTP-only SameSite=Strict cookie." },
-    { id: "rate_limit", title: "API Rate Limiting & Brute-Force Lockout", category: "Abuse Prevention", status: process.env.UPSTASH_REDIS_REST_URL ? "enforced" : "advisory", detail: process.env.UPSTASH_REDIS_REST_URL ? "Distributed Upstash Redis + sliding-window 429 enforcement active." : "Sliding-window rate limiter active (set UPSTASH_REDIS_REST_URL for multi-region Edge sync)." },
+    {
+      id: "rate_limit",
+      title: "API Rate Limiting & Brute-Force Lockout",
+      category: "Abuse Prevention",
+      status: isDistributedRateLimitActive() ? "enforced" : "advisory",
+      detail:
+        redisBackendKind() === "upstash"
+          ? "Distributed Upstash Redis + sliding-window 429 enforcement active."
+          : redisBackendKind() === "cloudflare-do"
+            ? "Distributed Cloudflare Durable Object SQLite + Telegram 429 pacing active."
+            : "Sliding-window rate limiter active (Cloudflare Durable Object on edge, or set UPSTASH_REDIS_REST_URL locally).",
+    },
     { id: "phishing_ssrf", title: "Anti-Phishing URL, Open Redirect & SSRF Guard", category: "Anti-Phishing", status: "enforced", detail: "Blocks Punycode IDN homographs, embedded credentials, private/metadata IPs, and external ?next= redirects." },
     { id: "api_sha256", title: "SHA-256 API Keys & AES-256-GCM Secret Vault", category: "Data Protection", status: serverEnv().ENCRYPTION_KEY ? "enforced" : "advisory", detail: "API tokens stored solely via irreversible SHA-256 hashes; bot tokens & integration URLs encrypted at rest." },
     { id: "cron_sec", title: "Cron & Webhook HMAC Verification", category: "Endpoints", status: cronSecret() ? "enforced" : "advisory", detail: cronSecret() ? "CRON_SECRET configured; webhooks verify timing-safe SHA-256 hashes." : "CRON_SECRET not configured in .env; schedule tick protection incomplete." },

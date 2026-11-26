@@ -24,6 +24,19 @@ before(async () => {
         res.setHeader("content-type", "application/json");
         return void res.end(JSON.stringify({ ok: false, error_code: 401, description: "Unauthorized" }));
       }
+      if (req.url?.includes("/botratelimited:")) {
+        res.statusCode = 429;
+        res.setHeader("content-type", "application/json");
+        res.setHeader("retry-after", "12");
+        return void res.end(
+          JSON.stringify({
+            ok: false,
+            error_code: 429,
+            description: "Too Many Requests: retry after 12",
+            parameters: { retry_after: 12 },
+          }),
+        );
+      }
       if (req.url?.endsWith("/getFile")) return ok({ file_path: "photos/file_1.jpg", file_size: PHOTO.length });
       if (req.url?.includes("/file/bot")) { res.setHeader("content-type", "image/jpeg"); return void res.end(PHOTO); }
       if (req.url?.endsWith("/getUpdates")) return ok([{ update_id: 7, message: { message_id: 1, text: "hi", chat: { id: 5, type: "private" } } }]);
@@ -130,6 +143,42 @@ describe("telegram client against a fake Bot API", () => {
     expect(groupPayload.media.length).toBe(2);
     expect(groupPayload.media[0].type).toBe("photo");
     expect(groupPayload.media[0].parse_mode).toBe("HTML");
+  });
+
+  it("parses Telegram 429 retry_after and never fires fallback sends on rate limits", async () => {
+    const {
+      getTelegramRetryAfterSec,
+      isTelegramRateLimitError,
+      sendFormattedMessage,
+      sendPhotoGallery,
+    } = await import("../src/server/telegram/client");
+
+    seen.length = 0;
+    let caught: unknown;
+    try {
+      await sendFormattedMessage("ratelimited:AAH-flood", 42, "<b>Hi</b>", "Hi");
+    } catch (e) {
+      caught = e;
+    }
+    expect(isTelegramRateLimitError(caught)).toBe(true);
+    expect(getTelegramRetryAfterSec(caught)).toBe(12);
+    // Must not amplify 429 by retrying as plain text.
+    expect(seen.length).toBe(1);
+
+    seen.length = 0;
+    let galleryErr: unknown;
+    try {
+      await sendPhotoGallery("ratelimited:AAH-flood", 42, [
+        { url: "https://images.example.com/one.jpg", caption: "One" },
+        { url: "https://images.example.com/two.jpg", caption: "Two" },
+      ]);
+    } catch (e) {
+      galleryErr = e;
+    }
+    expect(isTelegramRateLimitError(galleryErr)).toBe(true);
+    expect(getTelegramRetryAfterSec(galleryErr)).toBe(12);
+    // Must not fall back to individual sendPhoto calls on 429.
+    expect(seen.length).toBe(1);
   });
 });
 

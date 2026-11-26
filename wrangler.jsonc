@@ -17,6 +17,39 @@
       "service": "relaynest"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RELAYNEST_STATE",
+        "class_name": "RelayNestState"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RelayNestState"]
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "RELAYNEST_QUEUE",
+        "queue": "relaynest-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "relaynest-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 2,
+        "max_retries": 5,
+        "retry_delay": 5,
+        "max_concurrency": 5,
+        "dead_letter_queue": "relaynest-events-dlq"
+      }
+    ]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

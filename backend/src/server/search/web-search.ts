@@ -1,9 +1,21 @@
 import "server-only";
-import type { WebImageResult, WebSearchBundle, WebSearchResult, WebVideoResult } from "@backend/server/ai/web-search-types";
+import {
+  SEARCH_PROVIDER_SLUGS,
+  type SearchProviderChoice,
+  type SearchProviderDto,
+  type WebImageResult,
+  type WebSearchBundle,
+  type WebSearchResult,
+  type WebVideoResult,
+} from "@backend/server/ai/web-search-types";
+import { logEvent } from "@backend/server/logger";
+import { loadSearchProvidersFromDb } from "@backend/server/services/search-providers";
 import { assertSafeOutboundUrl } from "@backend/server/workflow-engine/ssrf";
 
 const UA = "Mozilla/5.0 (compatible; RelayNestBot/1.0; +https://relaynest.app)";
 const SOURCE_TIMEOUT_MS = 4_500;
+const KEYED_PROVIDER_TIMEOUT_MS = 7_500;
+const PAGE_FETCH_TIMEOUT_MS = 3_800;
 
 const XML_ENTITIES: Record<string, string> = {
   amp: "&",
@@ -37,6 +49,12 @@ function stripTags(s: string): string {
     .trim();
 }
 
+function cleanSnippet(s: string | undefined | null, maxLen = 700): string {
+  const clean = (s ?? "").replace(/\s+/g, " ").trim();
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, maxLen - 3).trimEnd()}...`;
+}
+
 function safePublicUrl(raw: string | undefined | null): string | null {
   if (!raw || typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -64,6 +82,22 @@ function formatDuration(seconds: number | undefined): string | undefined {
   const s = total % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Parses an optional provider prefix in search commands, e.g.
+ * `"tinyfish: latest AI agents"` -> `{ provider: "tinyfish", query: "latest AI agents" }`.
+ */
+export function parseSearchProviderPrefix(raw: string): { provider: SearchProviderChoice; query: string } {
+  const trimmed = raw.trim();
+  const m = /^([a-z0-9_-]{2,20})\s*:\s*([\s\S]+)$/i.exec(trimmed);
+  if (m) {
+    const slug = m[1]!.toLowerCase();
+    if ((SEARCH_PROVIDER_SLUGS as readonly string[]).includes(slug)) {
+      return { provider: slug as SearchProviderChoice, query: m[2]!.trim() };
+    }
+  }
+  return { provider: "auto", query: trimmed };
 }
 
 /** Extracts items from an RSS 2.0 XML feed cleanly without external XML dependencies. */
@@ -119,11 +153,16 @@ function extractYouTubeId(rawUrl: string): string | null {
   return null;
 }
 
-async function fetchJson<T>(url: string, headers: Record<string, string> = {}): Promise<T | null> {
+async function fetchJson<T>(
+  url: string,
+  init: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {},
+): Promise<T | null> {
   try {
     const res = await fetch(url, {
-      headers: { "user-agent": UA, accept: "application/json", ...headers },
-      signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS),
+      method: init.method ?? "GET",
+      headers: { "user-agent": UA, accept: "application/json", ...init.headers },
+      ...(init.body !== undefined ? { body: init.body } : {}),
+      signal: AbortSignal.timeout(init.timeoutMs ?? SOURCE_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
@@ -132,11 +171,11 @@ async function fetchJson<T>(url: string, headers: Record<string, string> = {}): 
   }
 }
 
-async function fetchText(url: string, headers: Record<string, string> = {}): Promise<string | null> {
+async function fetchText(url: string, headers: Record<string, string> = {}, timeoutMs = SOURCE_TIMEOUT_MS): Promise<string | null> {
   try {
     const res = await fetch(url, {
       headers: { "user-agent": UA, accept: "application/rss+xml, application/xml, text/xml, text/html", ...headers },
-      signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
     return await res.text();
@@ -145,11 +184,132 @@ async function fetchText(url: string, headers: Record<string, string> = {}): Pro
   }
 }
 
-/** Optional self-hosted open-source SearXNG instance when SEARXNG_URL is configured in .env. */
-async function searchSearxng(baseUrl: string, query: string, maxResults: number): Promise<WebSearchBundle | null> {
+/** Strips non-visual intent words (specs, review, price, vs, guide...) so image archives match actual subjects cleanly. */
+export function extractVisualQuery(q: string): string {
+  const cleaned = q
+    .replace(
+      /\b(specs?|specifications?|reviews?|pricing|prices?|cost|compare|comparison|vs\.?|versus|latest|news|today|updates?|how\s+to|guide|tutorial|explained|what\s+is|who\s+is|best|top|pros\s+and\s+cons|features?|details?|info|information|and|for|with|about|in|of|the)\b/gi,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length >= 2 ? cleaned : q.trim();
+}
+
+// =============================================================================
+// 1. TinyFish (TinySearch GET + TinyFetch POST Markdown Enrichment)
+// =============================================================================
+
+export interface TinyFishSearchItem {
+  position?: number;
+  site_name?: string;
+  title?: string;
+  snippet?: string;
+  url?: string;
+  published_date?: string;
+}
+
+/** Pure parser for TinyFish TinySearch + optional TinyFetch responses (exported for unit tests). */
+export function normalizeTinyFishResults(
+  searchJson: { results?: TinyFishSearchItem[] } | null,
+  fetchedPages: Map<string, string>,
+  maxResults: number,
+): WebSearchResult[] {
+  const out: WebSearchResult[] = [];
+  for (const r of searchJson?.results ?? []) {
+    const url = safePublicUrl(r.url);
+    if (!url || !r.title) continue;
+    const enrichedText = fetchedPages.get(url);
+    const snippet = enrichedText
+      ? cleanSnippet(`${r.snippet ? `${r.snippet} — ` : ""}${enrichedText}`, 850)
+      : cleanSnippet(r.snippet || r.title, 450);
+    out.push({
+      index: out.length + 1,
+      title: r.title.trim(),
+      url,
+      domain: r.site_name?.replace(/^www\./i, "") || domainOf(url),
+      snippet,
+      publishedAt: r.published_date?.slice(0, 10),
+      source: "TinyFish",
+    });
+    if (out.length >= maxResults) break;
+  }
+  return out;
+}
+
+async function searchTinyFish(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+): Promise<{ engine: string; results: WebSearchResult[]; images: WebImageResult[]; videos: WebVideoResult[]; answerSummary?: string } | null> {
+  const apiKey = provider.envKeyName ? process.env[provider.envKeyName]?.trim() : "";
+  if (!apiKey) return null;
+
+  const base = provider.baseUrl || "https://api.search.tinyfish.ai";
+  const params = new URLSearchParams({
+    query,
+    purpose: `Provide thorough, factual, up-to-date details and structured specs for: ${query}`,
+    language: "en",
+  });
+  const searchJson = await fetchJson<{ results?: TinyFishSearchItem[] }>(`${base}?${params.toString()}`, {
+    headers: { "X-API-Key": apiKey },
+    timeoutMs: KEYED_PROVIDER_TIMEOUT_MS,
+  });
+
+  const rawUrls = (searchJson?.results ?? [])
+    .map((r) => safePublicUrl(r.url))
+    .filter((u): u is string => Boolean(u))
+    .slice(0, 2);
+
+  if (!rawUrls.length) return null;
+
+  // Enrich top 2 results via TinyFetch (POST https://api.fetch.tinyfish.ai) for deep Markdown context.
+  const fetchedPages = new Map<string, string>();
+  if (provider.fetchUrl && rawUrls.length > 0) {
+    const fetchJsonRes = await fetchJson<{
+      results?: Array<{ url?: string; final_url?: string; text?: string; description?: string }>;
+    }>(provider.fetchUrl, {
+      method: "POST",
+      headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ urls: rawUrls }),
+      timeoutMs: PAGE_FETCH_TIMEOUT_MS,
+    });
+    for (const p of fetchJsonRes?.results ?? []) {
+      const target = safePublicUrl(p.url) ?? safePublicUrl(p.final_url);
+      const body = (p.text || p.description || "").replace(/^#+\s*/gm, "").trim();
+      if (target && body.length > 40) {
+        fetchedPages.set(target, cleanSnippet(body, 750));
+      }
+    }
+  }
+
+  const results = normalizeTinyFishResults(searchJson, fetchedPages, maxResults);
+  if (!results.length) return null;
+  return {
+    engine: fetchedPages.size > 0 ? "TinyFish (TinySearch + TinyFetch)" : "TinyFish (TinySearch)",
+    results,
+    images: [],
+    videos: [],
+  };
+}
+
+// =============================================================================
+// 2. SearXNG (100% Open-Source Self-Hosted Metasearch)
+// =============================================================================
+
+async function searchSearxng(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+  maxImages: number,
+  maxVideos: number,
+): Promise<{ engine: string; results: WebSearchResult[]; images: WebImageResult[]; videos: WebVideoResult[]; answerSummary?: string } | null> {
+  const configuredUrl = provider.envKeyName ? process.env[provider.envKeyName]?.trim() : "";
+  if (!configuredUrl) return null;
+
   let origin: string;
   try {
-    const parsed = new URL(baseUrl);
+    const parsed = new URL(configuredUrl);
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
     origin = parsed.toString().replace(/\/+$/, "");
   } catch {
@@ -158,9 +318,18 @@ async function searchSearxng(baseUrl: string, query: string, maxResults: number)
 
   const q = encodeURIComponent(query);
   const [webJson, imgJson, vidJson] = await Promise.all([
-    fetchJson<{ results?: Array<{ title?: string; url?: string; content?: string; publishedDate?: string; engine?: string }> }>(`${origin}/search?q=${q}&format=json&categories=general`),
-    fetchJson<{ results?: Array<{ title?: string; img_src?: string; thumbnail_src?: string; url?: string; engine?: string }> }>(`${origin}/search?q=${q}&format=json&categories=images`),
-    fetchJson<{ results?: Array<{ title?: string; url?: string; thumbnail?: string; author?: string; length?: string; engine?: string }> }>(`${origin}/search?q=${q}&format=json&categories=videos`),
+    fetchJson<{ results?: Array<{ title?: string; url?: string; content?: string; publishedDate?: string; engine?: string }> }>(
+      `${origin}/search?q=${q}&format=json&categories=general`,
+      { timeoutMs: KEYED_PROVIDER_TIMEOUT_MS },
+    ),
+    fetchJson<{ results?: Array<{ title?: string; img_src?: string; thumbnail_src?: string; url?: string; engine?: string }> }>(
+      `${origin}/search?q=${q}&format=json&categories=images`,
+      { timeoutMs: KEYED_PROVIDER_TIMEOUT_MS },
+    ),
+    fetchJson<{ results?: Array<{ title?: string; url?: string; thumbnail?: string; author?: string; length?: string; engine?: string }> }>(
+      `${origin}/search?q=${q}&format=json&categories=videos`,
+      { timeoutMs: KEYED_PROVIDER_TIMEOUT_MS },
+    ),
   ]);
 
   const results: WebSearchResult[] = [];
@@ -172,7 +341,7 @@ async function searchSearxng(baseUrl: string, query: string, maxResults: number)
       title: r.title.trim(),
       url,
       domain: domainOf(url),
-      snippet: (r.content ?? "").trim(),
+      snippet: cleanSnippet(r.content || r.title, 500),
       publishedAt: r.publishedDate?.slice(0, 10),
       source: r.engine || "SearXNG",
     });
@@ -192,7 +361,7 @@ async function searchSearxng(baseUrl: string, query: string, maxResults: number)
       sourceUrl,
       source: im.engine || "SearXNG",
     });
-    if (images.length >= 6) break;
+    if (images.length >= maxImages) break;
   }
 
   const videos: WebVideoResult[] = [];
@@ -206,21 +375,222 @@ async function searchSearxng(baseUrl: string, query: string, maxResults: number)
       thumbnailUrl: safePublicUrl(v.thumbnail) ?? (ytId ? `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` : undefined),
       channel: v.author,
       duration: v.length,
-      source: ytId ? "YouTube" : (v.engine || "Video"),
+      source: ytId ? "YouTube" : (v.engine || "SearXNG"),
     });
-    if (videos.length >= 5) break;
+    if (videos.length >= maxVideos) break;
   }
 
   if (!results.length && !images.length && !videos.length) return null;
-  return {
-    query,
-    engine: "SearXNG (Open Source)",
-    results,
-    images,
-    videos,
-    searchedAt: new Date().toISOString(),
-  };
+  return { engine: "SearXNG (Open Source)", results, images, videos };
 }
+
+// =============================================================================
+// 3. Firecrawl Search (Open-Core Search + Markdown Scraping)
+// =============================================================================
+
+async function searchFirecrawl(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+): Promise<{ engine: string; results: WebSearchResult[]; images: WebImageResult[]; videos: WebVideoResult[]; answerSummary?: string } | null> {
+  const apiKey = provider.envKeyName ? process.env[provider.envKeyName]?.trim() : "";
+  if (!apiKey) return null;
+
+  const json = await fetchJson<{
+    success?: boolean;
+    data?: Array<{ url?: string; title?: string; description?: string; markdown?: string }>;
+  }>(provider.baseUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, limit: maxResults, scrapeOptions: { formats: ["markdown"] } }),
+    timeoutMs: KEYED_PROVIDER_TIMEOUT_MS,
+  });
+
+  const results: WebSearchResult[] = [];
+  for (const r of json?.data ?? []) {
+    const url = safePublicUrl(r.url);
+    if (!url) continue;
+    const title = (r.title || domainOf(url)).trim();
+    const text = r.markdown ? r.markdown.replace(/!\[[^\]]*\]\([^)]+\)/g, "").replace(/\s+/g, " ").trim() : r.description;
+    results.push({
+      index: results.length + 1,
+      title,
+      url,
+      domain: domainOf(url),
+      snippet: cleanSnippet(text || title, 800),
+      source: "Firecrawl",
+    });
+    if (results.length >= maxResults) break;
+  }
+
+  if (!results.length) return null;
+  return { engine: "Firecrawl Search (Open Core)", results, images: [], videos: [] };
+}
+
+// =============================================================================
+// 4. Jina Search & Reader (s.jina.ai JSON API)
+// =============================================================================
+
+async function searchJina(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+): Promise<{ engine: string; results: WebSearchResult[]; images: WebImageResult[]; videos: WebVideoResult[]; answerSummary?: string } | null> {
+  const apiKey = provider.envKeyName ? process.env[provider.envKeyName]?.trim() : "";
+  if (!apiKey) return null;
+
+  const json = await fetchJson<{
+    data?: Array<{ title?: string; url?: string; description?: string; content?: string; date?: string }>;
+  }>(`${provider.baseUrl}/${encodeURIComponent(query)}`, {
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    timeoutMs: KEYED_PROVIDER_TIMEOUT_MS,
+  });
+
+  const results: WebSearchResult[] = [];
+  for (const r of json?.data ?? []) {
+    const url = safePublicUrl(r.url);
+    if (!url || !r.title) continue;
+    results.push({
+      index: results.length + 1,
+      title: r.title.trim(),
+      url,
+      domain: domainOf(url),
+      snippet: cleanSnippet(r.content || r.description || r.title, 800),
+      publishedAt: r.date?.slice(0, 10),
+      source: "Jina",
+    });
+    if (results.length >= maxResults) break;
+  }
+
+  if (!results.length) return null;
+  return { engine: "Jina Search & Reader", results, images: [], videos: [] };
+}
+
+// =============================================================================
+// 5. Tavily AI Search
+// =============================================================================
+
+async function searchTavily(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+  maxImages: number,
+): Promise<{ engine: string; results: WebSearchResult[]; images: WebImageResult[]; videos: WebVideoResult[]; answerSummary?: string } | null> {
+  const apiKey = provider.envKeyName ? process.env[provider.envKeyName]?.trim() : "";
+  if (!apiKey) return null;
+
+  const json = await fetchJson<{
+    answer?: string;
+    results?: Array<{ title?: string; url?: string; content?: string; published_date?: string }>;
+    images?: Array<string | { url?: string; description?: string }>;
+  }>(provider.baseUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: apiKey,
+      query,
+      search_depth: "basic",
+      max_results: maxResults,
+      include_answer: true,
+      include_images: true,
+    }),
+    timeoutMs: KEYED_PROVIDER_TIMEOUT_MS,
+  });
+
+  const results: WebSearchResult[] = [];
+  for (const r of json?.results ?? []) {
+    const url = safePublicUrl(r.url);
+    if (!url || !r.title) continue;
+    results.push({
+      index: results.length + 1,
+      title: r.title.trim(),
+      url,
+      domain: domainOf(url),
+      snippet: cleanSnippet(r.content || r.title, 700),
+      publishedAt: r.published_date?.slice(0, 10),
+      source: "Tavily",
+    });
+    if (results.length >= maxResults) break;
+  }
+
+  const images: WebImageResult[] = [];
+  for (const im of json?.images ?? []) {
+    const rawUrl = typeof im === "string" ? im : im.url;
+    const safeImg = safePublicUrl(rawUrl);
+    if (!safeImg) continue;
+    images.push({
+      title: (typeof im === "string" ? query : im.description || query).slice(0, 140),
+      imageUrl: safeImg,
+      thumbnailUrl: safeImg,
+      sourceUrl: safeImg,
+      source: "Tavily",
+    });
+    if (images.length >= maxImages) break;
+  }
+
+  if (!results.length) return null;
+  return { engine: "Tavily AI Search", answerSummary: json?.answer || undefined, results, images, videos: [] };
+}
+
+// =============================================================================
+// 6. Brave Search API
+// =============================================================================
+
+async function searchBrave(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+  maxVideos: number,
+): Promise<{ engine: string; results: WebSearchResult[]; images: WebImageResult[]; videos: WebVideoResult[]; answerSummary?: string } | null> {
+  const apiKey = provider.envKeyName ? process.env[provider.envKeyName]?.trim() : "";
+  if (!apiKey) return null;
+
+  const json = await fetchJson<{
+    web?: { results?: Array<{ title?: string; url?: string; description?: string; age?: string }> };
+    videos?: { results?: Array<{ title?: string; url?: string; thumbnail?: { src?: string }; video?: { duration?: string; creator?: string } }> };
+  }>(`${provider.baseUrl}?q=${encodeURIComponent(query)}&count=${maxResults}`, {
+    headers: { "X-Subscription-Token": apiKey, Accept: "application/json" },
+    timeoutMs: KEYED_PROVIDER_TIMEOUT_MS,
+  });
+
+  const results: WebSearchResult[] = [];
+  for (const r of json?.web?.results ?? []) {
+    const url = safePublicUrl(r.url);
+    if (!url || !r.title) continue;
+    results.push({
+      index: results.length + 1,
+      title: r.title.trim(),
+      url,
+      domain: domainOf(url),
+      snippet: cleanSnippet(r.description || r.title, 500),
+      source: "Brave",
+    });
+    if (results.length >= maxResults) break;
+  }
+
+  const videos: WebVideoResult[] = [];
+  for (const v of json?.videos?.results ?? []) {
+    const url = safePublicUrl(v.url);
+    if (!url || !v.title) continue;
+    const ytId = extractYouTubeId(url);
+    videos.push({
+      title: v.title.trim().slice(0, 160),
+      url,
+      thumbnailUrl: safePublicUrl(v.thumbnail?.src) ?? (ytId ? `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` : undefined),
+      channel: v.video?.creator,
+      duration: v.video?.duration,
+      source: ytId ? "YouTube" : "Brave",
+    });
+    if (videos.length >= maxVideos) break;
+  }
+
+  if (!results.length) return null;
+  return { engine: "Brave Search", results, images: [], videos };
+}
+
+// =============================================================================
+// 7. Built-in Zero-Key Open Multi-Source Web, Images & Videos Aggregator
+// =============================================================================
 
 async function searchBingWebRss(query: string): Promise<Array<{ title: string; url: string; snippet: string; publishedAt?: string; source: string }>> {
   const xml = await fetchText(`https://www.bing.com/search?q=${encodeURIComponent(query)}&format=rss`);
@@ -301,7 +671,6 @@ async function searchWikipedia(query: string): Promise<{
   const results: Array<{ title: string; url: string; snippet: string; source: string }> = [];
   const images: WebImageResult[] = [];
 
-  // Enrich the top Wikipedia match with its rich REST summary + thumbnail.
   const topTitle = hits[0]!.title;
   const summaryData = await fetchJson<{
     title?: string;
@@ -380,7 +749,6 @@ async function searchWikimediaImages(query: string): Promise<WebImageResult[]> {
     const info = p.imageinfo?.[0];
     if (!info) continue;
     const mime = (info.mime ?? "").toLowerCase();
-    // Skip audio/video/PDF files and raw vector files lacking raster thumbnails.
     if (!mime.startsWith("image/") || mime.includes("tiff") || mime.includes("djvu")) continue;
     const thumb = safePublicUrl(info.thumburl);
     const full = safePublicUrl(info.url);
@@ -491,7 +859,7 @@ async function searchGitHubRepos(query: string): Promise<Array<{ title: string; 
   const data = await fetchJson<{
     items?: Array<{ full_name?: string; html_url?: string; description?: string; stargazers_count?: number; language?: string }>;
   }>(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=3`, {
-    accept: "application/vnd.github+json",
+    headers: { accept: "application/vnd.github+json" },
   });
   const out: Array<{ title: string; url: string; snippet: string; source: string }> = [];
   for (const repo of data?.items ?? []) {
@@ -517,48 +885,58 @@ function isNewsQuery(q: string): boolean {
   return /\b(latest|news|today|recent|update|updates|release|announced|2025|2026|price|stock|score|match|weather|election)\b/i.test(q);
 }
 
-/** Strips non-visual intent words (specs, review, price, vs, guide...) so image archives match actual subjects cleanly. */
-export function extractVisualQuery(q: string): string {
-  const cleaned = q
-    .replace(/\b(specs?|specifications?|reviews?|pricing|prices?|cost|compare|comparison|vs\.?|versus|latest|news|today|updates?|how\s+to|guide|tutorial|explained|what\s+is|who\s+is|best|top|pros\s+and\s+cons|features?|details?|info|information|and|for|with|about|in|of|the)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return cleaned.length >= 2 ? cleaned : q.trim();
+function dedupeImages(list: WebImageResult[], max: number): WebImageResult[] {
+  const seen = new Set<string>();
+  const out: WebImageResult[] = [];
+  for (const im of list) {
+    if (out.length >= max) break;
+    const key = im.imageUrl.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(im);
+  }
+  return out;
 }
 
-/**
- * Performs live open-source multi-source web search returning structured web articles,
- * visual images, and videos — with optional self-hosted SearXNG (`SEARXNG_URL`) support
- * and zero paid API keys required.
- */
-export async function searchOpenWeb(
-  rawQuery: string,
-  opts: { maxResults?: number; maxImages?: number; maxVideos?: number } = {},
+function dedupeVideos(list: WebVideoResult[], max: number): WebVideoResult[] {
+  const seen = new Set<string>();
+  const out: WebVideoResult[] = [];
+  for (const v of list) {
+    if (out.length >= max) break;
+    const key = v.url.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
+/** Fetches open-source images (Wikimedia Commons + Openverse) and videos (YouTube + Dailymotion) in parallel. */
+async function fetchOpenMediaEnrichment(
+  query: string,
+  visualQuery: string,
+  needImages: boolean,
+  needVideos: boolean,
+): Promise<{ images: WebImageResult[]; videos: WebVideoResult[] }> {
+  const [commonsImgs, openverseImgs, ytVideos, dmVideos] = await Promise.all([
+    needImages ? searchWikimediaImages(visualQuery) : Promise.resolve([]),
+    needImages ? searchOpenverseImages(visualQuery) : Promise.resolve([]),
+    needVideos ? searchYouTubeViaRss(query) : Promise.resolve([]),
+    needVideos ? searchDailymotionVideos(query) : Promise.resolve([]),
+  ]);
+  return {
+    images: [...commonsImgs, ...openverseImgs],
+    videos: [...ytVideos, ...dmVideos],
+  };
+}
+
+async function runBuiltInOpenWeb(
+  query: string,
+  visualQuery: string,
+  maxResults: number,
+  maxImages: number,
+  maxVideos: number,
 ): Promise<WebSearchBundle> {
-  const query = rawQuery.trim().slice(0, 300);
-  const maxResults = opts.maxResults ?? 6;
-  const maxImages = opts.maxImages ?? 4;
-  const maxVideos = opts.maxVideos ?? 4;
-
-  if (!query) {
-    return { query: "", engine: "Open Web Search", results: [], images: [], videos: [], searchedAt: new Date().toISOString() };
-  }
-
-  // 1. Prefer self-hosted open-source SearXNG when configured in environment.
-  const searxUrl = process.env.SEARXNG_URL?.trim();
-  if (searxUrl) {
-    const searx = await searchSearxng(searxUrl, query, maxResults);
-    if (searx) {
-      return {
-        ...searx,
-        images: searx.images.slice(0, maxImages),
-        videos: searx.videos.slice(0, maxVideos),
-      };
-    }
-  }
-
-  // 2. Built-in open multi-source search fan-out in parallel (~400ms–1.5s total).
-  const visualQuery = extractVisualQuery(query);
   const [webRss, newsRss, ddg, wiki, commonsImgs, openverseImgs, ytVideos, dmVideos, ghRepos] = await Promise.all([
     searchBingWebRss(query),
     isNewsQuery(query) ? searchBingNewsRss(query) : Promise.resolve([]),
@@ -571,7 +949,6 @@ export async function searchOpenWeb(
     isTechOrCodeQuery(query) ? searchGitHubRepos(query) : Promise.resolve([]),
   ]);
 
-  // Merge and deduplicate web results while balancing direct web hits, Wikipedia, News, and GitHub.
   const seenUrls = new Set<string>();
   const seenTitles = new Set<string>();
   const mergedWeb: WebSearchResult[] = [];
@@ -594,7 +971,6 @@ export async function searchOpenWeb(
     });
   };
 
-  // Interleave top results so answers have both authoritative overview & fresh web sources.
   for (const r of webRss.slice(0, 3)) pushWeb(r);
   for (const r of newsRss.slice(0, 2)) pushWeb(r);
   for (const r of wiki.results.slice(0, 2)) pushWeb(r);
@@ -602,27 +978,8 @@ export async function searchOpenWeb(
   for (const r of ddg.results.slice(0, 2)) pushWeb(r);
   for (const r of webRss.slice(3)) pushWeb(r);
 
-  // Merge and deduplicate images (Wikipedia summary photo -> Wikimedia Commons -> Openverse -> DDG).
-  const seenImg = new Set<string>();
-  const images: WebImageResult[] = [];
-  for (const im of [...wiki.images, ...commonsImgs, ...openverseImgs, ...(ddg.image ? [ddg.image] : [])]) {
-    if (images.length >= maxImages) break;
-    const key = im.imageUrl.toLowerCase();
-    if (seenImg.has(key)) continue;
-    seenImg.add(key);
-    images.push(im);
-  }
-
-  // Merge and deduplicate videos (YouTube first, then Dailymotion).
-  const seenVid = new Set<string>();
-  const videos: WebVideoResult[] = [];
-  for (const v of [...ytVideos, ...dmVideos]) {
-    if (videos.length >= maxVideos) break;
-    const key = v.url.toLowerCase();
-    if (seenVid.has(key)) continue;
-    seenVid.add(key);
-    videos.push(v);
-  }
+  const images = dedupeImages([...wiki.images, ...commonsImgs, ...openverseImgs, ...(ddg.image ? [ddg.image] : [])], maxImages);
+  const videos = dedupeVideos([...ytVideos, ...dmVideos], maxVideos);
 
   const activeSources = new Set<string>();
   if (webRss.length || newsRss.length) activeSources.add("Web");
@@ -634,10 +991,123 @@ export async function searchOpenWeb(
   return {
     query,
     engine: activeSources.size ? `Open Web (${[...activeSources].join(" + ")})` : "Open Web Search",
+    providerSlug: "open-web",
     answerSummary: ddg.summary || wiki.summary,
     results: mergedWeb,
     images,
     videos,
     searchedAt: new Date().toISOString(),
   };
+}
+
+async function runKeyedProvider(
+  provider: SearchProviderDto,
+  query: string,
+  maxResults: number,
+  maxImages: number,
+  maxVideos: number,
+) {
+  switch (provider.slug) {
+    case "tinyfish":
+      return searchTinyFish(provider, query, maxResults);
+    case "searxng":
+      return searchSearxng(provider, query, maxResults, maxImages, maxVideos);
+    case "firecrawl":
+      return searchFirecrawl(provider, query, maxResults);
+    case "jina":
+      return searchJina(provider, query, maxResults);
+    case "tavily":
+      return searchTavily(provider, query, maxResults, maxImages);
+    case "brave":
+      return searchBrave(provider, query, maxResults, maxVideos);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Multi-provider live web search backed by Supabase `public.search_providers`:
+ * supports TinyFish (TinySearch + TinyFetch), self-hosted SearXNG, Firecrawl, Jina Search & Reader,
+ * Tavily, Brave Search, and built-in zero-key Open Multi-Source Web Search — always enriching with
+ * open-source image previews and videos when a text-only search provider is active.
+ */
+export async function searchOpenWeb(
+  rawQuery: string,
+  opts: {
+    provider?: SearchProviderChoice;
+    maxResults?: number;
+    maxImages?: number;
+    maxVideos?: number;
+  } = {},
+): Promise<WebSearchBundle> {
+  const query = rawQuery.trim().slice(0, 300);
+  const maxResults = opts.maxResults ?? 6;
+  const maxImages = opts.maxImages ?? 4;
+  const maxVideos = opts.maxVideos ?? 4;
+  const requested = opts.provider ?? "auto";
+
+  if (!query) {
+    return {
+      query: "",
+      engine: "Open Web Search",
+      providerSlug: "open-web",
+      results: [],
+      images: [],
+      videos: [],
+      searchedAt: new Date().toISOString(),
+    };
+  }
+
+  const providers = await loadSearchProvidersFromDb();
+  const visualQuery = extractVisualQuery(query);
+
+  // Build ordered candidate list of configured keyed providers (skipping open-web, which is always the reliable fallback).
+  const keyedCandidates =
+    requested === "open-web"
+      ? []
+      : requested === "auto"
+        ? providers.filter((p) => p.slug !== "open-web" && p.configured)
+        : providers.filter((p) => p.slug === requested && p.configured);
+
+  // Start open visual/video enrichment concurrently ONLY when a keyed provider lacks native images/videos.
+  const firstKeyed = keyedCandidates[0];
+  const mediaPromise =
+    firstKeyed && (!firstKeyed.supportsImages || !firstKeyed.supportsVideos)
+      ? fetchOpenMediaEnrichment(query, visualQuery, !firstKeyed.supportsImages, !firstKeyed.supportsVideos)
+      : null;
+
+  for (const candidate of keyedCandidates) {
+    try {
+      const res = await runKeyedProvider(candidate, query, maxResults, maxImages, maxVideos);
+      if (res && (res.results.length > 0 || res.images.length > 0 || res.videos.length > 0)) {
+        const extraMedia = mediaPromise
+          ? await mediaPromise
+          : res.images.length === 0 || res.videos.length === 0
+            ? await fetchOpenMediaEnrichment(query, visualQuery, res.images.length === 0, res.videos.length === 0)
+            : { images: [], videos: [] };
+
+        const images = dedupeImages([...res.images, ...extraMedia.images], maxImages);
+        const videos = dedupeVideos([...res.videos, ...extraMedia.videos], maxVideos);
+        const mediaNote =
+          extraMedia.images.length || extraMedia.videos.length
+            ? " + Open Media"
+            : "";
+
+        return {
+          query,
+          engine: `${res.engine}${mediaNote}`,
+          providerSlug: candidate.slug,
+          answerSummary: res.answerSummary,
+          results: res.results,
+          images,
+          videos,
+          searchedAt: new Date().toISOString(),
+        };
+      }
+    } catch (e) {
+      logEvent("backend", "warn", `Search provider ${candidate.slug} failed: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+  }
+
+  return runBuiltInOpenWeb(query, visualQuery, maxResults, maxImages, maxVideos);
 }

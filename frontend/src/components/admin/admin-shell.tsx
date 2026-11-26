@@ -93,21 +93,21 @@ function AdminSidebar({
       )}
 
       {!collapsed && (
-        <div className="mx-3 mb-3 flex items-center gap-2 rounded-xl border border-lavender/35 bg-primary/10 px-3 py-2 text-xs font-bold text-lavender">
+        <div className="mx-3 mb-3 flex items-center gap-2 rounded-xl border border-lavender/35 bg-primary/10 px-3 py-2 text-[13px] font-bold text-lavender">
           <ShieldCheck className="size-4 shrink-0" aria-hidden />
           <span>Platform Admin Portal</span>
         </div>
       )}
 
-      <nav aria-label="Admin sidebar navigation" className="no-scrollbar flex-1 space-y-1 overflow-y-auto px-3 pb-4">
-        {SECTIONS.map((sec) => {
+      <nav aria-label="Admin sidebar navigation" className="no-scrollbar flex-1 overflow-y-auto px-3 pb-4">
+        {SECTIONS.map((sec, idx) => {
           const items = ADMIN_NAV.filter((n) => n.section === sec);
           return (
-            <div key={sec}>
+            <div key={sec} className={cn(idx > 0 && (collapsed ? "mt-2" : "mt-3.5 border-t border-border/50 pt-3"))}>
               {collapsed ? (
-                <div className="my-2 border-t border-border/70" aria-hidden />
+                idx > 0 && <div className="mb-2 border-t border-border/70" aria-hidden />
               ) : (
-                <p className="mb-0.5 mt-3 px-3 text-xs font-semibold text-muted first:mt-0">{sec}</p>
+                <p className="mb-1.5 px-3 text-[13px] font-bold uppercase tracking-[0.08em] text-lavender">{sec}</p>
               )}
               <div className="space-y-0.5">
                 {items.map((item) => {

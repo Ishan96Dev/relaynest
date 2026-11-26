@@ -6,7 +6,7 @@ import { ApiError, Errors } from "@backend/lib/http/api";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import { requireWrite, type AuthContext } from "@backend/server/auth/context";
 import { sendEmail } from "@backend/server/email/mailer";
-import { notifyOwners } from "@backend/server/notifications";
+import { canSendEmailNotification, notifyOwners } from "@backend/server/notifications";
 import { money, paymentFailedEmail, paymentReceiptEmail, subscriptionEndedEmail } from "@backend/server/email/templates";
 import {
   cancelSubscription as rzpCancel, createOrder, createPlan, createSubscription, createUpiQr, fetchOrder, fetchPayment, fetchQr, fetchQrPayments, fetchSubscription, publicKeyId,
@@ -150,11 +150,13 @@ async function upsertSubscription(a: Activation) {
   if (error) throw new Error(`subscription-upsert: ${error.message}`);
   clearEntitlementCache(a.workspaceId);
 }
-async function ownerEmail(workspaceId: string): Promise<string | null> {
+async function ownerBillingEmail(workspaceId: string): Promise<string | null> {
   const db = admin();
   const { data } = await db.from("workspace_members").select("user_id").eq("workspace_id", workspaceId).eq("role", "owner").limit(1).maybeSingle();
   if (!data) return null;
-  const { data: u } = await db.auth.admin.getUserById(data.user_id as string);
+  const userId = data.user_id as string;
+  if (!(await canSendEmailNotification(userId, "billing", { critical: true }))) return null;
+  const { data: u } = await db.auth.admin.getUserById(userId);
   return u.user?.email ?? null;
 }
 /** Resolves recurring subscription status and billing period even when Razorpay returns `created` or null dates right after checkout. */
@@ -205,7 +207,7 @@ async function recordPayment(a: {
   const planName = PLANS[a.plan].name;
   const nextText = a.periodEnd ? (a.mode === "one_time" ? ` Your plan is active until ${new Date(a.periodEnd).toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" })}.` : ` Next billing date: ${new Date(a.periodEnd).toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" })}.`) : "";
   await notifyOwners(a.workspaceId, { kind: "payment_received", title: `Payment received: ${money(p.amount, p.currency)} for ${planName}`, body: `Invoice ${inv.number as string} is ready in Billing.${nextText}` });
-  const to = await ownerEmail(a.workspaceId);
+  const to = await ownerBillingEmail(a.workspaceId);
   if (to) {
     const mail = paymentReceiptEmail({ plan: PLANS[a.plan].name, amount: p.amount, currency: p.currency, invoiceNumber: inv.number as string, periodEnd: a.periodEnd, appUrl: appUrl() });
     await sendEmail({ to: { email: to }, ...mail, tags: ["billing", "receipt"] });
@@ -273,7 +275,12 @@ export async function cancelSubscription(ctx: AuthContext, atCycleEnd: boolean) 
   await rzpCancel(sub.razorpay_subscription_id, atCycleEnd);
   await admin().from("subscriptions").update({ cancel_at_period_end: atCycleEnd, ...(atCycleEnd ? {} : { status: "cancelled" }) }).eq("workspace_id", ctx.workspaceId);
   clearEntitlementCache(ctx.workspaceId);
-  await notifyOwners(ctx.workspaceId, { kind: "subscription_cancelled", title: "Subscription cancelled", body: atCycleEnd ? "You keep your plan until the end of the current billing period, then return to Free." : "Your subscription was cancelled immediately." });
+  await notifyOwners(ctx.workspaceId, {
+    kind: "subscription_cancelled",
+    title: "Subscription cancelled",
+    body: atCycleEnd ? "You keep your plan until the end of the current billing period, then return to Free." : "Your subscription was cancelled immediately.",
+    emailKey: "billing",
+  });
   return getBillingOverview(ctx);
 }
 // ---------------------------------------------------------------- webhook
@@ -324,7 +331,7 @@ async function applyEvent(evt: RzpEvent) {
         clearEntitlementCache(data.workspace_id as string);
         await notifyOwners(data.workspace_id as string, { kind: status === "halted" ? "payment_failed" : "subscription_cancelled", title: status === "halted" ? `${PLANS[data.plan as PlanId].name} subscription paused: payments failed` : `${PLANS[data.plan as PlanId].name} subscription ${status}`, body: status === "halted" ? "Update your payment method in Billing to keep your plan." : "Your workspace returns to the Free plan when the paid period ends." });
         if (status === "completed" || status === "halted") {
-          const to = await ownerEmail(data.workspace_id as string);
+          const to = await ownerBillingEmail(data.workspace_id as string);
           if (to) await sendEmail({ to: { email: to }, ...(status === "halted" ? paymentFailedEmail({ plan: PLANS[data.plan as PlanId].name, appUrl: appUrl() }) : subscriptionEndedEmail({ plan: PLANS[data.plan as PlanId].name, appUrl: appUrl() })), tags: ["billing"] });
         }
       }
@@ -378,7 +385,7 @@ async function applyEvent(evt: RzpEvent) {
       }
       if (!workspaceId || !plan || !(plan in PLANS)) return;
       await recordPayment({ workspaceId, plan, cycle: n.cycle === "annual" ? "annual" : "monthly", mode: payment.subscription_id ? "recurring" : "one_time", payment: { ...payment, status: "failed" } });
-      const to = await ownerEmail(workspaceId);
+      const to = await ownerBillingEmail(workspaceId);
       await notifyOwners(workspaceId, { kind: "payment_failed", title: `Payment failed for ${PLANS[plan].name}`, body: payment.error_description ?? "We could not collect payment. Update your payment method in Billing." });
       if (to) await sendEmail({ to: { email: to }, ...paymentFailedEmail({ plan: PLANS[plan].name, appUrl: appUrl() }), tags: ["billing"] });
       return;
@@ -387,13 +394,19 @@ async function applyEvent(evt: RzpEvent) {
     case "refund.processed": {
       const id = payment?.id;
       if (!id) return;
-      const { data } = await db.from("payments").update({ status: "refunded" }).eq("razorpay_payment_id", id).select("id, workspace_id, mode").maybeSingle();
+      const { data } = await db.from("payments").update({ status: "refunded" }).eq("razorpay_payment_id", id).select("id, workspace_id, mode, plan").maybeSingle();
       if (!data) return;
       await db.from("invoices").update({ status: "refunded" }).eq("payment_id", data.id);
       if (data.mode === "one_time") {
         await db.from("subscriptions").update({ status: "expired" }).eq("workspace_id", data.workspace_id).eq("mode", "one_time");
         clearEntitlementCache(data.workspace_id as string);
       }
+      await notifyOwners(data.workspace_id as string, {
+        kind: "payment_refunded",
+        title: `Payment refunded (${PLANS[(data.plan as PlanId) in PLANS ? (data.plan as PlanId) : "pro"].name})`,
+        body: "Your refund was processed and the invoice status has been updated in Billing.",
+        emailKey: "billing",
+      });
       return;
     }
     default:

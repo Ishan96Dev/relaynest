@@ -5,7 +5,8 @@ import { ArrowLeft, Bot, MoreVertical, Paperclip, Send, Smile } from "lucide-rea
 import * as React from "react";
 import type { CitationSource } from "@backend/server/ai/citations";
 import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
-import { CitedText, SourcesPanel } from "@/components/ai/citations-panel";
+import { CitedText, MessageLinkPreviews, SourcesPanel } from "@/components/ai/citations-panel";
+import { CopyBubbleButton } from "@/components/ai/copy-bubble-button";
 import { WebMediaPanel } from "@/components/ai/web-media-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -46,10 +47,17 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
   const [activeCite, setActiveCite] = React.useState<Record<number, number | null>>({});
   const [draft, setDraft] = React.useState("");
   const [typing, setTyping] = React.useState(false);
-  const endRef = React.useRef<HTMLDivElement>(null);
+  const logRef = React.useRef<HTMLDivElement>(null);
   const timer = React.useRef<number>(0);
   React.useEffect(() => () => window.clearTimeout(timer.current), []);
-  React.useEffect(() => { endRef.current?.scrollIntoView({ block: "nearest" }); }, [msgs, typing]);
+  React.useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const raf = window.requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [msgs, typing]);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
@@ -113,7 +121,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
           <MoreVertical className="size-5 text-muted" aria-hidden />
         </div>
 
-        <div className="h-[340px] space-y-2.5 overflow-y-auto px-3 py-3" role="log" aria-label="Conversation preview" aria-live="polite">
+        <div ref={logRef} className="rn-chat-log h-[340px] space-y-2.5 overflow-y-auto overscroll-contain px-3 py-3" role="log" aria-label="Conversation preview" aria-live="polite">
           <p className="mx-auto w-fit rounded-full bg-foreground/10 px-3 py-0.5 text-xs text-muted">Today</p>
           {msgs.map((m) => {
             const activeIdx = activeCite[m.id] ?? null;
@@ -124,16 +132,31 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
                   {m.image && <img src={m.image} alt={m.text || "Generated image"} className="mb-1.5 h-auto max-h-64 w-full rounded-lg object-contain" />}
                   {(m.text || !m.image) && (
                     m.from === "bot" && !m.error ? (
-                      <CitedText
-                        text={m.text}
-                        sources={m.sources}
-                        activeIndex={activeIdx}
-                        onSelect={(idx) => setActiveCite((prev) => ({ ...prev, [m.id]: prev[m.id] === idx ? null : idx }))}
-                        variant="telegram"
-                      />
+                      <>
+                        {m.text.length > 260 && (
+                          <div className="mb-1 flex justify-end">
+                            <CopyBubbleButton text={m.text} tone="assistant" label="Copy response" />
+                          </div>
+                        )}
+                        <CitedText
+                          text={m.text}
+                          sources={m.sources}
+                          activeIndex={activeIdx}
+                          onSelect={(idx) => setActiveCite((prev) => ({ ...prev, [m.id]: prev[m.id] === idx ? null : idx }))}
+                          variant="telegram"
+                        />
+                      </>
+                    ) : m.from === "user" ? (
+                      <div className="flex items-start gap-2">
+                        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">{m.text}</p>
+                        <CopyBubbleButton text={m.text} tone="user" label="Copy query" />
+                      </div>
                     ) : (
                       <p className="whitespace-pre-wrap break-words">{m.text}</p>
                     )
+                  )}
+                  {m.from === "bot" && !m.error && (
+                    <MessageLinkPreviews text={m.text} sources={m.sources} webMedia={m.webMedia} variant="telegram" />
                   )}
                   {m.from === "bot" && !m.error && (m.webMedia || m.sources?.some((s) => s.sourceUrl)) && (
                     <WebMediaPanel media={m.webMedia} sources={m.sources} variant="telegram" />
@@ -147,9 +170,16 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
                       variant="telegram"
                     />
                   )}
-                  <p className={cn("mt-1 text-right text-[10px]", m.from === "user" ? "text-white/70" : "text-muted")}>
-                    {m.ms !== undefined ? `${(m.ms / 1000).toFixed(1)}s · ` : ""}{m.time}
-                  </p>
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    {m.from === "bot" && m.text ? (
+                      <CopyBubbleButton text={m.text} tone="assistant" label="Copy response" />
+                    ) : (
+                      <span />
+                    )}
+                    <p className={cn("text-right text-[10px]", m.from === "user" ? "text-white/70" : "text-muted")}>
+                      {m.ms !== undefined ? `${(m.ms / 1000).toFixed(1)}s · ` : ""}{m.time}
+                    </p>
+                  </div>
                 </div>
               </div>
             );
@@ -162,7 +192,6 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
               </div>
             </div>
           )}
-          <div ref={endRef} />
         </div>
 
         <form onSubmit={send} className="flex items-center gap-2 border-t border-border p-2.5">

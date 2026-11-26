@@ -1,11 +1,12 @@
 "use client";
-import { AlertCircle, Bot, Check, CheckCircle2, ExternalLink, Plus, Trash2, XCircle } from "lucide-react";
+import { AlertCircle, Bot, Check, CheckCircle2, ExternalLink, LayoutTemplate, Plus, Trash2, XCircle } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 import type { AgentTools } from "@backend/server/ai/agent";
 import { RESERVED_COMMANDS, type AgentCommand } from "@backend/lib/validation/schemas";
 import type { ModelDto } from "@backend/server/ai/model-catalog";
 import type { AiAgentDto, KnowledgeDto } from "@backend/server/services/ai-agents";
+import { PromptTemplateModal } from "@/components/ai/prompt-template-picker";
 import { ProviderMark } from "@/components/ai/provider-mark";
 import { TelegramConnectCard } from "@/components/bots/telegram-connect-card";
 import { TelegramUsernameChecker } from "@/components/bots/telegram-username-check";
@@ -17,6 +18,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api-client";
 import { formatTokens } from "@/lib/model-format";
+import { TELEGRAM_AGENT_PROMPT_TEMPLATES, type SystemPromptTemplate } from "@/lib/prompt-templates";
 import { cn } from "@/lib/utils";
 
 export interface AgentForm {
@@ -137,12 +139,6 @@ export function StepModel({ form, patch, models, imageModels, error, errors }: {
   );
 }
 
-const TEMPLATES: { label: string; text: string }[] = [
-  { label: "Support agent", text: "Answer customer questions politely and briefly. Use the reference material first. If you cannot help, ask the person to contact support and never invent policies, prices or order details." },
-  { label: "FAQ assistant", text: "Answer frequently asked questions using only the reference material. If the answer is not there, say you do not know and suggest where to look." },
-  { label: "Community manager", text: "Welcome new members, answer questions about the community, and keep a friendly, neutral tone. Politely decline off-topic or abusive requests." },
-];
-
 export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo = false, knowledge, onKnowledge }: {
   form: AgentForm; patch: Patch; errors: FieldErrors; agentId: string | null; botId?: string | null; demo?: boolean; knowledge: KnowledgeDto[]; onKnowledge: (k: KnowledgeDto[]) => void;
 }) {
@@ -151,7 +147,22 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string>();
   const [srcErrors, setSrcErrors] = React.useState<{ title?: string; content?: string }>({});
+  const [tplOpen, setTplOpen] = React.useState(false);
   const used = knowledge.reduce((n, k) => n + k.content.length, 0);
+
+  // Surface templates matching the agent's selected category first, then top general Telegram personas.
+  const quickTemplates = React.useMemo(() => {
+    const matched = TELEGRAM_AGENT_PROMPT_TEMPLATES.filter((t) => t.category === form.category);
+    const others = TELEGRAM_AGENT_PROMPT_TEMPLATES.filter((t) => t.category !== form.category);
+    return [...matched, ...others].slice(0, 4);
+  }, [form.category]);
+
+  function applyTemplate(tpl: SystemPromptTemplate) {
+    patch({
+      instructions: tpl.prompt,
+      ...(tpl.recommendedTemperature !== undefined ? { temperature: tpl.recommendedTemperature } : {}),
+    });
+  }
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
@@ -174,14 +185,40 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
   return (
     <div className="space-y-5">
       <div className="space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-muted">System prompt &amp; role instructions</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => setTplOpen(true)}>
+            <LayoutTemplate className="size-3.5 text-lavender" aria-hidden />
+            Browse {TELEGRAM_AGENT_PROMPT_TEMPLATES.length} Telegram prompt templates
+          </Button>
+        </div>
         <Field label="Instructions" htmlFor="agent-instructions" required error={errors.instructions} counter={`${form.instructions.length} / 8000`}
           hint={`Tell the agent who it is, what it should do and what it must avoid. At least ${INSTRUCTIONS_MIN} characters.`}>
-          <Textarea id="agent-instructions" rows={6} maxLength={8000} value={form.instructions} onChange={(e) => patch({ instructions: e.target.value })} placeholder="You help customers of Acme with orders and shipping..." />
+          <Textarea id="agent-instructions" rows={7} maxLength={8000} value={form.instructions} onChange={(e) => patch({ instructions: e.target.value })} placeholder="You help customers of Acme with orders and shipping..." />
         </Field>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Instruction templates">
-          {TEMPLATES.map((t) => <Button key={t.label} variant="outline" size="sm" onClick={() => patch({ instructions: t.text })}>Use: {t.label}</Button>)}
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Telegram system prompt templates">
+          {quickTemplates.map((t) => (
+            <Button
+              key={t.id}
+              type="button"
+              variant={form.instructions.trim() === t.prompt.trim() ? "subtle" : "outline"}
+              size="sm"
+              title={t.tagline}
+              onClick={() => applyTemplate(t)}
+            >
+              Use: {t.name}
+            </Button>
+          ))}
         </div>
       </div>
+      <PromptTemplateModal
+        open={tplOpen}
+        onClose={() => setTplOpen(false)}
+        scope="telegram"
+        activePrompt={form.instructions}
+        preferredCategory={form.category}
+        onApply={applyTemplate}
+      />
       <div className="grid items-start gap-4 sm:grid-cols-2">
         <Field label="Welcome message" htmlFor="agent-welcome" hint="Optional. Sent when someone starts the bot with /start.">
           <Textarea id="agent-welcome" rows={3} maxLength={1000} value={form.welcomeMessage} onChange={(e) => patch({ welcomeMessage: e.target.value })} placeholder="Hi! I'm here to help. Ask me anything." />

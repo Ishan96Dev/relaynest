@@ -8,12 +8,18 @@ export function razorpayEnv() {
     webhookSecret: read("RAZORPAY_WEBHOOK_SECRET"),
   };
 }
+/** True when the supplied value is a Brevo SMTP relay password (`xsmtpsib-...`) instead of a v3 REST API key (`xkeysib-...`). */
+export function isBrevoSmtpKey(apiKey?: string): boolean {
+  return Boolean(apiKey && apiKey.startsWith("xsmtpsib-"));
+}
 /** Brevo transactional email (HTTP API, which also works on Cloudflare Workers where raw SMTP does not). */
 export function brevoEnv() {
+  const apiKey = read("BREVO_API_KEY");
   return {
-    apiKey: read("BREVO_API_KEY"),
-    fromAddress: read("MAIL_FROM_ADDRESS"),
-    fromName: read("MAIL_FROM_NAME") ?? "RelayNest",
+    apiKey,
+    isSmtpKey: isBrevoSmtpKey(apiKey),
+    fromAddress: read("MAIL_FROM_ADDRESS") ?? read("BREVO_SENDER_EMAIL") ?? read("BREVO_FROM_EMAIL"),
+    fromName: read("MAIL_FROM_NAME") ?? read("BREVO_SENDER_NAME") ?? "RelayNest",
   };
 }
 /** Shared secret for the scheduler endpoint (Cloudflare Cron Trigger, or any external cron). */

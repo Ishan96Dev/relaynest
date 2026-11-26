@@ -4,6 +4,11 @@ import { commandTask, imagePrompt, parseCommandText, usageText } from "../src/se
 import { agentCommandSchema, agentCommandsSchema } from "../src/lib/validation/schemas";
 import { MODEL_CATALOG, executionMode } from "../src/server/ai/model-catalog";
 import { AGENT_TEMPLATES, parseAgentImport, templateForModel } from "../../frontend/src/lib/agent-templates";
+import {
+  getPromptTemplates,
+  PLAYGROUND_PROMPT_TEMPLATES,
+  TELEGRAM_AGENT_PROMPT_TEMPLATES,
+} from "../../frontend/src/lib/prompt-templates";
 
 describe("command text", () => {
   it("splits the command from its input, including @botname", () => {
@@ -73,5 +78,21 @@ describe("agent templates", () => {
     expect(good.ok && good.value.commands?.[0]?.command).toBe("ask");
     const bad = parseAgentImport(JSON.stringify({ name: "A", commands: [{ command: "start", description: "x", kind: "chat" }] }));
     expect(bad.ok && bad.value.commands === undefined).toBe(true);
+  });
+
+  it("provides unique, production-ready system prompt templates for Playground and Telegram AI agents", () => {
+    expect(PLAYGROUND_PROMPT_TEMPLATES.length >= 10).toBe(true);
+    expect(TELEGRAM_AGENT_PROMPT_TEMPLATES.length >= 10).toBe(true);
+    expect(getPromptTemplates("playground")).toEqual(PLAYGROUND_PROMPT_TEMPLATES);
+    expect(getPromptTemplates("telegram")).toEqual(TELEGRAM_AGENT_PROMPT_TEMPLATES);
+
+    const all = [...PLAYGROUND_PROMPT_TEMPLATES, ...TELEGRAM_AGENT_PROMPT_TEMPLATES];
+    expect(new Set(all.map((t) => t.id)).size).toBe(all.length);
+    for (const t of all) {
+      expect(t.name.trim().length > 0).toBe(true);
+      expect(t.prompt.trim().length >= 120).toBe(true);
+      expect(t.prompt.length <= 8000).toBe(true);
+      expect(t.tags.length > 0).toBe(true);
+    }
   });
 });

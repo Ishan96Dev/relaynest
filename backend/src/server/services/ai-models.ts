@@ -29,6 +29,8 @@ export interface DbRunnableModel {
   isActive?: boolean;
   fallbackModelSlug?: string | null;
   endpointPath?: string | null;
+  maxOutputTokens?: number | null;
+  defaultMaxTokens?: number;
 }
 
 export function toModelDto(r: Row, favorite: boolean): ModelDto {
@@ -90,6 +92,8 @@ function toRunnable(m: ModelDto): DbRunnableModel {
     isActive: m.isActive,
     fallbackModelSlug: m.fallbackModelSlug,
     endpointPath: m.endpointPath,
+    maxOutputTokens: m.maxOutputTokens,
+    defaultMaxTokens: m.defaultMaxTokens,
   };
 }
 

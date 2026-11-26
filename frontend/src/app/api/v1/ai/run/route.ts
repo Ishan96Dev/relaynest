@@ -10,7 +10,7 @@ export const POST = route(async (req, _ctx, requestId) => {
   const input = runInput.parse(await readJson(req, 2 * 1024 * 1024));
   const wantsStream = input.kind === "chat" && (input.stream || (req.headers.get("accept") ?? "").includes("text/event-stream"));
   if (wantsStream) {
-    const body = await runModelStream(ctx, input);
+    const body = await runModelStream(ctx, input, req.signal);
     return new Response(body, {
       status: 200,
       headers: {

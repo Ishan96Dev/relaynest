@@ -22,7 +22,32 @@ export function isTelegramBotDeletedError(err: unknown): boolean {
   return err instanceof ApiError && err.code === "TELEGRAM_BOT_DELETED";
 }
 
-interface TgResponse<T> { ok: boolean; result?: T; description?: string; error_code?: number }
+export function isTelegramRateLimitError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "TELEGRAM_RATE_LIMITED";
+}
+
+export function getTelegramRetryAfterSec(err: unknown): number | null {
+  if (!isTelegramRateLimitError(err)) return null;
+  const first = (err as ApiError).details[0] as { retryAfterSec?: unknown } | undefined;
+  const sec = Number(first?.retryAfterSec);
+  return Number.isFinite(sec) && sec > 0 ? Math.min(Math.ceil(sec), 300) : 5;
+}
+
+interface TgResponse<T> {
+  ok: boolean;
+  result?: T;
+  description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number; migrate_to_chat_id?: number };
+}
+
+function parseRetryAfterSec(res: Response, json: TgResponse<unknown> | null): number {
+  const fromBody = Number(json?.parameters?.retry_after);
+  if (Number.isFinite(fromBody) && fromBody > 0) return Math.min(Math.ceil(fromBody), 300);
+  const fromHeader = Number(res.headers.get("retry-after"));
+  if (Number.isFinite(fromHeader) && fromHeader > 0) return Math.min(Math.ceil(fromHeader), 300);
+  return 5;
+}
 
 async function call<T>(token: string, method: string, body?: Record<string, unknown>, timeoutMs = 10_000): Promise<T> {
   const base = serverEnv().TELEGRAM_API_BASE_URL;
@@ -43,6 +68,9 @@ async function call<T>(token: string, method: string, body?: Record<string, unkn
     const code = json?.error_code ?? res.status;
     if (code === 401 || code === 404) {
       throw Errors.telegramBotDeleted("Telegram rejected this token — the bot may have been deleted or its token revoked in @BotFather.");
+    }
+    if (code === 429) {
+      throw Errors.telegramRateLimited(parseRetryAfterSec(res, json));
     }
     throw Errors.upstream("Telegram request failed.");
   }
@@ -115,7 +143,7 @@ export async function sendFormattedMessage(
   try {
     return await sendMessage(token, chatId, html, "HTML", { linkPreviewOptions });
   } catch (err) {
-    if (isTelegramBotDeletedError(err)) throw err;
+    if (isTelegramBotDeletedError(err) || isTelegramRateLimitError(err)) throw err;
     return await sendMessage(token, chatId, plainFallback, undefined, { linkPreviewOptions });
   }
 }
@@ -126,13 +154,17 @@ export async function sendFormattedMessages(
   chatId: number | string,
   htmlChunks: string[],
   plainChunks: string[],
-  opts?: { linkPreviewUrl?: string; preferLargeMedia?: boolean },
+  opts?: { linkPreviewUrl?: string; preferLargeMedia?: boolean; chunkDelayMs?: number },
 ) {
   const count = Math.max(htmlChunks.length, 1);
+  const delayMs = opts?.chunkDelayMs ?? 350;
   for (let i = 0; i < count; i++) {
     const html = htmlChunks[i] ?? plainChunks[i] ?? "";
     const plain = plainChunks[i] ?? htmlChunks[i] ?? "";
     if (!html && !plain) continue;
+    if (i > 0 && delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
     const isLast = i === count - 1;
     await sendFormattedMessage(token, chatId, html, plain, isLast ? opts : undefined);
   }
@@ -160,7 +192,7 @@ export async function sendPhotoByUrl(
     }, 12_000);
     return true;
   } catch (err) {
-    if (isTelegramBotDeletedError(err)) throw err;
+    if (isTelegramBotDeletedError(err) || isTelegramRateLimitError(err)) throw err;
     // Fallback: download the public image bytes and upload directly via multipart sendPhoto.
     try {
       const res = await fetch(imageUrl, {
@@ -218,7 +250,7 @@ export async function sendPhotoGallery(
       15_000,
     );
   } catch (err) {
-    if (isTelegramBotDeletedError(err)) throw err;
+    if (isTelegramBotDeletedError(err) || isTelegramRateLimitError(err)) throw err;
     // If Telegram rejected any URL in the group (e.g. Wikimedia hotlink), send up to 2 individually with byte fallback.
     let sent = 0;
     for (const p of safe) {
@@ -266,7 +298,12 @@ export async function setMyProfilePhoto(token: string, bytes: Uint8Array, mime =
     throw Errors.upstream("Could not reach Telegram.");
   }
   const json = (await res.json().catch(() => null)) as TgResponse<unknown> | null;
-  if (!json?.ok) throw Errors.upstream(json?.description ? `Telegram: ${json.description}` : "Telegram did not accept the profile photo.");
+  if (!json?.ok) {
+    const code = json?.error_code ?? res.status;
+    if (code === 401 || code === 404) throw Errors.telegramBotDeleted();
+    if (code === 429) throw Errors.telegramRateLimited(parseRetryAfterSec(res, json));
+    throw Errors.upstream(json?.description ? `Telegram: ${json.description}` : "Telegram did not accept the profile photo.");
+  }
 }
 
 export function removeMyProfilePhoto(token: string) {
@@ -317,7 +354,12 @@ export async function sendPhoto(
     throw Errors.upstream("Could not reach Telegram.");
   }
   const json = (await res.json().catch(() => null)) as TgResponse<unknown> | null;
-  if (!json?.ok) throw Errors.upstream(json?.description ? `Telegram: ${json.description}` : "Telegram did not accept the picture.");
+  if (!json?.ok) {
+    const code = json?.error_code ?? res.status;
+    if (code === 401 || code === 404) throw Errors.telegramBotDeleted();
+    if (code === 429) throw Errors.telegramRateLimited(parseRetryAfterSec(res, json));
+    throw Errors.upstream(json?.description ? `Telegram: ${json.description}` : "Telegram did not accept the picture.");
+  }
 }
 
 /** Downloads a file a user sent to the bot. Refuses anything larger than maxBytes. */

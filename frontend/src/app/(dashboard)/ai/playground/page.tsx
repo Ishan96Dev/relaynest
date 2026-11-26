@@ -5,6 +5,7 @@ import { isSupabaseConfigured } from "@backend/lib/env/public";
 import { requireAuth } from "@backend/server/auth/context";
 import { demoModels, listModels } from "@backend/server/services/ai-models";
 import { listCollections } from "@backend/server/services/knowledge";
+import { loadSearchProvidersFromDb } from "@backend/server/services/search-providers";
 
 export const metadata = { title: "Model Playground" };
 
@@ -12,13 +13,20 @@ export default async function PlaygroundPage({ searchParams }: { searchParams: P
   const sp = await searchParams;
   const demo = !isSupabaseConfigured();
   const ctx = demo ? null : await requireAuth();
-  const models = ctx ? await listModels(ctx) : demoModels();
-  const collections = ctx ? (await listCollections(ctx).catch(() => [])).map((c) => ({ id: c.id, name: c.name, documents: c.documents })) : [];
+  const [models, collections, searchProviders] = await Promise.all([
+    ctx ? listModels(ctx) : Promise.resolve(demoModels()),
+    ctx
+      ? listCollections(ctx)
+          .then((list) => list.map((c) => ({ id: c.id, name: c.name, documents: c.documents })))
+          .catch(() => [])
+      : Promise.resolve([]),
+    loadSearchProvidersFromDb().catch(() => []),
+  ]);
   return (
     <div className="mx-auto max-w-[1400px]">
       <PageHeader icon={<Play />} title="Model Playground" description="Try any model in the catalog: chat, embeddings, image generation and decisions." />
       {demo && <p role="status" className="mb-4 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warn">Demo mode: connect Supabase and add your provider API keys to run models.</p>}
-      <Playground models={models} initialSlug={sp.model} collections={collections} />
+      <Playground models={models} initialSlug={sp.model} collections={collections} searchProviders={searchProviders} />
     </div>
   );
 }

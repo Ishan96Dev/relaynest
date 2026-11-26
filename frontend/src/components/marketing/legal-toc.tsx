@@ -33,7 +33,7 @@ export function LegalSidebarToc({
       <div className="sr-only" role="status" aria-live="polite">
         Reading section: {activeSection?.title}
       </div>
-      <p className="px-2 pb-2 text-[11px] font-bold uppercase tracking-wider text-muted">On This Page</p>
+      <p className="px-2 pb-2 text-xs font-bold uppercase tracking-[0.08em] text-lavender">On This Page</p>
       <nav aria-label="Page sections">
         <ul className="space-y-1 text-sm">
           {sections.map((s, idx) => {

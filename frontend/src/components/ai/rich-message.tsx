@@ -2,10 +2,8 @@
 import { Check, Copy, ExternalLink } from "lucide-react";
 import * as React from "react";
 import type { CitationSource } from "@backend/server/ai/citations";
-
-function isSafeUrl(url: string): boolean {
-  return /^https?:\/\/[^\s<>"]+$/i.test(url.trim());
-}
+import { isSafeHttpUrl } from "@backend/server/ai/link-preview-types";
+import { LinkPreview } from "@/components/ui/link-preview";
 
 function splitTableRow(line: string): string[] {
   return line
@@ -23,7 +21,15 @@ function isTableSeparator(line: string): boolean {
   return cells.length >= 2 && cells.every((c) => /^:?-{2,}:?$/.test(c));
 }
 
-function CodeBlock({ code, lang, variant }: { code: string; lang: string; variant: "playground" | "telegram" }) {
+const CodeBlock = React.memo(function CodeBlock({
+  code,
+  lang,
+  variant,
+}: {
+  code: string;
+  lang: string;
+  variant: "playground" | "telegram";
+}) {
   const [copied, setCopied] = React.useState(false);
 
   async function copy() {
@@ -50,11 +56,12 @@ function CodeBlock({ code, lang, variant }: { code: string; lang: string; varian
       </pre>
     </div>
   );
-}
+});
 
 /**
- * Renders inline Markdown safely: `code`, [label](https://...), bare https:// URLs,
- * **bold**, *italic*, ~~strike~~, and interactive [1] / [1, 2] citation chips.
+ * Renders inline Markdown safely: `code`, [label](https://...), bare https:// URLs
+ * (wrapped in interactive LinkPreview hover cards), **bold**, *italic*, ~~strike~~,
+ * and interactive [1] / [1, 2] citation chips with source link previews.
  */
 function renderInline(
   text: string,
@@ -63,6 +70,7 @@ function renderInline(
   activeIndex: number | null,
   onSelect: (idx: number) => void,
   keyPrefix: string,
+  streaming = false,
 ): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   // Combined tokenizer ordered by specificity so code & links take priority over emphasis.
@@ -85,12 +93,12 @@ function renderInline(
       );
     } else if (m[2] !== undefined && m[3] !== undefined) {
       const href = m[3].trim();
-      if (isSafeUrl(href)) {
+      if (isSafeHttpUrl(href)) {
         out.push(
-          <a key={key} href={href} target="_blank" rel="noopener noreferrer" className="rn-md-link">
+          <LinkPreview key={key} url={href} title={m[2]} className="rn-md-link">
             {m[2]}
             <ExternalLink className="inline size-2.5 shrink-0 opacity-75" aria-hidden />
-          </a>,
+          </LinkPreview>,
         );
       } else {
         out.push(m[0]);
@@ -98,7 +106,7 @@ function renderInline(
     } else if (m[4] !== undefined || m[5] !== undefined) {
       out.push(
         <strong key={key} className="font-bold">
-          {renderInline(m[4] ?? m[5]!, byIdx, chipClass, activeIndex, onSelect, `${key}b`)}
+          {renderInline(m[4] ?? m[5]!, byIdx, chipClass, activeIndex, onSelect, `${key}b`, streaming)}
         </strong>,
       );
     } else if (m[6] !== undefined) {
@@ -108,14 +116,14 @@ function renderInline(
     } else if (m[8] !== undefined) {
       const cleanUrl = m[8].replace(/[.,;:!?]+$/, "");
       const trailing = m[8].slice(cleanUrl.length);
-      if (isSafeUrl(cleanUrl)) {
+      if (isSafeHttpUrl(cleanUrl)) {
         const display = cleanUrl.replace(/^https?:\/\/(?:www\.)?/i, "");
         out.push(
           <React.Fragment key={key}>
-            <a href={cleanUrl} target="_blank" rel="noopener noreferrer" className="rn-md-link">
+            <LinkPreview url={cleanUrl} disabled={streaming} className="rn-md-link">
               {display.length > 46 ? `${display.slice(0, 43)}...` : display}
               <ExternalLink className="inline size-2.5 shrink-0 opacity-75" aria-hidden />
-            </a>
+            </LinkPreview>
             {trailing}
           </React.Fragment>,
         );
@@ -127,19 +135,36 @@ function renderInline(
       if (byIdx.size > 0 && nums.every((n) => byIdx.has(n))) {
         nums.forEach((n, j) => {
           const src = byIdx.get(n)!;
-          out.push(
+          const hasWebUrl = Boolean(src.sourceUrl && isSafeHttpUrl(src.sourceUrl));
+          const btn = (
             <button
-              key={`${key}-c${j}`}
               type="button"
               className={chipClass}
               data-active={activeIndex === n ? "true" : undefined}
-              title={`[${n}] ${src.document}${src.collection ? ` (${src.collection})` : ""}`}
+              title={hasWebUrl ? undefined : `[${n}] ${src.document}${src.collection ? ` (${src.collection})` : ""}`}
               aria-label={`Citation ${n}: ${src.document}`}
               onClick={() => onSelect(n)}
             >
               [{n}]
-            </button>,
+            </button>
           );
+          if (hasWebUrl && src.sourceUrl) {
+            out.push(
+              <LinkPreview
+                key={`${key}-c${j}`}
+                as="span"
+                url={src.sourceUrl}
+                title={src.document}
+                description={src.excerpt}
+                siteName={src.collection}
+                badge={`Source [${n}]`}
+              >
+                {btn}
+              </LinkPreview>,
+            );
+          } else {
+            out.push(<React.Fragment key={`${key}-c${j}`}>{btn}</React.Fragment>);
+          }
         });
       } else {
         out.push(m[0]);
@@ -155,9 +180,10 @@ function renderInline(
 
 /**
  * Rich, zero-dependency, XSS-safe Markdown renderer for Playground and Telegram Preview:
- * tables, fenced code blocks with copy buttons, headings, lists, blockquotes, hyperlinks, and inline [n] citations.
+ * tables, fenced code blocks with copy buttons, headings, lists, blockquotes, LinkPreview hyperlinks,
+ * and inline [n] citations with hover link previews.
  */
-export function RichMessage({
+export const RichMessage = React.memo(function RichMessage({
   text,
   sources,
   activeIndex,
@@ -175,11 +201,12 @@ export function RichMessage({
   const byIdx = React.useMemo(() => new Map((sources ?? []).map((s) => [s.index, s])), [sources]);
   const chipClass = variant === "telegram" ? "rn-tg-cite" : "rn-cite-chip";
 
-  const blocks = React.useMemo(() => {
+  const { blocks, inlineCaretPlaced } = React.useMemo(() => {
     const lines = text.replace(/\r\n/g, "\n").split("\n");
     const out: React.ReactNode[] = [];
     let i = 0;
     let bKey = 0;
+    let lastParagraphMeta: { idx: number; key: string; lines: string[] } | null = null;
 
     while (i < lines.length) {
       const line = lines[i]!;
@@ -200,6 +227,7 @@ export function RichMessage({
         }
         if (i < lines.length) i += 1;
         out.push(<CodeBlock key={`b-${bKey++}`} code={codeLines.join("\n")} lang={lang} variant={variant} />);
+        lastParagraphMeta = null;
         continue;
       }
 
@@ -235,6 +263,7 @@ export function RichMessage({
             </table>
           </div>,
         );
+        lastParagraphMeta = null;
         continue;
       }
 
@@ -253,12 +282,14 @@ export function RichMessage({
             ))}
           </blockquote>,
         );
+        lastParagraphMeta = null;
         continue;
       }
 
       // 4. Horizontal rule
       if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
         out.push(<hr key={`b-${bKey++}`} className="rn-md-hr" />);
+        lastParagraphMeta = null;
         i += 1;
         continue;
       }
@@ -274,6 +305,7 @@ export function RichMessage({
             {renderInline(heading[2]!.trim(), byIdx, chipClass, activeIndex, onSelect, k)}
           </p>,
         );
+        lastParagraphMeta = null;
         i += 1;
         continue;
       }
@@ -293,6 +325,7 @@ export function RichMessage({
             ))}
           </ul>,
         );
+        lastParagraphMeta = null;
         continue;
       }
 
@@ -311,6 +344,7 @@ export function RichMessage({
             ))}
           </ol>,
         );
+        lastParagraphMeta = null;
         continue;
       }
 
@@ -331,26 +365,46 @@ export function RichMessage({
       }
       if (pLines.length) {
         const k = `b-${bKey++}`;
+        const idx = out.length;
         out.push(
           <p key={k} className="rn-md-p">
             {pLines.map((pl, pi) => (
               <React.Fragment key={pi}>
                 {pi > 0 && <br />}
-                {renderInline(pl, byIdx, chipClass, activeIndex, onSelect, `${k}-p${pi}`)}
+                {renderInline(pl, byIdx, chipClass, activeIndex, onSelect, `${k}-p${pi}`, streaming)}
               </React.Fragment>
             ))}
           </p>,
         );
+        lastParagraphMeta = { idx, key: k, lines: pLines };
       }
     }
 
-    return out;
-  }, [text, byIdx, chipClass, activeIndex, onSelect, variant]);
+    // Place the streaming caret inline inside the trailing paragraph so height never jumps when streaming stops.
+    let placed = false;
+    if (streaming && lastParagraphMeta && lastParagraphMeta.idx === out.length - 1) {
+      const { idx, key: k, lines: pLines } = lastParagraphMeta;
+      out[idx] = (
+        <p key={k} className="rn-md-p">
+          {pLines.map((pl, pi) => (
+            <React.Fragment key={pi}>
+              {pi > 0 && <br />}
+              {renderInline(pl, byIdx, chipClass, activeIndex, onSelect, `${k}-p${pi}`)}
+            </React.Fragment>
+          ))}
+          <span className="rn-stream-cursor" aria-hidden />
+        </p>
+      );
+      placed = true;
+    }
+
+    return { blocks: out, inlineCaretPlaced: placed };
+  }, [text, byIdx, chipClass, activeIndex, onSelect, variant, streaming]);
 
   return (
     <div className={variant === "telegram" ? "rn-md rn-md-tg" : "rn-md"}>
       {blocks}
-      {streaming && <span className="rn-stream-cursor" aria-hidden />}
+      {streaming && !inlineCaretPlaced && <span className="rn-stream-cursor" aria-hidden />}
     </div>
   );
-}
+});

@@ -158,7 +158,11 @@ export function LoginForm() {
           })
           .catch(() => undefined)
       : Promise.resolve();
-    void fetch("/api/v1/notifications", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ event: "login_detected" }) }).catch(() => undefined);
+    void fetch("/api/v1/notifications", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event: "login_detected", detail: "You signed in to your RelayNest account with email and password." }),
+    }).catch(() => undefined);
     void fetch("/api/v1/audit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ event: "auth.login", pagePath: "/login", detail: "Email & password sign-in" }) }).catch(() => undefined);
     await Promise.race([prefsPromise, new Promise((r) => setTimeout(r, 900))]);
     setTimeout(() => {
@@ -301,6 +305,11 @@ export function ResetForm() {
     const { error } = await (await createClient()).auth.updateUser({ password: pw });
     setBusy(false);
     if (error) return setErr("This reset link has expired. Request a new one.");
+    void fetch("/api/v1/notifications", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event: "password_changed", detail: "Your password was reset via recovery link." }),
+    }).catch(() => undefined);
     router.replace("/dashboard");
   }
 

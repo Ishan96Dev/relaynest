@@ -2,7 +2,10 @@
 import { BookOpen, ChevronDown, ChevronUp, ExternalLink, Sparkles } from "lucide-react";
 import * as React from "react";
 import { orderSourcesByCitation, type CitationSource, type RetrievalMode } from "@backend/server/ai/citations";
+import { extractExternalLinks, isSafeHttpUrl, normalizeLinkKey } from "@backend/server/ai/link-preview-types";
+import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
 import { RichMessage } from "@/components/ai/rich-message";
+import { LinkPreview, LinkPreviewCards, SiteFavicon, type LinkPreviewCardItem } from "@/components/ui/link-preview";
 
 const MODE_LABELS: Record<RetrievalMode, string> = {
   hybrid: "Hybrid RAG",
@@ -15,10 +18,10 @@ const MODE_LABELS: Record<RetrievalMode, string> = {
 };
 
 /**
- * Renders assistant Markdown (tables, fenced code blocks, hyperlinks, lists, blockquotes)
+ * Renders assistant Markdown (tables, fenced code blocks, LinkPreview hyperlinks, lists, blockquotes)
  * alongside interactive inline [1] / [1, 2] citation pills in Playground and Telegram Preview.
  */
-export function CitedText({
+export const CitedText = React.memo(function CitedText({
   text,
   sources,
   activeIndex,
@@ -43,13 +46,49 @@ export function CitedText({
       streaming={streaming}
     />
   );
-}
+});
+
+/**
+ * Renders compact OpenGraph Link Preview cards for external URLs found directly inside a completed reply
+ * (deduplicated against web sources and video cards so nothing appears twice).
+ */
+export const MessageLinkPreviews = React.memo(function MessageLinkPreviews({
+  text,
+  sources,
+  webMedia,
+  variant = "playground",
+}: {
+  text: string;
+  sources?: CitationSource[];
+  webMedia?: WebMediaPayload;
+  variant?: "playground" | "telegram";
+}) {
+  const items = React.useMemo<LinkPreviewCardItem[]>(() => {
+    const extracted = extractExternalLinks(text, variant === "telegram" ? 2 : 4);
+    if (!extracted.length) return [];
+
+    const existingKeys = new Set<string>();
+    for (const s of sources ?? []) {
+      if (s.sourceUrl) existingKeys.add(normalizeLinkKey(s.sourceUrl));
+    }
+    for (const v of webMedia?.videos ?? []) {
+      if (v.url) existingKeys.add(normalizeLinkKey(v.url));
+    }
+
+    return extracted
+      .filter((it) => !existingKeys.has(normalizeLinkKey(it.url)))
+      .slice(0, variant === "telegram" ? 2 : 3);
+  }, [text, sources, webMedia, variant]);
+
+  if (!items.length) return null;
+  return <LinkPreviewCards items={items} variant={variant} />;
+});
 
 /**
  * Renders the grounded Sources & Citations panel in either the Playground card style
- * or the authentic Telegram blockquote citation style.
+ * or the authentic Telegram blockquote citation style, with interactive LinkPreview hover cards and favicons.
  */
-export function SourcesPanel({
+export const SourcesPanel = React.memo(function SourcesPanel({
   text,
   sources,
   retrieval,
@@ -93,6 +132,7 @@ export function SourcesPanel({
         <ol className="rn-tg-sources-list">
           {visible.map((s) => {
             const active = activeIndex === s.index;
+            const hasLink = Boolean(s.sourceUrl && isSafeHttpUrl(s.sourceUrl));
             return (
               <li
                 key={`${s.index}-${s.document}`}
@@ -102,11 +142,20 @@ export function SourcesPanel({
               >
                 <div className="rn-tg-source-row">
                   <span className="rn-tg-source-badge">[{s.index}]</span>
-                  <span className="rn-tg-source-name" title={s.document}>
-                    {s.sourceUrl && /^https:\/\//i.test(s.sourceUrl) ? (
-                      <a href={s.sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:underline" onClick={(e) => e.stopPropagation()}>
-                        {s.document}
-                      </a>
+                  <span className="rn-tg-source-name" title={hasLink ? undefined : s.document}>
+                    {hasLink && s.sourceUrl ? (
+                      <LinkPreview
+                        url={s.sourceUrl}
+                        title={s.document}
+                        description={s.excerpt}
+                        siteName={s.collection}
+                        badge={`[${s.index}] ${scoreText(s)}`}
+                        className="inline-flex max-w-full items-center gap-1 hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <SiteFavicon url={s.sourceUrl} className="size-3" />
+                        <span className="truncate">{s.document}</span>
+                      </LinkPreview>
                     ) : (
                       s.document
                     )}
@@ -146,6 +195,7 @@ export function SourcesPanel({
         {visible.map((s) => {
           const active = activeIndex === s.index;
           const isCited = cited.includes(s.index);
+          const hasLink = Boolean(s.sourceUrl && isSafeHttpUrl(s.sourceUrl));
           return (
             <li
               key={`${s.index}-${s.document}`}
@@ -155,18 +205,21 @@ export function SourcesPanel({
             >
               <div className="rn-source-top">
                 <span className="rn-source-num">[{s.index}]</span>
-                <span className="rn-source-doc" title={s.document}>
-                  {s.sourceUrl && /^https:\/\//i.test(s.sourceUrl) ? (
-                    <a
-                      href={s.sourceUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1"
+                <span className="rn-source-doc" title={hasLink ? undefined : s.document}>
+                  {hasLink && s.sourceUrl ? (
+                    <LinkPreview
+                      url={s.sourceUrl}
+                      title={s.document}
+                      description={s.excerpt}
+                      siteName={s.collection}
+                      badge={isCited ? `Cited · [${s.index}]` : `[${s.index}] ${scoreText(s)}`}
+                      className="inline-flex max-w-full items-center gap-1.5"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {s.document}
+                      <SiteFavicon url={s.sourceUrl} className="size-3.5" />
+                      <span className="truncate">{s.document}</span>
                       <ExternalLink className="size-3 shrink-0 opacity-75" aria-hidden />
-                    </a>
+                    </LinkPreview>
                   ) : (
                     s.document
                   )}
@@ -194,4 +247,4 @@ export function SourcesPanel({
       )}
     </section>
   );
-}
+});

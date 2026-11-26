@@ -189,33 +189,27 @@ Use **Render Web Service** if you want persistent Node processes (supports optio
 
 ---
 
-## 6. Upstash Redis & Upstash Kafka Configuration
+## 6. Cache, Rate Limiting & Durable Queue (Cloudflare-Native Free Tier + Optional Redis/Kafka REST)
 
-RelayNest communicates with **Redis** and **Kafka** over **HTTPS REST APIs** (`backend/src/server/cache/redis.ts` & `backend/src/server/queue/kafka.ts`), making them 100% compatible with both Node.js (Render/Vercel) and Cloudflare Workers (where raw TCP `ioredis`/`kafkajs` sockets do not run).
+On **Cloudflare Workers**, RelayNest uses **100% Cloudflare-native free-tier bindings** configured in [`wrangler.jsonc`](../wrangler.jsonc) — requiring **zero external accounts or credentials**:
 
-### A. Redis (`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`)
+- **`RELAYNEST_STATE` (Durable Object SQLite — Workers Free Tier: 100k reqs/day):** Powers distributed Redis-compatible cache/dedupe (`redisGet`, `redisSet`, `redisSetNx`), edge rate limiting (`enforceRateLimit`), and per-bot / per-chat Telegram send pacing + `429 retry_after` cooldowns.
+- **`RELAYNEST_QUEUE` (Cloudflare Queues — Free Tier: 10k ops/day, `relaynest-events` + `relaynest-events-dlq`):** Buffers multi-bot Telegram outbound bursts (`telegram.outbound`), workflow triggers (`workflows.execute`), and event streams, retrying Telegram `429` responses with exact `delaySeconds` via `POST /api/queues/cloudflare`.
+- Make sure `CRON_SECRET` is set on the Cloudflare Worker (protects both `/api/cron/tick` and `/api/queues/cloudflare`).
+
+### Optional External Adapters (Vercel / Render / Self-Hosted)
+
+If you also deploy outside Cloudflare Workers (or want shared state across Cloudflare + Vercel):
+
+#### A. Upstash Redis (Free Tier: 500k cmds/mo)
 1. Go to [console.upstash.com](https://console.upstash.com) -> **Redis** -> **Create Database**.
-2. Pick a region close to your Supabase and Cloudflare/Render region, enable TLS (default), and create.
-3. Open **REST API** -> copy:
-   - `UPSTASH_REDIS_REST_URL` (`https://<your-db>.upstash.io`)
-   - `UPSTASH_REDIS_REST_TOKEN` (`AX...`)
-   *(RelayNest also accepts `REDIS_REST_URL` / `REDIS_REST_TOKEN` as aliases. When omitted, rate limiting and caches fall back to local per-instance memory.)*
+2. Open **REST API** and set `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`.
 
-### B. Kafka (`UPSTASH_KAFKA_*`, `KAFKA_TOPIC_PREFIX`, `KAFKA_CONSUMER_SECRET`)
-1. In [console.upstash.com](https://console.upstash.com), open **Kafka** -> **Create Cluster**.
-2. Create these **4 topics** matching your prefix (default `relaynest`):
-   - `relaynest.telegram.updates`
-   - `relaynest.workflows.execute`
-   - `relaynest.audit.events`
-   - `relaynest.notifications.dispatch`
-3. From **Cluster Details -> REST API**, copy:
-   - `UPSTASH_KAFKA_REST_URL` (`https://<cluster>.upstash.io`)
-   - `UPSTASH_KAFKA_REST_USERNAME`
-   - `UPSTASH_KAFKA_REST_PASSWORD`
-4. Set:
-   - `KAFKA_TOPIC_PREFIX=relaynest`
-   - `KAFKA_CONSUMER_SECRET=<64-char-hex-secret>` *(authenticates `POST <API_URL>/api/queues/kafka` via `Authorization: Bearer <KAFKA_CONSUMER_SECRET>`)*
-5. Verify live connectivity inside RelayNest at **`<APP_URL>/admin/services`** — **Redis** and **Kafka** cards will show green `Connected` / `PONG` status.
+#### B. External Kafka REST v2 (e.g., Aiven Free Apache Kafka + Karapace REST Proxy)
+> Note: Upstash Kafka was discontinued in March 2025. `backend/src/server/queue/kafka.ts` supports standard Kafka REST Proxy v2 (`/topics/{topic}`) automatically when `KAFKA_REST_URL` is configured.
+1. Create a free Kafka cluster with REST Proxy enabled (such as Aiven Free Tier Karapace) and create topics: `relaynest.telegram.updates`, `relaynest.telegram.outbound`, `relaynest.workflows.execute`, `relaynest.audit.events`, `relaynest.notifications.dispatch`.
+2. Set `KAFKA_REST_URL`, `KAFKA_REST_USERNAME`, `KAFKA_REST_PASSWORD`, `KAFKA_TOPIC_PREFIX=relaynest`, and `KAFKA_CONSUMER_SECRET`.
+3. Verify live connectivity inside RelayNest at **`<APP_URL>/admin/services`** — **Redis Cache & Rate Limit** and **Kafka Event Bus** cards will show green `Connected` status for both Cloudflare-native bindings and external REST backends.
 
 ---
 

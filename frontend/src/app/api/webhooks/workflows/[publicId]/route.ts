@@ -1,7 +1,7 @@
 import { safeEqual, sha256Hex } from "@backend/lib/crypto";
 import { ApiError, fail, newRequestId } from "@backend/lib/http/api";
 import { createAdminClient } from "@backend/lib/supabase/admin";
-import { rateLimit } from "@backend/server/ai/provider";
+import { enforceRateLimit } from "@backend/server/security/rate-limit";
 import { notifyOwners } from "@backend/server/notifications";
 import { runWorkflow } from "@backend/server/services/workflow-runner";
 const MAX_BODY = 64 * 1024;
@@ -16,7 +16,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ publicI
   try {
     const { publicId } = await params;
     if (!/^[a-f0-9]{24}$/.test(publicId)) return new Response(null, { status: 404 });
-    rateLimit(`wh:${publicId}`, 60, 60_000);
+    await enforceRateLimit(`wh:${publicId}`, 60, 60_000);
     const secret = req.headers.get("x-relaynest-secret") ?? /^Bearer (.+)$/i.exec(req.headers.get("authorization") ?? "")?.[1] ?? "";
     const { data: hook } = await createAdminClient().from("webhook_endpoints").select("workspace_id, workflow_id, secret_hash, enabled").eq("public_id", publicId).maybeSingle();
     // One answer for an unknown endpoint and a wrong secret, so endpoint IDs cannot be probed.

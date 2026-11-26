@@ -188,6 +188,15 @@ export async function toggleIntegration(
 
   if (error) throw new Error("Failed to update integration");
   if (!data) throw Errors.notFound("Integration");
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "integration_toggled",
+    title: enabled ? `Integration resumed: ${data.name as string}` : `Integration paused: ${data.name as string}`,
+    body: enabled
+      ? `Your ${data.provider as string} integration is active and will deliver subscribed events.`
+      : `Outbound delivery for this ${data.provider as string} integration is paused.`,
+  });
   return mapIntegration(data as Record<string, unknown>);
 }
 
@@ -422,7 +431,7 @@ export async function provisionWebhookEndpoint(
     notify({
       workspaceId: ctx.workspaceId,
       userId: ctx.userId,
-      kind: "webhook_triggered",
+      kind: "webhook_provisioned",
       title: `Webhook endpoint ready: ${wf.name}`,
       body: "Incoming webhook endpoint created/rotated with a new secret.",
     }),

@@ -1,6 +1,7 @@
 import "server-only";
 import { ApiError } from "@backend/lib/http/api";
 import { createAdminClient } from "@backend/lib/supabase/admin";
+import { getCloudflareStateStub, isCloudflareStateConfigured } from "@backend/server/cloudflare/bindings";
 import { logEvent } from "@backend/server/logger";
 
 export interface RateLimitResult {
@@ -11,6 +12,13 @@ export interface RateLimitResult {
 
 const hits = new Map<string, number[]>();
 const adminFailures = new Map<string, { count: number; lockedUntil: number }>();
+
+/** Returns true when rate limits synchronize across edge isolates (Upstash Redis or Cloudflare Durable Object). */
+export function isDistributedRateLimitActive(): boolean {
+  const url = process.env.UPSTASH_REDIS_REST_URL?.trim() || process.env.REDIS_REST_URL?.trim();
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() || process.env.REDIS_REST_TOKEN?.trim();
+  return Boolean((url && token) || isCloudflareStateConfigured());
+}
 
 /** Extracts client IP cleanly from Cloudflare / proxy headers. */
 export function extractClientIp(req: Request): string {
@@ -44,39 +52,65 @@ export function rateLimit(key: string, limit: number, windowMs: number): RateLim
 }
 
 /**
- * Distributed-ready rate limiter: uses Upstash Redis REST (`INCR` + `PEXPIRE`) when configured,
- * falling back seamlessly to the local sliding-window limiter.
+ * Distributed rate limiter:
+ * 1. Upstash Redis REST (`INCR` + `PEXPIRE`) when configured.
+ * 2. Cloudflare Durable Object SQLite (`RELAYNEST_STATE`, sharded by `rl:${key}`) on Cloudflare Workers.
+ * 3. Local sliding-window limiter fallback when neither distributed backend is available.
  */
 export async function enforceRateLimit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
-  const url = process.env.UPSTASH_REDIS_REST_URL?.trim();
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
-  if (!url || !token) return rateLimit(key, limit, windowMs);
+  const url = (process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_REST_URL)?.trim();
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || process.env.REDIS_REST_TOKEN)?.trim();
 
-  const windowBucket = Math.floor(Date.now() / windowMs);
-  const redisKey = `rl:${key}:${windowBucket}`;
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/pipeline`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify([["INCR", redisKey], ["PEXPIRE", redisKey, windowMs]]),
-      signal: AbortSignal.timeout(1500),
-    });
-    if (res.ok) {
-      const json = (await res.json()) as Array<{ result?: number }>;
-      const count = Number(json[0]?.result ?? 1);
-      if (count > limit) {
-        logEvent("api", "warn", `Distributed rate limit exceeded [${key}] (${limit})`);
-        throw new ApiError(429, "RATE_LIMITED", "Rate limit exceeded. Slow down requests and retry shortly.", [{ limit }]);
+  if (url && token) {
+    const windowBucket = Math.floor(Date.now() / windowMs);
+    const redisKey = `rl:${key}:${windowBucket}`;
+    try {
+      const res = await fetch(`${url.replace(/\/$/, "")}/pipeline`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify([["INCR", redisKey], ["PEXPIRE", redisKey, windowMs]]),
+        signal: AbortSignal.timeout(1500),
+      });
+      if (res.ok) {
+        const json = (await res.json()) as Array<{ result?: number }>;
+        const count = Number(json[0]?.result ?? 1);
+        const resetAtMs = (windowBucket + 1) * windowMs;
+        if (count > limit) {
+          const retryAfterSec = Math.max(1, Math.ceil((resetAtMs - Date.now()) / 1000));
+          logEvent("api", "warn", `Distributed rate limit exceeded [${key}] (${limit})`);
+          throw new ApiError(429, "RATE_LIMITED", "Rate limit exceeded. Slow down requests and retry shortly.", [{ retryAfterSec, limit }]);
+        }
+        return {
+          limit,
+          remaining: Math.max(0, limit - count),
+          resetAtMs,
+        };
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+    }
+  }
+
+  const stub = getCloudflareStateStub(`rl:${key}`);
+  if (stub) {
+    try {
+      const res = await stub.rateLimitCheck(key, limit, windowMs);
+      if (!res.allowed) {
+        logEvent("api", "warn", `Edge DO rate limit exceeded [${key}] (${limit}/${Math.round(windowMs / 1000)}s)`);
+        throw new ApiError(429, "RATE_LIMITED", "Rate limit exceeded. Slow down requests and retry shortly.", [
+          { retryAfterSec: res.retryAfterSec, limit },
+        ]);
       }
       return {
         limit,
-        remaining: Math.max(0, limit - count),
-        resetAtMs: (windowBucket + 1) * windowMs,
+        remaining: res.remaining,
+        resetAtMs: res.resetAtMs,
       };
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
     }
-  } catch (err) {
-    if (err instanceof ApiError) throw err;
   }
+
   return rateLimit(key, limit, windowMs);
 }
 

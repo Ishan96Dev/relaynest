@@ -2,10 +2,10 @@ import "server-only";
 import { publicEnv } from "@backend/lib/env/public";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import { executionAllowed } from "@backend/server/billing/entitlements";
-import { sendEmail } from "@backend/server/email/mailer";
 import { automationFailedEmail } from "@backend/server/email/templates";
+import { notify, notifyOwners } from "@backend/server/notifications";
 import { loadToken } from "@backend/server/services/bots";
-import { sendMessage } from "@backend/server/telegram/client";
+import { dispatchTelegramMessage } from "@backend/server/telegram/outbound";
 import { executeWorkflow, workflowDefinitionSchema, type ActionAdapters, type ExecutionResult } from "@backend/server/workflow-engine";
 export type TriggerKind = "schedule" | "webhook" | "telegram" | "manual";
 export interface RunRequest {
@@ -21,10 +21,21 @@ export type RunOutcome =
 /** Real action adapters for one workspace. Bot IDs are checked against the workspace so a workflow cannot use another tenant's bot. */
 function adapters(workspaceId: string): ActionAdapters {
   return {
-    async sendTelegramMessage({ botId, chatId, text }) {
+    async sendTelegramMessage({ botId, chatId, text, idempotencyKey }) {
       const token = await loadToken(botId, workspaceId);
-      const r = (await sendMessage(token, chatId, text)) as { message_id?: number } | undefined;
-      return { externalMessageId: r?.message_id !== undefined ? String(r.message_id) : undefined };
+      const r = await dispatchTelegramMessage({
+        botId,
+        workspaceId,
+        token,
+        chatId,
+        kind: "text",
+        text,
+        idempotencyKey,
+      });
+      return {
+        externalMessageId:
+          r.messageId !== undefined ? String(r.messageId) : r.queued ? "queued" : undefined,
+      };
     },
     async httpRequest({ method, url, body }) {
       // Redirects are not followed: the SSRF check covered the original URL only.
@@ -75,33 +86,49 @@ export async function runWorkflow(req: RunRequest): Promise<RunOutcome> {
       })))
       : Promise.resolve(),
   ]);
-  if (result.status === "failed") await notifyFailure(workspaceId, String(wf.name), failedStep?.errorMessageSafe ?? "The automation failed.");
+  if (result.status === "failed") {
+    await notifyFailure(workspaceId, String(wf.name), failedStep?.errorMessageSafe ?? "The automation failed.");
+  } else if (req.trigger === "schedule") {
+    await notifyOwners(workspaceId, {
+      kind: "automation_succeeded",
+      title: `Scheduled automation completed: ${String(wf.name)}`,
+      body: `Finished ${result.steps.length} step(s) in ${Date.now() - started}ms.`,
+      dedupeHours: 0.05,
+      dedupeByTitle: true,
+    });
+  }
   return { outcome: "ran", executionId: exec.id as string, result };
 }
 const lastAlert = new Map<string, number>();
-/** Tells the workspace owner, in-app and by email, unless they switched those notifications off in Settings. */
+/** Tells workspace owners, in-app and by email, honoring user_settings.notifications. */
 async function notifyFailure(workspaceId: string, name: string, reason: string) {
   const key = `${workspaceId}:${name}`;
   if (Date.now() - (lastAlert.get(key) ?? 0) < 3_600_000) return;
   lastAlert.set(key, Date.now());
   try {
     const db = createAdminClient();
-    const { data: owner } = await db.from("workspace_members").select("user_id").eq("workspace_id", workspaceId).eq("role", "owner").limit(1).maybeSingle();
-    if (!owner) return;
-    const userId = owner.user_id as string;
-    // A schedule that fails every minute must not send a message every minute: one alert per automation per hour.
-    const { data: recent } = await db.from("notifications").select("id").eq("workspace_id", workspaceId).eq("kind", "execution_failed")
-      .eq("title", `Automation failed: ${name}`).gte("created_at", new Date(Date.now() - 3_600_000).toISOString()).limit(1);
-    if (recent?.length) return;
-    const { data: s } = await db.from("user_settings").select("value").eq("user_id", userId).eq("key", "notifications").maybeSingle();
-    const prefs = (s?.value ?? {}) as { automationFailures?: boolean; executionFailures?: boolean };
-    if (prefs.executionFailures !== false) {
-      await db.from("notifications").insert({ workspace_id: workspaceId, user_id: userId, kind: "execution_failed", title: `Automation failed: ${name}`, body: reason });
-    }
-    if (prefs.automationFailures !== false) {
-      const { data: u } = await db.auth.admin.getUserById(userId);
-      if (u.user?.email) await sendEmail({ to: { email: u.user.email }, ...automationFailedEmail({ name, error: reason, appUrl: publicEnv().NEXT_PUBLIC_APP_URL }), tags: ["automation"] });
-    }
+    const { data: owners } = await db
+      .from("workspace_members")
+      .select("user_id")
+      .eq("workspace_id", workspaceId)
+      .in("role", ["owner", "admin"]);
+    if (!owners?.length) return;
+    const mail = automationFailedEmail({ name, error: reason, appUrl: publicEnv().NEXT_PUBLIC_APP_URL });
+    await Promise.all(
+      owners.map((m) =>
+        notify({
+          workspaceId,
+          userId: m.user_id as string,
+          kind: "execution_failed",
+          title: `Automation failed: ${name}`,
+          body: reason,
+          emailKey: "automationFailures",
+          emailPayload: { ...mail, tags: ["automation", "execution_failed"] },
+          dedupeHours: 1,
+          dedupeByTitle: true,
+        }),
+      ),
+    );
   } catch {
     console.error("[automations] could not send the failure notification");
   }

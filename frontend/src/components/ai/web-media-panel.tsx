@@ -4,22 +4,16 @@
 import { ExternalLink, Film, Globe, Image as ImageIcon, Play } from "lucide-react";
 import * as React from "react";
 import type { CitationSource } from "@backend/server/ai/citations";
+import { isSafeHttpUrl } from "@backend/server/ai/link-preview-types";
 import type { WebImageResult, WebMediaPayload } from "@backend/server/ai/web-search-types";
+import { LinkPreview, LinkPreviewCards } from "@/components/ui/link-preview";
 import { Modal } from "@/components/ui/modal";
-
-function safeDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, "");
-  } catch {
-    return "link";
-  }
-}
 
 /**
  * Renders open-source web search visual results (image preview strip with lightbox modal,
- * video preview cards with duration & external watch links, and optional Telegram link preview card).
+ * video preview cards with duration & external watch links, and rich OpenGraph Telegram link preview).
  */
-export function WebMediaPanel({
+export const WebMediaPanel = React.memo(function WebMediaPanel({
   media,
   sources,
   variant = "playground",
@@ -34,7 +28,7 @@ export function WebMediaPanel({
   const images = (media?.images ?? []).filter((im) => !brokenImgs[im.thumbnailUrl]);
   const videos = media?.videos ?? [];
   const topLinkSource = variant === "telegram"
-    ? sources?.find((s) => s.sourceUrl && /^https:\/\//i.test(s.sourceUrl))
+    ? sources?.find((s) => s.sourceUrl && isSafeHttpUrl(s.sourceUrl))
     : undefined;
 
   if (!images.length && !videos.length && !topLinkSource) return null;
@@ -125,17 +119,17 @@ export function WebMediaPanel({
       )}
 
       {topLinkSource?.sourceUrl && (
-        <a
-          href={topLinkSource.sourceUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rn-tg-link-preview"
-          aria-label={`Link preview: ${topLinkSource.document}`}
-        >
-          <span className="rn-tg-lp-domain">{safeDomain(topLinkSource.sourceUrl)}</span>
-          <span className="rn-tg-lp-title">{topLinkSource.document}</span>
-          {topLinkSource.excerpt && <span className="rn-tg-lp-desc">{topLinkSource.excerpt}</span>}
-        </a>
+        <LinkPreviewCards
+          variant="telegram"
+          items={[
+            {
+              url: topLinkSource.sourceUrl,
+              label: topLinkSource.document,
+              description: topLinkSource.excerpt,
+              siteName: topLinkSource.collection,
+            },
+          ]}
+        />
       )}
 
       <Modal open={Boolean(lightbox)} onClose={() => setLightbox(null)} title={lightbox?.title ?? "Image Preview"} className="max-h-[90vh] max-w-3xl overflow-y-auto">
@@ -149,18 +143,19 @@ export function WebMediaPanel({
             />
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
               <span>Source: {lightbox.source}</span>
-              <a
-                href={lightbox.sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
+              <LinkPreview
+                url={lightbox.sourceUrl}
+                title={lightbox.title}
+                siteName={lightbox.source}
+                image={lightbox.thumbnailUrl}
                 className="inline-flex items-center gap-1 font-semibold text-lavender hover:underline"
               >
                 Open original source <ExternalLink className="size-3.5" aria-hidden />
-              </a>
+              </LinkPreview>
             </div>
           </div>
         )}
       </Modal>
     </div>
   );
-}
+});

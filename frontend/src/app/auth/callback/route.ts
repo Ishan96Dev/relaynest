@@ -2,8 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isSupabaseConfigured } from "@backend/lib/env/public";
 import { landingPathFor } from "@backend/lib/preferences";
 import { safeRedirectPath } from "@/lib/safe-redirect";
+import { createAdminClient } from "@backend/lib/supabase/admin";
 import { createClient } from "@backend/lib/supabase/server";
 import { recordUserAudit } from "@backend/server/audit";
+import { notify } from "@backend/server/notifications";
 import { getUserPreferencesForUserId } from "@backend/server/services/preferences";
 
 /** Completes email-link flows (signup confirm, password recovery). */
@@ -32,6 +34,28 @@ export async function GET(req: NextRequest) {
       });
       const createdAt = data.user?.created_at ? Date.parse(data.user.created_at) : 0;
       const isNew = createdAt > 0 && Date.now() - createdAt < 5 * 60_000;
+      if (!isNew && data.user?.id) {
+        void (async () => {
+          const { data: member } = await createAdminClient()
+            .from("workspace_members")
+            .select("workspace_id")
+            .eq("user_id", data.user!.id)
+            .limit(1)
+            .maybeSingle();
+          if (member?.workspace_id) {
+            await notify({
+              workspaceId: member.workspace_id as string,
+              userId: data.user!.id,
+              kind: "login_detected",
+              title: "New sign-in detected",
+              body: "You signed in to your RelayNest account via OAuth or email link.",
+              emailKey: "login",
+              dedupeHours: 1,
+              metadata: { method: "callback" },
+            });
+          }
+        })().catch(() => undefined);
+      }
       const name =
         (data.user?.user_metadata?.full_name as string | undefined) ||
         (data.user?.user_metadata?.name as string | undefined) ||

@@ -4,6 +4,29 @@
  */
 import { makeExcerpt, type CitationSource } from "./citations";
 
+export const SEARCH_PROVIDER_SLUGS = ["auto", "tinyfish", "searxng", "firecrawl", "jina", "tavily", "brave", "open-web"] as const;
+export type SearchProviderChoice = (typeof SEARCH_PROVIDER_SLUGS)[number];
+export type SearchProviderSlug = Exclude<SearchProviderChoice, "auto">;
+
+export interface SearchProviderDto {
+  slug: SearchProviderSlug;
+  name: string;
+  kind: "agent_search" | "metasearch" | "crawl_search" | "open_aggregate";
+  baseUrl: string;
+  fetchUrl: string | null;
+  envKeyName: string | null;
+  isOpenSource: boolean;
+  requiresKey: boolean;
+  configured: boolean;
+  supportsImages: boolean;
+  supportsVideos: boolean;
+  supportsPageFetch: boolean;
+  docsUrl: string | null;
+  description: string;
+  isActive: boolean;
+  priority: number;
+}
+
 export interface WebSearchResult {
   /** 1-based index aligned with inline citations [1], [2], ... */
   index: number;
@@ -37,6 +60,7 @@ export interface WebVideoResult {
 export interface WebMediaPayload {
   query: string;
   engine: string;
+  providerSlug?: SearchProviderSlug;
   images: WebImageResult[];
   videos: WebVideoResult[];
 }

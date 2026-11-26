@@ -167,6 +167,7 @@ export async function listApiKeysPageData(ctx: AuthContext): Promise<ApiKeysPage
 export async function createApiKey(
   ctx: AuthContext,
   input: z.infer<typeof createApiKeyInput>,
+  opts?: { skipNotify?: boolean },
 ): Promise<{ key: ApiKeyDto; plaintextToken: string }> {
   requireWrite(ctx);
   const { plaintextToken, keyPrefix } = generateRawApiKey(input.environment);
@@ -201,14 +202,16 @@ export async function createApiKey(
       action: "api_key.created",
       detail: `${input.name} (${keyPrefix}•••)`,
     }),
-    notify({
-      workspaceId: ctx.workspaceId,
-      userId: ctx.userId,
-      kind: "api_key_created",
-      title: `API key created: ${input.name}`,
-      body: `New ${input.environment} key (${keyPrefix}•••) with ${input.scopes.length} scope(s) was created.`,
-      emailKey: "accountSecurity",
-    }),
+    opts?.skipNotify
+      ? Promise.resolve()
+      : notify({
+          workspaceId: ctx.workspaceId,
+          userId: ctx.userId,
+          kind: "api_key_created",
+          title: `API key created: ${input.name}`,
+          body: `New ${input.environment} key (${keyPrefix}•••) with ${input.scopes.length} scope(s) was created.`,
+          emailKey: "apiKeys",
+        }),
   ]);
 
   return { key: mapKeyRow(data as Record<string, unknown>), plaintextToken };
@@ -241,7 +244,7 @@ export async function revokeApiKey(ctx: AuthContext, keyId: string): Promise<Api
       kind: "api_key_revoked",
       title: `API key revoked: ${data.name}`,
       body: `Key ${data.key_prefix}••• can no longer authenticate requests.`,
-      emailKey: "accountSecurity",
+      emailKey: "apiKeys",
     }),
   ]);
 
@@ -271,12 +274,25 @@ export async function rotateApiKey(
 
   const env = (existing.environment as "production" | "development") ?? "production";
   const scopes = ((existing.scopes as ApiScope[]) ?? ["bots:read"]) as [ApiScope, ...ApiScope[]];
-  return createApiKey(ctx, {
-    name: `${existing.name as string} (Rotated)`,
-    environment: env,
-    scopes,
-    expiresInDays: 90,
+  const created = await createApiKey(
+    ctx,
+    {
+      name: `${existing.name as string} (Rotated)`,
+      environment: env,
+      scopes,
+      expiresInDays: 90,
+    },
+    { skipNotify: true },
+  );
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "api_key_rotated",
+    title: `API key rotated: ${existing.name as string}`,
+    body: `Previous key was revoked and replaced with ${created.key.keyPrefix}•••.`,
+    emailKey: "apiKeys",
   });
+  return created;
 }
 
 export async function deleteApiKey(ctx: AuthContext, keyId: string): Promise<void> {
@@ -293,10 +309,19 @@ export async function deleteApiKey(ctx: AuthContext, keyId: string): Promise<voi
   const { error } = await admin.from("api_keys").delete().eq("id", keyId).eq("workspace_id", ctx.workspaceId);
   if (error) throw new Error("Failed to delete API key");
 
-  await admin.from("activity_logs").insert({
-    workspace_id: ctx.workspaceId,
-    actor_id: ctx.userId,
-    action: "api_key.deleted",
-    detail: `${existing.name} (${existing.key_prefix}•••)`,
-  });
+  await Promise.all([
+    admin.from("activity_logs").insert({
+      workspace_id: ctx.workspaceId,
+      actor_id: ctx.userId,
+      action: "api_key.deleted",
+      detail: `${existing.name} (${existing.key_prefix}•••)`,
+    }),
+    notify({
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      kind: "api_key_deleted",
+      title: `API key deleted: ${existing.name as string}`,
+      body: `Key ${existing.key_prefix as string}••• was permanently removed.`,
+    }),
+  ]);
 }

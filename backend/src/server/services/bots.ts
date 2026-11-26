@@ -38,7 +38,7 @@ interface CreateBotInput {
 }
 
 /** Validates the token with Telegram, encrypts it, and stores it where browser roles cannot read it. */
-export async function createBot(ctx: AuthContext, input: CreateBotInput) {
+export async function createBot(ctx: AuthContext, input: CreateBotInput, opts?: { skipNotify?: boolean }) {
   requireWrite(ctx);
   await assertBotLimit(ctx.workspaceId);
   const env = serverEnv();
@@ -107,8 +107,10 @@ export async function createBot(ctx: AuthContext, input: CreateBotInput) {
     actorEmail: ctx.email,
     botCreatedAt: (bot.created_at as string) ?? new Date().toISOString(),
   });
-  await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_created", title: `Bot created: ${input.name}`, body: `@${me.username} was added to your workspace.` });
-  await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_connected", title: "Telegram bot connected", body: `@${me.username} is connected to RelayNest${photo ? " and its profile photo was imported" : ""}.`, emailKey: "botConnected" });
+  if (!opts?.skipNotify) {
+    await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_created", title: `Bot created: ${input.name}`, body: `@${me.username} was added to your workspace.`, actionUrl: `/bots/${bot.id as string}` });
+    await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_connected", title: "Telegram bot connected", body: `@${me.username} is connected to RelayNest${photo ? " and its profile photo was imported" : ""}.`, emailKey: "botConnected", actionUrl: `/bots/${bot.id as string}` });
+  }
   return toBotDto(finalRow);
 }
 
@@ -125,7 +127,7 @@ async function loadToken(botId: string, workspaceId: string) {
 }
 
 /** Registers the Telegram webhook with a fresh secret token and marks the bot active. */
-export async function activateBot(ctx: AuthContext, botId: string) {
+export async function activateBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean }) {
   requireWrite(ctx);
   const bot = await getBot(ctx, botId); // verifies workspace ownership
   const token = await loadToken(bot.id, ctx.workspaceId);
@@ -142,7 +144,9 @@ export async function activateBot(ctx: AuthContext, botId: string) {
         .select("*")
         .single();
       if (polled.error) throw new Error("Failed to activate bot");
-      await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_activated", title: `Bot activated: ${bot.name}`, body: "It is now online and answering Telegram messages." });
+      if (!opts?.skipNotify) {
+        await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_activated", title: `Bot activated: ${bot.name}`, body: "It is now online and answering Telegram messages.", actionUrl: `/bots/${bot.id}` });
+      }
       return toBotDto(polled.data);
     }
     const secret = randomToken(32);
@@ -157,7 +161,9 @@ export async function activateBot(ctx: AuthContext, botId: string) {
       .select("*")
       .single();
     if (error) throw new Error("Failed to activate bot");
-    await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_activated", title: `Bot activated: ${bot.name}`, body: "It is now online and answering Telegram messages." });
+    if (!opts?.skipNotify) {
+      await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_activated", title: `Bot activated: ${bot.name}`, body: "It is now online and answering Telegram messages.", actionUrl: `/bots/${bot.id}` });
+    }
     return toBotDto(data);
   } catch (err) {
     if (isTelegramBotDeletedError(err)) {
@@ -167,7 +173,7 @@ export async function activateBot(ctx: AuthContext, botId: string) {
   }
 }
 
-export async function deactivateBot(ctx: AuthContext, botId: string) {
+export async function deactivateBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean }) {
   requireWrite(ctx);
   const bot = await getBot(ctx, botId);
   const token = await loadToken(bot.id, ctx.workspaceId);
@@ -189,7 +195,9 @@ export async function deactivateBot(ctx: AuthContext, botId: string) {
     .select("*")
     .single();
   if (error) throw new Error("Failed to deactivate bot");
-  await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_paused", title: `Bot paused: ${bot.name}`, body: "It will not reply to Telegram messages until you activate it again.", emailKey: "botOffline" });
+  if (!opts?.skipNotify) {
+    await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_paused", title: `Bot paused: ${bot.name}`, body: "It will not reply to Telegram messages until you activate it again.", emailKey: "botOffline", actionUrl: `/bots/${bot.id}` });
+  }
   return toBotDto(data);
 }
 
@@ -227,7 +235,7 @@ export async function cleanupTelegramBotOnDelete(token: string) {
   ]);
 }
 
-export async function deleteBot(ctx: AuthContext, botId: string) {
+export async function deleteBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean }) {
   requireWrite(ctx);
   const bot = await getBot(ctx, botId);
   const admin = createAdminClient();
@@ -269,14 +277,16 @@ export async function deleteBot(ctx: AuthContext, botId: string) {
     action: "bot.deleted",
     detail: bot.username ? `@${bot.username}` : bot.name,
   });
-  await notify({
-    workspaceId: ctx.workspaceId,
-    userId: ctx.userId,
-    kind: "bot_deleted",
-    title: `Bot deleted: ${bot.name}`,
-    body: "The bot, its webhook, commands, and Telegram configuration were cleared. Records were saved in Bot History.",
-    emailKey: "botOffline",
-  });
+  if (!opts?.skipNotify) {
+    await notify({
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      kind: "bot_deleted",
+      title: `Bot deleted: ${bot.name}`,
+      body: "The bot, its webhook, commands, and Telegram configuration were cleared. Records were saved in Bot History.",
+      emailKey: "botOffline",
+    });
+  }
 }
 
 /**
@@ -395,7 +405,16 @@ export async function updateBotToken(ctx: AuthContext, botId: string, token: str
     .select("*")
     .single();
   if (error || !data) throw new Error("Failed to update bot");
-  if (bot.status === "active") return activateBot(ctx, bot.id);
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "bot_token_updated",
+    title: `Bot token updated: ${bot.name}`,
+    body: `Encrypted Telegram token for @${me.username} was replaced and verified.`,
+    emailKey: "apiKeys",
+    actionUrl: `/bots/${bot.id}`,
+  });
+  if (bot.status === "active") return activateBot(ctx, bot.id, { skipNotify: true });
   return toBotDto(data);
 }
 
@@ -467,7 +486,7 @@ export async function syncBotWithTelegram(
   return { bot: toBotDto(data), telegramDeleted: false };
 }
 
-/** Syncs all bots in a workspace with Telegram (`getMe`). Never throws on offline network; detects Telegram deletions cleanly. */
+/** Syncs all bots in a workspace with Telegram (`getMe`) using bounded concurrency so Telegram rate limits aren't tripped. */
 export async function syncWorkspaceBotsWithTelegram(
   ctx: AuthContext,
   opts?: { timeoutMs?: number },
@@ -476,16 +495,23 @@ export async function syncWorkspaceBotsWithTelegram(
   const { data } = await admin.from("bots").select("id").eq("workspace_id", ctx.workspaceId).limit(50);
   const ids = (data ?? []).map((r) => r.id as string);
   const timeoutMs = opts?.timeoutMs ?? 3_500;
-  return Promise.all(
-    ids.map(async (id) => {
-      try {
-        const res = await syncBotWithTelegram(ctx, id, { timeoutMs });
-        return { id, telegramDeleted: res.telegramDeleted };
-      } catch (e) {
-        return { id, telegramDeleted: false, error: e instanceof Error ? e.message : "Sync skipped" };
-      }
-    }),
-  );
+  const results: { id: string; telegramDeleted: boolean; error?: string }[] = [];
+  const batchSize = 5;
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const chunk = ids.slice(i, i + batchSize);
+    const chunkRes = await Promise.all(
+      chunk.map(async (id) => {
+        try {
+          const res = await syncBotWithTelegram(ctx, id, { timeoutMs });
+          return { id, telegramDeleted: res.telegramDeleted };
+        } catch (e) {
+          return { id, telegramDeleted: false, error: e instanceof Error ? e.message : "Sync skipped" };
+        }
+      }),
+    );
+    results.push(...chunkRes);
+  }
+  return results;
 }
 
 /** Re-verifies the bot token with Telegram getMe, syncs username/photo, or marks it deleted on Telegram. */

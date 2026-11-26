@@ -105,6 +105,48 @@ export function canPowerAgent(m: Pick<CatalogModel, "modelType" | "slug">): bool
 export function supportsImageInput(m: Pick<CatalogModel, "inputModalities" | "slug">): boolean {
   return m.inputModalities.includes("Image") || m.slug === "paligemma";
 }
+
+/** Standard Playground max-token presets (includes extended budgets for Deep Thinking). */
+export const PLAYGROUND_TOKEN_OPTIONS = [256, 512, 1024, 1536, 2048, 4096, 6144, 8192, 12288, 16384] as const;
+
+/** Minimum total token ceiling when Deep Thinking is enabled (holds both reasoning trace + detailed answer). */
+export const DEEP_THINKING_MIN_TOKENS = 6144;
+/** Recommended total token ceiling automatically selected when toggling Deep Thinking ON. */
+export const DEEP_THINKING_DEFAULT_TOKENS = 8192;
+/** Hard upper cap for Playground completion tokens. */
+export const PLAYGROUND_MAX_TOKENS_CAP = 16384;
+
+/**
+ * Computes the optimal max_tokens budget for a model given whether Deep Thinking is active.
+ * Reasoning models consume tokens during internal chain-of-thought before emitting answer tokens,
+ * so Deep Thinking automatically scales up to hold both reasoning and a detailed final reply.
+ */
+export function recommendedMaxTokens(
+  m: Pick<CatalogModel, "defaultMaxTokens" | "maxOutputTokens" | "isThinking">,
+  thinking: boolean,
+): number {
+  const cap = m.maxOutputTokens && m.maxOutputTokens > 0
+    ? Math.min(m.maxOutputTokens, PLAYGROUND_MAX_TOKENS_CAP)
+    : PLAYGROUND_MAX_TOKENS_CAP;
+  if (!thinking || !m.isThinking) {
+    return Math.min(cap, Math.max(256, m.defaultMaxTokens || 2048));
+  }
+  const desired = Math.max(m.defaultMaxTokens * 4, DEEP_THINKING_DEFAULT_TOKENS);
+  return Math.min(cap, desired);
+}
+
+/**
+ * Computes a focused reasoning token cap (~25% of max_tokens, bounded to 768..2048) so Nemotron
+ * thinking models reason quickly without rambling and preserve ~75% of the budget for a detailed answer.
+ */
+export function computeReasoningBudget(maxTokens: number): number {
+  return Math.min(2048, Math.max(768, Math.round(maxTokens * 0.25)));
+}
+
+/** NVIDIA NIM Nemotron models natively accept top-level `reasoning_budget` to bound thinking latency. */
+export function supportsReasoningBudget(m: Pick<CatalogModel, "source" | "apiModelId">): boolean {
+  return m.source === "nvidia" && /^nvidia\/nemotron/i.test(m.apiModelId);
+}
 const nv = (publisher: string, id: string) => `https://build.nvidia.com/${publisher}/${id}`;
 const vc = (id: string) => `https://vercel.com/ai-gateway/models/${id}`;
 

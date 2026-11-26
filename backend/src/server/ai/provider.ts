@@ -11,7 +11,13 @@ import {
   resolveModelFromDb,
   type DbRunnableModel,
 } from "@backend/server/services/ai-models";
-import type { ProviderRecord } from "./model-catalog";
+import {
+  computeReasoningBudget,
+  DEEP_THINKING_MIN_TOKENS,
+  PLAYGROUND_MAX_TOKENS_CAP,
+  supportsReasoningBudget,
+  type ProviderRecord,
+} from "./model-catalog";
 import { recordUsage, type UsageKind } from "./usage";
 
 export { rateLimit };
@@ -37,17 +43,112 @@ export interface Usage {
 
 /** Fast interactive timeout: prevents hanging requests on free queues and stays within Cloudflare Workers limits. */
 const TIMEOUT_MS = 25_000;
-/** Deep-thinking timeout when the caller explicitly enables extended reasoning. */
-const THINKING_TIMEOUT_MS = 60_000;
+/** Deep-thinking initial stream connect timeout before falling back to a faster healthy model. */
+const THINKING_CONNECT_TIMEOUT_MS = 35_000;
+/** Overall deep-thinking budget (fits comfortably inside the 120s API route maxDuration). */
+const THINKING_TIMEOUT_MS = 105_000;
+/** Maximum silent gap between SSE chunks before treating an upstream stream as stalled. */
+const STREAM_CHUNK_IDLE_MS = 45_000;
 /** Image generation normally finishes in 2.5–8 s, though NVIDIA's free tier occasionally stalls a socket and succeeds immediately on retry. */
 const IMAGE_ATTEMPT_MS = 15_000;
 const IMAGE_ATTEMPTS = 3;
-/** Minimum token budget when extended thinking is explicitly enabled. */
-const THINKING_MIN_TOKENS = 2048;
 
-/** Strips any leaked <think>...</think> reasoning tags from a model reply. */
+/** Strips complete `<think>...</think>` blocks and any unclosed trailing `<think>...` block from a model reply. */
 export function stripThinkTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/i, "")
+    .trim();
+}
+
+/**
+ * Chunk-boundary-safe streaming parser that splits inline `<think>...</think>` blocks from final answer content.
+ * Prevents split tags across SSE tokens (e.g. `"<th"` + `"ink>"` or `"</"` + `"think>"`) from leaking or locking the stream.
+ */
+export class ThinkStreamParser {
+  private inside = false;
+  private carry = "";
+
+  push(chunk: string): { thinking: string; answer: string } {
+    if (!chunk) return { thinking: "", answer: "" };
+    let data = this.carry + chunk;
+    this.carry = "";
+    let thinking = "";
+    let answer = "";
+
+    while (data.length > 0) {
+      if (this.inside) {
+        const lower = data.toLowerCase();
+        const end = lower.indexOf("</think>");
+        if (end !== -1) {
+          thinking += data.slice(0, end);
+          data = data.slice(end + 8);
+          this.inside = false;
+          continue;
+        }
+        const hold = partialSuffixLength(lower, "</think>");
+        thinking += data.slice(0, data.length - hold);
+        this.carry = data.slice(data.length - hold);
+        break;
+      } else {
+        const lower = data.toLowerCase();
+        const start = lower.indexOf("<think>");
+        if (start !== -1) {
+          answer += data.slice(0, start);
+          data = data.slice(start + 7);
+          this.inside = true;
+          continue;
+        }
+        const hold = partialSuffixLength(lower, "<think>");
+        answer += data.slice(0, data.length - hold);
+        this.carry = data.slice(data.length - hold);
+        break;
+      }
+    }
+
+    return { thinking, answer };
+  }
+
+  flush(): { thinking: string; answer: string } {
+    if (!this.carry) return { thinking: "", answer: "" };
+    const rest = this.carry;
+    this.carry = "";
+    return this.inside ? { thinking: rest, answer: "" } : { thinking: "", answer: rest };
+  }
+}
+
+function partialSuffixLength(text: string, tag: string): number {
+  const max = Math.min(text.length, tag.length - 1);
+  for (let len = max; len >= 1; len--) {
+    if (text.endsWith(tag.slice(0, len))) return len;
+  }
+  return 0;
+}
+
+function combineSignals(timeoutMs: number, external?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!external) return timeoutSignal;
+  if (typeof AbortSignal.any === "function") {
+    return AbortSignal.any([external, timeoutSignal]);
+  }
+  const ac = new AbortController();
+  const onAbort = () => ac.abort();
+  if (external.aborted) {
+    ac.abort(external.reason);
+    return ac.signal;
+  }
+  external.addEventListener("abort", onAbort, { once: true });
+  timeoutSignal.addEventListener("abort", onAbort, { once: true });
+  return ac.signal;
+}
+
+/** Removes optional provider-specific thinking knobs if an upstream endpoint rejects them with 400/422. */
+function stripOptionalThinkingParams(body: Record<string, unknown>): Record<string, unknown> | null {
+  if (!("reasoning_budget" in body) && !("chat_template_kwargs" in body)) return null;
+  const cleaned: Record<string, unknown> = { ...body };
+  delete cleaned.reasoning_budget;
+  delete cleaned.chat_template_kwargs;
+  return cleaned;
 }
 
 /** Detects image MIME type and extension from raw base64 magic bytes. */
@@ -114,15 +215,37 @@ async function postWithRetry(url: string, provider: ProviderRecord, body: unknow
   throw last;
 }
 
-async function post(url: string, provider: ProviderRecord, body: unknown, timeoutMs = TIMEOUT_MS): Promise<Record<string, unknown>> {
-  let res: Response;
-  try {
-    res = await fetch(url, { method: "POST", headers: auth(provider), body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
-  } catch (e) {
-    if (e instanceof ApiError) throw e;
-    const timeout = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
-    if (timeout) throw new ApiError(502, "PROVIDER_TIMEOUT", "This model did not answer in time. Try again or choose a faster active model.");
-    throw Errors.upstream("Could not reach the model provider.");
+async function post(
+  url: string,
+  provider: ProviderRecord,
+  body: unknown,
+  timeoutMs = TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const sendOnce = async (payload: unknown): Promise<Response> => {
+    try {
+      return await fetch(url, {
+        method: "POST",
+        headers: auth(provider),
+        body: JSON.stringify(payload),
+        signal: combineSignals(timeoutMs, signal),
+      });
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      if (signal?.aborted) throw e;
+      const timeout = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+      if (timeout) throw new ApiError(502, "PROVIDER_TIMEOUT", "This model did not answer in time. Try again or choose a faster active model.");
+      throw Errors.upstream("Could not reach the model provider.");
+    }
+  };
+
+  let res = await sendOnce(body);
+  if ((res.status === 400 || res.status === 422) && body && typeof body === "object" && !Array.isArray(body)) {
+    const stripped = stripOptionalThinkingParams(body as Record<string, unknown>);
+    if (stripped) {
+      logEvent("llm", "warn", `Provider returned HTTP ${res.status} with optional thinking params; retrying with clean payload`);
+      res = await sendOnce(stripped);
+    }
   }
   if (!res.ok) throw mapHttpError(res.status);
   const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
@@ -155,15 +278,28 @@ export interface ChatOptions {
   timeoutMs?: number;
   /** Fall back to another active DB model from the same provider on timeout, overload, or EOL. */
   allowFallback?: boolean;
+  /** External abort signal (e.g. HTTP request cancellation or user clicking "Skip thinking"). */
+  signal?: AbortSignal;
 }
 
 function hasImagePart(messages: ChatMessage[]): boolean {
   return messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"));
 }
 
+function effectiveMaxTokensFor(model: RunnableModel, requested: number | undefined, deepThink: boolean): number {
+  const cap = model.maxOutputTokens && model.maxOutputTokens > 0
+    ? Math.min(model.maxOutputTokens, PLAYGROUND_MAX_TOKENS_CAP)
+    : PLAYGROUND_MAX_TOKENS_CAP;
+  const base = requested ?? model.defaultMaxTokens ?? 2048;
+  if (deepThink) {
+    return Math.min(cap, Math.max(base, DEEP_THINKING_MIN_TOKENS));
+  }
+  return Math.min(cap, Math.max(16, base));
+}
+
 function buildChatRequest(model: RunnableModel, provider: ProviderRecord, messages: ChatMessage[], opts: ChatOptions, stream: boolean) {
   const deepThink = Boolean(opts.thinking && model.isThinking);
-  const maxTokens = deepThink ? Math.max(opts.maxTokens ?? 2048, THINKING_MIN_TOKENS) : (opts.maxTokens ?? 2048);
+  const maxTokens = effectiveMaxTokensFor(model, opts.maxTokens, deepThink);
   const body: Record<string, unknown> = {
     model: model.apiModelId,
     messages,
@@ -174,43 +310,109 @@ function buildChatRequest(model: RunnableModel, provider: ProviderRecord, messag
   if (stream) {
     body.stream_options = { include_usage: true };
   }
-  // Providers flagged with `supports_thinking_toggle` in Supabase `ai_providers` accept enable_thinking: false for low-latency chat.
-  if (provider.supportsThinkingToggle && !deepThink) {
-    body.chat_template_kwargs = { enable_thinking: false };
+  // Providers flagged with `supports_thinking_toggle` accept chat_template_kwargs.enable_thinking.
+  if (provider.supportsThinkingToggle) {
+    if (!deepThink) {
+      body.chat_template_kwargs = { enable_thinking: false };
+    } else {
+      body.chat_template_kwargs = { enable_thinking: true };
+      // Nemotron models natively support `reasoning_budget`, making Deep Thinking much faster
+      // while preserving ~75% of the token budget for a richly detailed final response.
+      if (supportsReasoningBudget(model)) {
+        body.reasoning_budget = computeReasoningBudget(maxTokens);
+      }
+    }
   }
   const path = model.endpointPath || "/chat/completions";
   const url = `${provider.chatBaseUrl}${path}`;
-  return { url, body, timeoutMs: opts.timeoutMs ?? (deepThink ? THINKING_TIMEOUT_MS : TIMEOUT_MS) };
+  return {
+    url,
+    body,
+    deepThink,
+    maxTokens,
+    connectTimeoutMs: opts.timeoutMs ?? (deepThink ? THINKING_CONNECT_TIMEOUT_MS : TIMEOUT_MS),
+    totalTimeoutMs: opts.timeoutMs ?? (deepThink ? THINKING_TIMEOUT_MS : TIMEOUT_MS),
+  };
 }
 
-async function chatOnce(model: RunnableModel, provider: ProviderRecord, messages: ChatMessage[], opts: ChatOptions): Promise<{ text: string; usage: Usage; modelUsed: string }> {
+/** Builds a fast-mode synthesis prompt when a thinking model exhausted tokens during reasoning. */
+function buildSynthesisMessages(messages: ChatMessage[], reasoning: string): ChatMessage[] {
+  const trimmedReasoning = reasoning.trim().slice(-3200);
+  const synthNote =
+    "You have already completed your internal reasoning below. Do NOT think again or repeat scratchpad notes. " +
+    "Immediately write the complete, clear, richly detailed final response to the user using Markdown headings, lists, tables, or code blocks where helpful.\n\n" +
+    `Reasoning notes:\n${trimmedReasoning}`;
+  const out: ChatMessage[] = messages.map((m) => ({ ...m }));
+  if (out[0]?.role === "system" && typeof out[0].content === "string") {
+    out[0] = { role: "system", content: `${out[0].content}\n\n${synthNote}` };
+  } else {
+    out.unshift({ role: "system", content: synthNote });
+  }
+  return out;
+}
+
+async function chatOnce(
+  model: RunnableModel,
+  provider: ProviderRecord,
+  messages: ChatMessage[],
+  opts: ChatOptions,
+): Promise<{ text: string; thinking?: string; usage: Usage; modelUsed: string }> {
   const startedAt = Date.now();
-  const { url, body, timeoutMs } = buildChatRequest(model, provider, messages, opts, false);
-  const json = await post(url, provider, body, timeoutMs);
+  const { url, body, totalTimeoutMs } = buildChatRequest(model, provider, messages, opts, false);
+  const json = await post(url, provider, body, totalTimeoutMs, opts.signal);
   const choice = (json.choices as { message?: { content?: unknown } }[] | undefined)?.[0];
   const message = choice?.message as { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } | undefined;
   const content = message?.content;
   const rawText = typeof content === "string" ? content : Array.isArray(content) ? content.map((p) => (typeof p === "string" ? p : (p as { text?: string }).text ?? "")).join("") : "";
-  const text = stripThinkTags(rawText);
+  const reasoning = typeof message?.reasoning_content === "string"
+    ? message.reasoning_content
+    : typeof message?.reasoning === "string"
+      ? message.reasoning
+      : "";
+  let text = stripThinkTags(rawText);
+  let usage = usageOf(json.usage);
+
+  if (!text && reasoning.trim() && !opts.signal?.aborted) {
+    // Recover seamlessly instead of failing: synthesize the final answer in fast mode from the completed reasoning.
+    logEvent("llm", "warn", `${model.apiModelId} exhausted tokens during thinking; running fast synthesis pass`);
+    const synthReq = buildChatRequest(
+      model,
+      provider,
+      buildSynthesisMessages(messages, reasoning),
+      { ...opts, thinking: false, maxTokens: Math.min(Math.max(opts.maxTokens ?? 4096, 4096), 8192) },
+      false,
+    );
+    const synthJson = await post(synthReq.url, provider, synthReq.body, TIMEOUT_MS, opts.signal);
+    const synthMsg = (synthJson.choices as { message?: { content?: unknown } }[] | undefined)?.[0]?.message;
+    const synthContent = synthMsg?.content;
+    const synthRaw = typeof synthContent === "string" ? synthContent : "";
+    text = stripThinkTags(synthRaw);
+    const sUsage = usageOf(synthJson.usage);
+    usage = {
+      promptTokens: usage.promptTokens + sUsage.promptTokens,
+      completionTokens: usage.completionTokens + sUsage.completionTokens,
+      totalTokens: usage.totalTokens + sUsage.totalTokens,
+    };
+  }
+
   if (!text) {
-    if (message?.reasoning_content || message?.reasoning) {
-      throw Errors.invalid("The model ran out of tokens while thinking. Turn off Deep Thinking or raise Max tokens and try again.");
+    if (reasoning) {
+      throw Errors.invalid("The model ran out of tokens while thinking. Try increasing Max tokens or click Skip thinking for an instant reply.");
     }
     throw Errors.upstream("The model returned an empty answer. Try again.");
   }
-  const usage = usageOf(json.usage);
   meterNonBlocking(model, hasImagePart(messages) ? "vision" : "chat", usage, startedAt, json);
-  return { text, usage, modelUsed: model.apiModelId };
+  return { text, ...(reasoning.trim() ? { thinking: reasoning.trim() } : {}), usage, modelUsed: model.apiModelId };
 }
 
 /** OpenAI-compatible chat completion driven by Supabase `ai_providers` + `ai_models`, with fast mode and DB fallback. */
-export async function chat(model: RunnableModel, messages: ChatMessage[], opts: ChatOptions = {}): Promise<{ text: string; usage: Usage; modelUsed?: string }> {
+export async function chat(model: RunnableModel, messages: ChatMessage[], opts: ChatOptions = {}): Promise<{ text: string; thinking?: string; usage: Usage; modelUsed?: string }> {
   const resolved = await resolveModelFromDb(model);
   const allowFallback = opts.allowFallback ?? resolved.provider.supportsThinkingToggle;
   try {
     return await chatOnce(resolved.model, resolved.provider, messages, opts);
   } catch (err) {
-    if (!allowFallback || !isFallbackableError(err)) throw err;
+    if (opts.signal?.aborted || !allowFallback || !isFallbackableError(err)) throw err;
     const fallbacks = await getDbFallbackModels({
       source: resolved.model.source,
       requireImage: hasImagePart(messages),
@@ -222,7 +424,7 @@ export async function chat(model: RunnableModel, messages: ChatMessage[], opts: 
       try {
         const fbResolved = await resolveModelFromDb(fb);
         logEvent("llm", "warn", `Falling back from ${resolved.model.apiModelId} to ${fbResolved.model.apiModelId}: ${err instanceof Error ? err.message : "upstream error"}`);
-        return await chatOnce(fbResolved.model, fbResolved.provider, messages, { ...opts, thinking: false, timeoutMs: Math.min(opts.timeoutMs ?? 15_000, 15_000) });
+        return await chatOnce(fbResolved.model, fbResolved.provider, messages, { ...opts, thinking: false, timeoutMs: Math.min(opts.timeoutMs ?? 18_000, 18_000) });
       } catch (e) {
         lastErr = e;
       }
@@ -232,66 +434,144 @@ export async function chat(model: RunnableModel, messages: ChatMessage[], opts: 
 }
 
 export type StreamEvent =
+  | { type: "thinking"; text: string }
   | { type: "delta"; text: string }
-  | { type: "done"; text: string; usage: Usage; modelUsed: string };
+  | { type: "done"; text: string; thinking?: string; thinkingMs?: number; usage: Usage; modelUsed: string };
 
-async function openStream(model: RunnableModel, provider: ProviderRecord, messages: ChatMessage[], opts: ChatOptions): Promise<{ res: Response; effectiveModel: RunnableModel }> {
-  const { url, body, timeoutMs } = buildChatRequest(model, provider, messages, opts, true);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: auth(provider, "text/event-stream"),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (e) {
-    if (e instanceof ApiError) throw e;
-    const timeout = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
-    if (timeout) throw new ApiError(502, "PROVIDER_TIMEOUT", "This model did not answer in time. Try again or pick a faster active model.");
-    throw Errors.upstream("Could not reach the model provider.");
-  }
-  if (!res.ok) throw mapHttpError(res.status);
-  if (!res.body) throw Errors.upstream("The model provider returned an empty stream.");
-  return { res, effectiveModel: model };
+interface OpenedStream {
+  res: Response;
+  effectiveModel: RunnableModel;
+  effectiveProvider: ProviderRecord;
+  controller: AbortController;
+  totalTimeoutMs: number;
+  cleanup: () => void;
 }
 
-/** Streams chat completion tokens incrementally over SSE so the Playground renders the first token in ~200-400ms. */
-export async function* chatStream(model: RunnableModel, messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<StreamEvent> {
-  const startedAt = Date.now();
-  const resolved = await resolveModelFromDb(model);
-  const allowFallback = opts.allowFallback ?? resolved.provider.supportsThinkingToggle;
-  let opened: { res: Response; effectiveModel: RunnableModel };
+async function openStream(
+  model: RunnableModel,
+  provider: ProviderRecord,
+  messages: ChatMessage[],
+  opts: ChatOptions,
+): Promise<OpenedStream> {
+  const { url, body, connectTimeoutMs, totalTimeoutMs } = buildChatRequest(model, provider, messages, opts, true);
+
+  const attempt = async (payload: Record<string, unknown>): Promise<OpenedStream> => {
+    const controller = new AbortController();
+    let timedOut = false;
+    const onExternalAbort = () => controller.abort(opts.signal?.reason);
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        controller.abort(opts.signal.reason);
+      } else {
+        opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
+    const connectTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error("CONNECT_TIMEOUT"));
+    }, connectTimeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(connectTimer);
+      opts.signal?.removeEventListener("abort", onExternalAbort);
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: auth(provider, "text/event-stream"),
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      cleanup();
+      if (e instanceof ApiError) throw e;
+      if (opts.signal?.aborted) throw e;
+      if (timedOut || (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError"))) {
+        throw new ApiError(502, "PROVIDER_TIMEOUT", "This model did not answer in time. Try again or pick a faster active model.");
+      }
+      throw Errors.upstream("Could not reach the model provider.");
+    }
+    clearTimeout(connectTimer);
+    if (!res.ok) {
+      cleanup();
+      throw mapHttpError(res.status);
+    }
+    if (!res.body) {
+      cleanup();
+      throw Errors.upstream("The model provider returned an empty stream.");
+    }
+    return { res, effectiveModel: model, effectiveProvider: provider, controller, totalTimeoutMs, cleanup };
+  };
 
   try {
-    opened = await openStream(resolved.model, resolved.provider, messages, opts);
+    return await attempt(body);
   } catch (err) {
-    if (!allowFallback || !isFallbackableError(err)) throw err;
-    const fallbacks = await getDbFallbackModels({
-      source: resolved.model.source,
-      requireImage: hasImagePart(messages),
-      excludeSlugs: [resolved.model.slug],
-      limit: 1,
-    });
-    if (!fallbacks[0]) throw err;
-    const fbResolved = await resolveModelFromDb(fallbacks[0]);
-    logEvent("llm", "warn", `Stream falling back from ${resolved.model.apiModelId} to ${fbResolved.model.apiModelId}`);
-    opened = await openStream(fbResolved.model, fbResolved.provider, messages, { ...opts, thinking: false, timeoutMs: 18_000 });
+    if (err instanceof ApiError && err.status === 400) {
+      const stripped = stripOptionalThinkingParams(body);
+      if (stripped) {
+        logEvent("llm", "warn", `Stream returned HTTP 400 for ${model.apiModelId} with optional thinking params; retrying cleanly`);
+        return await attempt(stripped);
+      }
+    }
+    throw err;
   }
+}
 
+async function* readSseStream(
+  opened: OpenedStream,
+  externalSignal?: AbortSignal,
+): AsyncGenerator<
+  | { type: "thinking"; text: string }
+  | { type: "delta"; text: string }
+  | { type: "end"; answer: string; thinking: string; sawReasoningOnly: boolean; usage: Usage; thinkingMs?: number }
+> {
   const reader = opened.res.body!.getReader();
   const decoder = new TextDecoder();
+  const parser = new ThinkStreamParser();
   let buffer = "";
-  let fullRaw = "";
+  let fullAnswer = "";
+  let fullThinking = "";
   let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let sawReasoningOnly = false;
-  let insideThink = false;
+  let thinkingStartedAt: number | null = null;
+  let thinkingEndedAt: number | null = null;
+  let timedOut = false;
+
+  const totalTimer = setTimeout(() => {
+    timedOut = true;
+    opened.controller.abort(new Error("TOTAL_TIMEOUT"));
+  }, opened.totalTimeoutMs);
+
+  let idleTimer = setTimeout(() => {
+    timedOut = true;
+    opened.controller.abort(new Error("IDLE_TIMEOUT"));
+  }, STREAM_CHUNK_IDLE_MS);
+
+  const resetIdle = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      timedOut = true;
+      opened.controller.abort(new Error("IDLE_TIMEOUT"));
+    }, STREAM_CHUNK_IDLE_MS);
+  };
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      let step: ReadableStreamReadResult<Uint8Array>;
+      try {
+        step = await reader.read();
+      } catch (e) {
+        if (externalSignal?.aborted) throw e;
+        if (timedOut) {
+          throw new ApiError(502, "PROVIDER_TIMEOUT", "The model took too long to finish responding. Try again or use Skip thinking.");
+        }
+        throw Errors.upstream("The connection to the model provider was interrupted.");
+      }
+      if (step.done) break;
+      resetIdle();
+      buffer += decoder.decode(step.value, { stream: true });
       let nl = buffer.indexOf("\n");
       while (nl !== -1) {
         const line = buffer.slice(0, nl).trim();
@@ -305,44 +585,212 @@ export async function* chatStream(model: RunnableModel, messages: ChatMessage[],
         if (json.usage) usage = usageOf(json.usage);
         const delta = (json.choices as { delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } }[] | undefined)?.[0]?.delta;
         if (!delta) continue;
-        if (delta.reasoning_content || delta.reasoning) sawReasoningOnly = true;
+
+        const rChunk = typeof delta.reasoning_content === "string"
+          ? delta.reasoning_content
+          : typeof delta.reasoning === "string"
+            ? delta.reasoning
+            : "";
+        if (rChunk) {
+          sawReasoningOnly = true;
+          if (thinkingStartedAt === null) thinkingStartedAt = Date.now();
+          fullThinking += rChunk;
+          yield { type: "thinking", text: rChunk };
+        }
+
         const piece = typeof delta.content === "string" ? delta.content : "";
         if (!piece) continue;
-        fullRaw += piece;
-
-        // Filter inline <think>...</think> blocks cleanly if a model emits them.
-        let out = "";
-        let cur = piece;
-        while (cur.length > 0) {
-          if (insideThink) {
-            const end = cur.indexOf("</think>");
-            if (end === -1) { cur = ""; break; }
-            insideThink = false;
-            cur = cur.slice(end + 8);
-          } else {
-            const start = cur.indexOf("<think>");
-            if (start === -1) { out += cur; cur = ""; break; }
-            out += cur.slice(0, start);
-            insideThink = true;
-            cur = cur.slice(start + 7);
-          }
+        const split = parser.push(piece);
+        if (split.thinking) {
+          sawReasoningOnly = true;
+          if (thinkingStartedAt === null) thinkingStartedAt = Date.now();
+          fullThinking += split.thinking;
+          yield { type: "thinking", text: split.thinking };
         }
-        if (out) yield { type: "delta", text: out };
+        if (split.answer) {
+          if (thinkingStartedAt !== null && thinkingEndedAt === null) thinkingEndedAt = Date.now();
+          fullAnswer += split.answer;
+          yield { type: "delta", text: split.answer };
+        }
       }
     }
+    const tail = parser.flush();
+    if (tail.thinking) {
+      sawReasoningOnly = true;
+      fullThinking += tail.thinking;
+      yield { type: "thinking", text: tail.thinking };
+    }
+    if (tail.answer) {
+      if (thinkingStartedAt !== null && thinkingEndedAt === null) thinkingEndedAt = Date.now();
+      fullAnswer += tail.answer;
+      yield { type: "delta", text: tail.answer };
+    }
   } finally {
-    reader.releaseLock();
+    clearTimeout(totalTimer);
+    clearTimeout(idleTimer);
+    opened.cleanup();
+    try { reader.releaseLock(); } catch { /* ignore */ }
   }
 
-  const clean = stripThinkTags(fullRaw);
+  const thinkingMs = thinkingStartedAt !== null
+    ? Math.max(100, (thinkingEndedAt ?? Date.now()) - thinkingStartedAt)
+    : undefined;
+  yield { type: "end", answer: fullAnswer, thinking: fullThinking, sawReasoningOnly, usage, thinkingMs };
+}
+
+/**
+ * Streams chat completion tokens incrementally over SSE (`thinking`, `delta`, `done`) with
+ * dynamic token budgeting, multi-model fallback, and automatic synthesis recovery if thinking exhausts tokens.
+ */
+export async function* chatStream(model: RunnableModel, messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<StreamEvent> {
+  const startedAt = Date.now();
+  const resolved = await resolveModelFromDb(model);
+  const allowFallback = opts.allowFallback ?? resolved.provider.supportsThinkingToggle;
+
+  const openWithFallback = async (
+    targetModel: RunnableModel,
+    targetProvider: ProviderRecord,
+    reqOpts: ChatOptions,
+  ): Promise<OpenedStream> => {
+    try {
+      return await openStream(targetModel, targetProvider, messages, reqOpts);
+    } catch (err) {
+      if (reqOpts.signal?.aborted || !allowFallback || !isFallbackableError(err)) throw err;
+      const fallbacks = await getDbFallbackModels({
+        source: targetModel.source,
+        requireImage: hasImagePart(messages),
+        excludeSlugs: [targetModel.slug],
+        limit: 3,
+      });
+      let lastErr: unknown = err;
+      for (const fb of fallbacks) {
+        if (reqOpts.signal?.aborted) throw err;
+        try {
+          const fbResolved = await resolveModelFromDb(fb);
+          const preserveThink = Boolean(reqOpts.thinking && fbResolved.model.isThinking && supportsReasoningBudget(fbResolved.model));
+          logEvent("llm", "warn", `Stream falling back from ${targetModel.apiModelId} to ${fbResolved.model.apiModelId}`);
+          return await openStream(fbResolved.model, fbResolved.provider, messages, {
+            ...reqOpts,
+            thinking: preserveThink,
+            timeoutMs: preserveThink ? THINKING_CONNECT_TIMEOUT_MS : 20_000,
+          });
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr;
+    }
+  };
+
+  let opened = await openWithFallback(resolved.model, resolved.provider, opts);
+  let emittedAnswer = false;
+  let finalAnswer = "";
+  let finalThinking = "";
+  let finalThinkingMs: number | undefined;
+  let sawReasoningOnly = false;
+  let usage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+  try {
+    for await (const ev of readSseStream(opened, opts.signal)) {
+      if (ev.type === "thinking") {
+        yield ev;
+      } else if (ev.type === "delta") {
+        emittedAnswer = true;
+        yield ev;
+      } else {
+        finalAnswer = ev.answer;
+        finalThinking = ev.thinking;
+        finalThinkingMs = ev.thinkingMs;
+        sawReasoningOnly = ev.sawReasoningOnly;
+        usage = ev.usage;
+      }
+    }
+  } catch (streamErr) {
+    // If the stream stalled or broke before emitting any answer text, transparently retry on a fast healthy fallback.
+    if (!emittedAnswer && !opts.signal?.aborted && allowFallback && isFallbackableError(streamErr)) {
+      const fallbacks = await getDbFallbackModels({
+        source: opened.effectiveModel.source,
+        requireImage: hasImagePart(messages),
+        excludeSlugs: [resolved.model.slug, opened.effectiveModel.slug],
+        limit: 2,
+      });
+      let recovered = false;
+      for (const fb of fallbacks) {
+        if (opts.signal?.aborted) break;
+        try {
+          const fbResolved = await resolveModelFromDb(fb);
+          logEvent("llm", "warn", `Mid-stream fallback from ${opened.effectiveModel.apiModelId} to ${fbResolved.model.apiModelId}`);
+          opened = await openStream(fbResolved.model, fbResolved.provider, messages, {
+            ...opts,
+            thinking: false,
+            timeoutMs: 22_000,
+          });
+          for await (const ev of readSseStream(opened, opts.signal)) {
+            if (ev.type === "delta") {
+              emittedAnswer = true;
+              yield ev;
+            } else if (ev.type === "end") {
+              finalAnswer = ev.answer;
+              usage = ev.usage;
+            }
+          }
+          recovered = Boolean(stripThinkTags(finalAnswer));
+          if (recovered) break;
+        } catch {
+          // continue trying next fallback
+        }
+      }
+      if (!recovered) throw streamErr;
+    } else {
+      throw streamErr;
+    }
+  }
+
+  let clean = stripThinkTags(finalAnswer);
+
+  // Zero-error recovery: if the model exhausted max_tokens while thinking and emitted 0 answer tokens,
+  // immediately synthesize the detailed final response in fast mode using the reasoning trace.
+  if (!clean && (finalThinking.trim() || sawReasoningOnly) && !opts.signal?.aborted) {
+    logEvent("llm", "warn", `${opened.effectiveModel.apiModelId} produced reasoning without final content; running streaming synthesis pass`);
+    const synthMessages = buildSynthesisMessages(messages, finalThinking || "Provide a clear, detailed direct answer.");
+    const synthOpened = await openStream(opened.effectiveModel, opened.effectiveProvider, synthMessages, {
+      ...opts,
+      thinking: false,
+      maxTokens: Math.min(Math.max(opts.maxTokens ?? 4096, 4096), 8192),
+      timeoutMs: 25_000,
+    });
+    let synthText = "";
+    for await (const ev of readSseStream(synthOpened, opts.signal)) {
+      if (ev.type === "delta") {
+        synthText += ev.text;
+        yield ev;
+      } else if (ev.type === "end") {
+        usage = {
+          promptTokens: usage.promptTokens + ev.usage.promptTokens,
+          completionTokens: usage.completionTokens + ev.usage.completionTokens,
+          totalTokens: usage.totalTokens + ev.usage.totalTokens,
+        };
+      }
+    }
+    clean = stripThinkTags(synthText);
+  }
+
   if (!clean) {
     if (sawReasoningOnly) {
-      throw Errors.invalid("The model ran out of tokens while thinking. Turn off Deep Thinking or raise Max tokens and try again.");
+      throw Errors.invalid("The model ran out of tokens while thinking. Raise Max tokens or click Skip thinking for an instant answer.");
     }
     throw Errors.upstream("The model returned an empty answer. Try again.");
   }
+
   meterNonBlocking(opened.effectiveModel, hasImagePart(messages) ? "vision" : "chat", usage, startedAt);
-  yield { type: "done", text: clean, usage, modelUsed: opened.effectiveModel.apiModelId };
+  yield {
+    type: "done",
+    text: clean,
+    ...(finalThinking.trim() ? { thinking: finalThinking.trim() } : {}),
+    ...(finalThinkingMs ? { thinkingMs: finalThinkingMs } : {}),
+    usage,
+    modelUsed: opened.effectiveModel.apiModelId,
+  };
 }
 
 /** Dense embeddings driven by Supabase `ai_providers` + `ai_models`. */

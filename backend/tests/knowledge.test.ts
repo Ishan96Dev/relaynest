@@ -10,7 +10,13 @@ import {
   pickFeaturedLinkPreviewUrl,
 } from "../src/server/ai/citations";
 import { buildWebSearchSystemContext, webSearchToCitations } from "../src/server/ai/web-search-types";
-import { extractVisualQuery, parseRssItems } from "../src/server/search/web-search";
+import {
+  extractVisualQuery,
+  normalizeTinyFishResults,
+  parseRssItems,
+  parseSearchProviderPrefix,
+} from "../src/server/search/web-search";
+import { loadSearchProvidersFromDb } from "../src/server/services/search-providers";
 import { chunkText } from "../src/server/knowledge/chunk";
 import { htmlToText, kindFromFilename } from "../src/server/knowledge/extract";
 import { extractTerms, isOverviewQuery, keywordQuery, lexicalScore } from "../src/server/knowledge/query";
@@ -191,6 +197,53 @@ describe("RAG query helpers and citations formatting", () => {
     });
     expect(ctx).toContain("[1] Next.js Docs");
     expect(ctx).toContain("Markdown table");
+  });
+
+  it("parses search provider prefixes, normalizes TinyFish Search+Fetch payloads, and loads DB providers", async () => {
+    expect(parseSearchProviderPrefix("tinyfish: best open source LLMs")).toEqual({ provider: "tinyfish", query: "best open source LLMs" });
+    expect(parseSearchProviderPrefix("searxng: Next.js 15 docs")).toEqual({ provider: "searxng", query: "Next.js 15 docs" });
+    expect(parseSearchProviderPrefix("iPhone 16 Pro review")).toEqual({ provider: "auto", query: "iPhone 16 Pro review" });
+    expect(parseSearchProviderPrefix("https://example.com")).toEqual({ provider: "auto", query: "https://example.com" });
+
+    const enriched = new Map<string, string>([
+      ["https://docs.tinyfish.ai/search", "TinySearch returns ranked structured JSON for AI agents."],
+    ]);
+    const tf = normalizeTinyFishResults(
+      {
+        results: [
+          {
+            position: 1,
+            site_name: "www.docs.tinyfish.ai",
+            title: "TinyFish Search Docs",
+            snippet: "Web search for agents.",
+            url: "https://docs.tinyfish.ai/search",
+          },
+          {
+            position: 2,
+            title: "Blocked Private",
+            snippet: "should be filtered",
+            url: "http://127.0.0.1:8080/internal",
+          },
+        ],
+      },
+      enriched,
+      5,
+    );
+    expect(tf.length).toBe(1);
+    expect(tf[0]!.source).toBe("TinyFish");
+    expect(tf[0]!.snippet).toContain("TinySearch returns ranked structured JSON");
+    expect(tf[0]!.domain).toBe("docs.tinyfish.ai");
+
+    const providers = await loadSearchProvidersFromDb();
+    const slugs = providers.map((p) => p.slug);
+    expect(slugs).toContain("tinyfish");
+    expect(slugs).toContain("searxng");
+    expect(slugs).toContain("firecrawl");
+    expect(slugs).toContain("jina");
+    expect(slugs).toContain("tavily");
+    expect(slugs).toContain("brave");
+    expect(slugs).toContain("open-web");
+    expect(providers.find((p) => p.slug === "open-web")?.configured).toBe(true);
   });
 });
 

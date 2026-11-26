@@ -8,20 +8,20 @@ import {
   pickFeaturedLinkPreviewUrl,
 } from "@backend/server/ai/citations";
 import { imagePrompt, usageText } from "@backend/server/ai/commands";
-import { analyzeImage, base64ToBytes, chat, generateImage, rateLimit, sniffImageMime } from "@backend/server/ai/provider";
+import { analyzeImage, base64ToBytes, chat, generateImage, sniffImageMime } from "@backend/server/ai/provider";
 import { buildWebSearchSystemContext, webSearchToCitations } from "@backend/server/ai/web-search-types";
-import { searchOpenWeb } from "@backend/server/search/web-search";
+import { parseSearchProviderPrefix, searchOpenWeb } from "@backend/server/search/web-search";
+import { enforceRateLimit } from "@backend/server/security/rate-limit";
 import { getDbDefaultImageModel, getDbFastChatModel } from "@backend/server/services/ai-models";
 import {
   downloadFile,
   sendChatAction,
-  sendFormattedMessages,
-  sendMessage,
   sendPhoto,
   sendPhotoGallery,
   type TelegramDocument,
   type TelegramPhotoSize,
 } from "@backend/server/telegram/client";
+import { dispatchTelegramFormattedMessages, dispatchTelegramMessage } from "@backend/server/telegram/outbound";
 
 /** High-accuracy multimodal VLMs accept high-res images up to 2 MB so chart labels and fine text stay crisp. */
 export const MAX_PHOTO_BYTES = 2_000_000;
@@ -39,22 +39,33 @@ export interface MediaCommandArgs {
   /** Text after the command name. */
   input: string;
   botId: string;
+  workspaceId: string;
   token: string;
   chatId: number;
+  isGroup?: boolean;
   photo?: TelegramPhotoSize[];
   document?: TelegramDocument;
 }
 
 /** Runs an image, describe, or open-source web search command and delivers rich formatted Telegram output. */
 export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
-  const say = (text: string) => sendMessage(a.token, a.chatId, clampReply(text));
+  const say = (text: string) =>
+    dispatchTelegramMessage({
+      botId: a.botId,
+      workspaceId: a.workspaceId,
+      token: a.token,
+      chatId: String(a.chatId),
+      kind: "text",
+      text: clampReply(text),
+      isGroup: a.isGroup,
+    });
 
   if (a.command.kind === "image") {
     if (!a.input) return void (await say(usageText(a.command)));
     // Resolves the top active image generation model from Supabase `public.ai_models` if none was selected on the agent.
     const imageModel = a.config.imageModel ?? (await getDbDefaultImageModel());
     if (!imageModel) return void (await say("No image generation model is active in the catalog right now."));
-    rateLimit(`img:${a.botId}:${a.chatId}`, 8, 60_000);
+    await enforceRateLimit(`img:${a.botId}:${a.chatId}`, 8, 60_000);
     void sendChatAction(a.token, a.chatId, "upload_photo").catch(() => undefined);
     const img = await generateImage(imageModel, imagePrompt(a.command, a.input));
     const { mime, ext } = sniffImageMime(img.imageBase64);
@@ -67,10 +78,12 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
     if (!a.input) return void (await say(usageText(a.command)));
     const model = a.config.model ?? (await getDbFastChatModel());
     if (!model) return void (await say("No AI model is configured for this agent yet."));
-    rateLimit(`search:${a.botId}:${a.chatId}`, 12, 60_000);
+    await enforceRateLimit(`search:${a.botId}:${a.chatId}`, 12, 60_000);
     void sendChatAction(a.token, a.chatId, "typing").catch(() => undefined);
 
-    const bundle = await searchOpenWeb(a.input, { maxResults: 6, maxImages: 3, maxVideos: 4 });
+    const { provider, query } = parseSearchProviderPrefix(a.input);
+    if (!query) return void (await say(usageText(a.command)));
+    const bundle = await searchOpenWeb(query, { provider, maxResults: 6, maxImages: 3, maxVideos: 4 });
     const citations = webSearchToCitations(bundle.results);
     const extraGuide = a.command.instruction.trim() ? `\n\nExtra search instructions: ${a.command.instruction.trim()}` : "";
     const system = `${buildSystemPrompt(a.config, [], new Date(), [])}\n\n${buildWebSearchSystemContext(bundle)}${extraGuide}`;
@@ -79,7 +92,7 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
       model,
       [
         { role: "system", content: system },
-        { role: "user", content: a.input.slice(0, 1000) },
+        { role: "user", content: query.slice(0, 1000) },
       ],
       {
         temperature: Math.min(a.config.temperature, 0.45),
@@ -95,9 +108,16 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
     const plainChunks = formatTelegramPlainChunks(r.text, citations, mediaLinks);
     const previewUrl = pickFeaturedLinkPreviewUrl(r.text, citations, mediaLinks);
 
-    await sendFormattedMessages(a.token, a.chatId, htmlChunks, plainChunks, {
+    await dispatchTelegramFormattedMessages({
+      botId: a.botId,
+      workspaceId: a.workspaceId,
+      token: a.token,
+      chatId: a.chatId,
+      htmlChunks,
+      plainChunks,
       linkPreviewUrl: previewUrl,
       preferLargeMedia: bundle.videos.length > 0,
+      isGroup: a.isGroup,
     });
 
     // Follow up with crisp image previews from Wikimedia Commons / Openverse / Wikipedia when available.
@@ -120,7 +140,7 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
     const fileId = a.photo?.length ? pickPhoto(a.photo)?.file_id : isImageDoc ? a.document!.file_id : undefined;
     if (!fileId) return void (await say(usageText(a.command)));
 
-    rateLimit(`vision:${a.botId}:${a.chatId}`, 15, 60_000);
+    await enforceRateLimit(`vision:${a.botId}:${a.chatId}`, 15, 60_000);
     void sendChatAction(a.token, a.chatId, "typing").catch(() => undefined);
 
     const bytes = await downloadFile(a.token, fileId, MAX_PHOTO_BYTES * 2);
@@ -154,6 +174,14 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
     });
     const htmlChunks = formatTelegramHtmlChunks(r.text, []);
     const plainChunks = formatTelegramPlainChunks(r.text, []);
-    await sendFormattedMessages(a.token, a.chatId, htmlChunks, plainChunks);
+    await dispatchTelegramFormattedMessages({
+      botId: a.botId,
+      workspaceId: a.workspaceId,
+      token: a.token,
+      chatId: a.chatId,
+      htmlChunks,
+      plainChunks,
+      isGroup: a.isGroup,
+    });
   }
 }

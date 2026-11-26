@@ -11,6 +11,7 @@ import { withUsageScope } from "@backend/server/ai/usage";
 import { chunkText } from "@backend/server/knowledge/chunk";
 import { extractFileText, fetchPageText, KnowledgeError, kindFromFilename, MAX_FILE_BYTES, type DocKind } from "@backend/server/knowledge/extract";
 import { getProviderConfig } from "@backend/server/services/ai-models";
+import { notify, notifyOwners } from "@backend/server/notifications";
 import { kbEmbedModel, retrieve, type RetrievalResult } from "@backend/server/services/knowledge-retrieval";
 
 const BUCKET = "knowledge";
@@ -75,6 +76,13 @@ export async function createCollection(ctx: AuthContext, input: z.infer<typeof c
     if (error.code === "23505") throw Errors.conflict("A collection with this name already exists.");
     throw new Error("Failed to create the collection");
   }
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "kb_collection_created",
+    title: `Knowledge collection created: ${data.name as string}`,
+    body: "Upload PDF, Markdown, TXT files or web pages and link bots to this collection.",
+  });
   return { id: data.id, name: data.name, description: data.description, tone: data.tone, documents: 0, sizeBytes: 0, botIds: [], createdAt: data.created_at, updatedAt: data.updated_at };
 }
 
@@ -90,7 +98,7 @@ export async function updateCollection(ctx: AuthContext, id: string, input: z.in
 
 export async function deleteCollection(ctx: AuthContext, id: string): Promise<void> {
   requireWrite(ctx);
-  await ownCollection(ctx, id);
+  const col = await ownCollection(ctx, id);
   const admin = createAdminClient();
   const { data: docs } = await admin.from("kb_documents").select("storage_path").eq("collection_id", id).eq("workspace_id", ctx.workspaceId);
   await deleteVectors("collection_id", id).catch((e) => console.error("[knowledge] vector cleanup failed:", e instanceof Error ? e.message : "unknown"));
@@ -98,6 +106,13 @@ export async function deleteCollection(ctx: AuthContext, id: string): Promise<vo
   if (error) throw new Error("Failed to delete the collection");
   const paths = (docs ?? []).map((d) => d.storage_path as string | null).filter((p): p is string => Boolean(p));
   if (paths.length) await admin.storage.from(BUCKET).remove(paths).catch(() => undefined);
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "kb_collection_deleted",
+    title: `Knowledge collection deleted: ${col.name}`,
+    body: "The collection, its indexed chunks, and stored files were removed.",
+  });
 }
 
 /** Replaces the set of bots that can use a collection. */
@@ -252,9 +267,11 @@ async function processDocumentInner(workspaceId: string, documentId: string): Pr
   const finish = async (patch: Row) => {
     await admin.from("kb_documents").update(patch).eq("id", documentId).eq("workspace_id", workspaceId);
   };
+  let docRef: { name: string; createdBy: string | null } | null = null;
   try {
-    const { data: doc } = await admin.from("kb_documents").select("id, collection_id, kind, name, source_url, storage_path").eq("id", documentId).eq("workspace_id", workspaceId).maybeSingle();
+    const { data: doc } = await admin.from("kb_documents").select("id, collection_id, kind, name, source_url, storage_path, created_by").eq("id", documentId).eq("workspace_id", workspaceId).maybeSingle();
     if (!doc) return;
+    docRef = { name: String(doc.name), createdBy: (doc.created_by as string | null) ?? null };
     let text: string;
     let title: string | null = null;
     if (doc.kind === "url") {
@@ -296,15 +313,38 @@ async function processDocumentInner(workspaceId: string, documentId: string): Pr
         console.error("[knowledge] vector indexing failed:", e instanceof Error ? e.message : "unknown");
       }
     }
+    const finalName = doc.kind === "url" && title ? title.slice(0, 300) : String(doc.name);
     await finish({
       status: "indexed", error: note, chunk_count: rows.length, vector_indexed: vectorIndexed, indexed_at: new Date().toISOString(),
       ...(doc.kind === "url" && title ? { name: title.slice(0, 300) } : {}),
     });
     await admin.from("kb_collections").update({ updated_at: new Date().toISOString() }).eq("id", doc.collection_id as string);
+    const kbPayload = {
+      kind: "kb_document_indexed",
+      title: `Document indexed: ${finalName}`,
+      body: `Ready for retrieval (${rows.length} chunk${rows.length === 1 ? "" : "s"}${vectorIndexed ? ", vector embedded" : ", keyword search"}).`,
+    };
+    if (docRef.createdBy) {
+      await notify({ workspaceId, userId: docRef.createdBy, ...kbPayload });
+    } else {
+      await notifyOwners(workspaceId, kbPayload);
+    }
   } catch (e) {
     const message = e instanceof KnowledgeError ? e.message : "This document could not be processed. Try again.";
     if (!(e instanceof KnowledgeError)) console.error("[knowledge] processing failed:", e instanceof Error ? e.message : "unknown");
     await finish({ status: "failed", error: message.slice(0, 480), chunk_count: 0, vector_indexed: false });
+    if (docRef) {
+      const failPayload = {
+        kind: "kb_document_failed",
+        title: `Document indexing failed: ${docRef.name}`,
+        body: message.slice(0, 240),
+      };
+      if (docRef.createdBy) {
+        await notify({ workspaceId, userId: docRef.createdBy, ...failPayload });
+      } else {
+        await notifyOwners(workspaceId, failPayload);
+      }
+    }
   }
 }
 

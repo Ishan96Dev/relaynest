@@ -10,7 +10,8 @@ import { handleAgentUpdate } from "@backend/server/services/ai-agent-runtime";
 import { formatTelegramHtmlReply, formatTelegramPlainReply, type CitationSource } from "@backend/server/ai/citations";
 import { loadToken, markBotDeletedOnTelegram } from "@backend/server/services/bots";
 import { answerFromKnowledge } from "@backend/server/services/knowledge-retrieval";
-import { isTelegramBotDeletedError, sendFormattedMessage, sendMessage, type TelegramUpdate } from "@backend/server/telegram/client";
+import { isTelegramBotDeletedError, isTelegramRateLimitError, type TelegramUpdate } from "@backend/server/telegram/client";
+import { dispatchTelegramMessage } from "@backend/server/telegram/outbound";
 
 export type WebhookOutcome = "ok" | "unauthorized" | "not_found" | "duplicate" | "ignored";
 
@@ -80,11 +81,15 @@ async function processUpdateInner(bot: BotRow, update: TelegramUpdate) {
   // Plan quota: a workspace past its monthly executions stops being answered until the month turns over or it upgrades.
   if (!(await executionAllowed(bot.workspace_id))) {
     if (update.message?.chat?.id) {
-      await sendMessage(
-        await loadToken(bot.id, bot.workspace_id),
-        update.message.chat.id,
-        "This bot has reached its monthly plan execution limit. Upgrade the workspace plan in RelayNest to resume replies.",
-      ).catch(() => undefined);
+      await dispatchTelegramMessage({
+        botId: bot.id,
+        workspaceId: bot.workspace_id,
+        token: await loadToken(bot.id, bot.workspace_id),
+        chatId: String(update.message.chat.id),
+        kind: "text",
+        text: "This bot has reached its monthly plan execution limit. Upgrade the workspace plan in RelayNest to resume replies.",
+        isGroup: update.message.chat.type !== "private",
+      }).catch(() => undefined);
     }
     return;
   }
@@ -145,13 +150,36 @@ async function processUpdateInner(bot: BotRow, update: TelegramUpdate) {
     try {
       const tok = await loadToken(bot.id, bot.workspace_id);
       if (replySources.length > 0) {
-        await sendFormattedMessage(tok, msg.chat.id, formatTelegramHtmlReply(reply, replySources), formatTelegramPlainReply(reply, replySources));
+        await dispatchTelegramMessage({
+          botId: bot.id,
+          workspaceId: bot.workspace_id,
+          token: tok,
+          chatId: String(msg.chat.id),
+          kind: "formatted",
+          html: formatTelegramHtmlReply(reply, replySources),
+          plainFallback: formatTelegramPlainReply(reply, replySources),
+          isGroup: msg.chat.type !== "private",
+          idempotencyKey: `tg:${bot.id}:${update.update_id}`,
+        });
       } else {
-        await sendMessage(tok, msg.chat.id, reply);
+        await dispatchTelegramMessage({
+          botId: bot.id,
+          workspaceId: bot.workspace_id,
+          token: tok,
+          chatId: String(msg.chat.id),
+          kind: "text",
+          text: reply,
+          isGroup: msg.chat.type !== "private",
+          idempotencyKey: `tg:${bot.id}:${update.update_id}`,
+        });
       }
     } catch (err) {
       status = "failed";
-      errorCode = isTelegramBotDeletedError(err) ? "TELEGRAM_BOT_DELETED" : "SEND_FAILED";
+      errorCode = isTelegramBotDeletedError(err)
+        ? "TELEGRAM_BOT_DELETED"
+        : isTelegramRateLimitError(err)
+          ? "TELEGRAM_RATE_LIMITED"
+          : "SEND_FAILED";
       if (isTelegramBotDeletedError(err)) void markBotDeletedOnTelegram(bot.id, bot.workspace_id);
     }
   }

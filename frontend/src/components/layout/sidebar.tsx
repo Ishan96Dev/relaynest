@@ -27,9 +27,21 @@ function NavLink({ item, active, collapsed, onNavigate }: { item: NavItem; activ
   );
 }
 
-function SectionLabel({ children, collapsed }: { children: React.ReactNode; collapsed: boolean }) {
-  if (collapsed) return <div className="my-2 border-t border-border/70" aria-hidden />;
-  return <p className="mb-0.5 mt-3 px-3 text-xs font-semibold text-muted first:mt-0">{children}</p>;
+function SectionLabel({ children, collapsed, first = false }: { children: React.ReactNode; collapsed: boolean; first?: boolean }) {
+  if (collapsed) {
+    if (first) return null;
+    return <div className="my-2 border-t border-border/70" aria-hidden />;
+  }
+  return (
+    <p
+      className={cn(
+        "mb-0.5 px-3 text-[13px] font-bold uppercase tracking-[0.08em] text-lavender",
+        !first && "mt-3 border-t border-border/50 pt-3",
+      )}
+    >
+      {children}
+    </p>
+  );
 }
 export function PromoCard({ promo, onNavigate }: { promo: Promo; onNavigate?: () => void }) {
   const Icon = promo.icon;
@@ -124,7 +136,7 @@ export function Sidebar({
       )}
 
       <nav aria-label="Main" className="-mx-1 flex flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-1">
-        <SectionLabel collapsed={collapsed}>Main</SectionLabel>
+        <SectionLabel collapsed={collapsed} first>Main</SectionLabel>
         {mainNav.filter((i) => i.section === "Main").map(renderMain)}
         <SectionLabel collapsed={collapsed}>AI Platform</SectionLabel>
         {aiNav.map((i) => <NavLink key={i.label} item={i} active={i.match?.(pathname) ?? false} collapsed={collapsed} onNavigate={onNavigate} />)}

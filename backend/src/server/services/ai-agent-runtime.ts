@@ -3,13 +3,16 @@ import { createAdminClient } from "@backend/lib/supabase/admin";
 import { buildCitationSources, buildSystemPrompt, clampReply, type AgentCommand, type KnowledgeItem } from "@backend/server/ai/agent";
 import { formatTelegramHtmlChunks, formatTelegramPlainChunks, pickFeaturedLinkPreviewUrl } from "@backend/server/ai/citations";
 import { commandTask, parseCommandText, usageText } from "@backend/server/ai/commands";
-import { chat, rateLimit, type ChatMessage } from "@backend/server/ai/provider";
+import { chat, type ChatMessage } from "@backend/server/ai/provider";
 import { logEvent } from "@backend/server/logger";
+import { notifyOwners } from "@backend/server/notifications";
+import { enforceRateLimit } from "@backend/server/security/rate-limit";
 import { AGENT_COLUMNS, toAgentConfig } from "@backend/server/services/ai-agents";
 import { runMediaCommand } from "@backend/server/services/ai-agent-commands";
 import { loadToken } from "@backend/server/services/bots";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
-import { sendChatAction, sendFormattedMessages, sendMessage, type TelegramUpdate } from "@backend/server/telegram/client";
+import { isTelegramRateLimitError, sendChatAction, type TelegramUpdate } from "@backend/server/telegram/client";
+import { dispatchTelegramFormattedMessages, dispatchTelegramMessage } from "@backend/server/telegram/outbound";
 
 interface BotRef { id: string; workspace_id: string; telegram_username: string | null }
 
@@ -59,13 +62,32 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
   let errorCode: string | null = null;
   let trigger = "ai_message";
   const token = await loadToken(bot.id, bot.workspace_id);
-  const send = (reply: string) => sendMessage(token, msg.chat.id, clampReply(reply));
+  const send = (reply: string) =>
+    dispatchTelegramMessage({
+      botId: bot.id,
+      workspaceId: bot.workspace_id,
+      token,
+      chatId,
+      kind: "text",
+      text: clampReply(reply),
+      isGroup: !isPrivate,
+    });
 
   try {
     const parsed = parseCommandText(text);
     const cmd = parsed.cmd;
     const custom = cmd ? config.commands.find((c) => c.command === cmd) : undefined;
-    const media = { config, input: parsed.input, botId: bot.id, token, chatId: msg.chat.id, photo: msg.photo, document: msg.document };
+    const media = {
+      config,
+      input: parsed.input,
+      botId: bot.id,
+      workspaceId: bot.workspace_id,
+      token,
+      chatId: msg.chat.id,
+      isGroup: !isPrivate,
+      photo: msg.photo,
+      document: msg.document,
+    };
 
     if (cmd === "start") {
       trigger = "command:/start";
@@ -114,7 +136,7 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
       if (username) text = text.replace(new RegExp(`@${username}`, "ig"), "").trim() || text;
       if (custom) { trigger = `command:/${custom.command}`; text = parsed.input; }
 
-      rateLimit(`chat:${bot.id}:${chatId}`, 25, 60_000);
+      await enforceRateLimit(`chat:${bot.id}:${chatId}`, 25, 60_000);
       if (config.tools.typing) void sendChatAction(token, msg.chat.id, "typing").catch(() => undefined);
 
       const [{ data: knowledge }, { data: past }, passages] = await Promise.all([
@@ -145,8 +167,15 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
       const htmlChunks = formatTelegramHtmlChunks(r.text, citations);
       const plainChunks = formatTelegramPlainChunks(r.text, citations);
       const previewUrl = pickFeaturedLinkPreviewUrl(r.text, citations);
-      await sendFormattedMessages(token, msg.chat.id, htmlChunks, plainChunks, {
+      await dispatchTelegramFormattedMessages({
+        botId: bot.id,
+        workspaceId: bot.workspace_id,
+        token,
+        chatId: msg.chat.id,
+        htmlChunks,
+        plainChunks,
         linkPreviewUrl: previewUrl,
+        isGroup: !isPrivate,
       });
 
       if (config.memoryTurns > 0) {
@@ -160,12 +189,16 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
   } catch (e) {
     status = "failed";
     const code = (e as { code?: string }).code;
-    errorCode = code === "RATE_LIMITED" ? "RATE_LIMITED" : "AI_FAILED";
+    const tgLimited = isTelegramRateLimitError(e);
+    errorCode = tgLimited ? "TELEGRAM_RATE_LIMITED" : code === "RATE_LIMITED" ? "RATE_LIMITED" : "AI_FAILED";
     logEvent("backend", "error", `Telegram agent failed (${errorCode}): ${e instanceof Error ? e.message : "unknown"}`, { botId: bot.id, trigger });
-    if (errorCode === "RATE_LIMITED") {
-      await send("You're sending messages very quickly — please wait a few seconds and try again.").catch(() => undefined);
-    } else {
-      await send(config.fallbackMessage ?? "Sorry, I couldn't answer that right now. Please try again in a moment.").catch(() => undefined);
+    // Never fire an extra fallback message into a chat that Telegram just rate-limited.
+    if (!tgLimited) {
+      if (errorCode === "RATE_LIMITED") {
+        await send("You're sending messages very quickly — please wait a few seconds and try again.").catch(() => undefined);
+      } else {
+        await send(config.fallbackMessage ?? "Sorry, I couldn't answer that right now. Please try again in a moment.").catch(() => undefined);
+      }
     }
   }
 
@@ -182,6 +215,21 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
     }),
     admin.from("bots").update({ last_update_at: new Date().toISOString() }).eq("id", bot.id),
   ]);
+  if (status === "failed") {
+    void notifyOwners(bot.workspace_id, {
+      kind: "agent_execution_failed",
+      title: `AI Agent reply failed: ${config.name}`,
+      body:
+        errorCode === "NO_MODEL"
+          ? "No AI model is assigned to this agent. Select a model in AI Agents."
+          : errorCode === "RATE_LIMITED"
+            ? "The agent hit its chat rate limit while replying to Telegram."
+            : "An upstream AI provider error prevented a reply on Telegram.",
+      actionUrl: `/ai/agents/${config.id}`,
+      dedupeHours: 1,
+      dedupeByTitle: true,
+    });
+  }
   return true;
 }
 

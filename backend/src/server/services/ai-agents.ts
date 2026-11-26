@@ -10,11 +10,12 @@ import { commandTask, imagePrompt, parseCommandText, usageText } from "@backend/
 import { chat, generateImage, rateLimit, type ChatMessage } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
 import { buildWebSearchSystemContext, webSearchToCitations, type WebMediaPayload } from "@backend/server/ai/web-search-types";
-import { searchOpenWeb } from "@backend/server/search/web-search";
+import { parseSearchProviderPrefix, searchOpenWeb } from "@backend/server/search/web-search";
 import { getDbDefaultImageModel } from "@backend/server/services/ai-models";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
 import { activateBot, createBot, deactivateBot, deleteBot, loadToken, updateBotDetails } from "@backend/server/services/bots";
 import { assertBotLimit, assertExecutionLimit } from "@backend/server/billing/entitlements";
+import { notify } from "@backend/server/notifications";
 import { getMe, setMyCommands } from "@backend/server/telegram/client";
 
 export type AgentStatus = "draft" | "active" | "inactive" | "error";
@@ -179,7 +180,11 @@ function checkAvatar(ctx: AuthContext, path: string | null | undefined) {
   }
 }
 
-export async function createAiAgent(ctx: AuthContext, input: CreateAiAgentInput): Promise<AiAgentDto> {
+export async function createAiAgent(
+  ctx: AuthContext,
+  input: CreateAiAgentInput,
+  opts?: { skipNotify?: boolean },
+): Promise<AiAgentDto> {
   requireWrite(ctx);
   await assertBotLimit(ctx.workspaceId);
   checkAvatar(ctx, input.avatarPath);
@@ -196,7 +201,18 @@ export async function createAiAgent(ctx: AuthContext, input: CreateAiAgentInput)
     if (error.code === "23505") throw Errors.conflict("An AI agent with this username already exists in the workspace.");
     throw new Error("Failed to save the AI agent");
   }
-  return toAgentDto(data);
+  const dto = toAgentDto(data);
+  if (!opts?.skipNotify) {
+    await notify({
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      kind: "agent_created",
+      title: `AI Agent created: ${dto.name}`,
+      body: `@${dto.username} draft saved. Connect a Telegram token and pick a model to go live.`,
+      actionUrl: `/ai/agents/${dto.id}`,
+    });
+  }
+  return dto;
 }
 
 export async function updateAiAgent(ctx: AuthContext, id: string, patch: UpdateAiAgentInput): Promise<AiAgentDto> {
@@ -239,7 +255,29 @@ export async function updateAiAgent(ctx: AuthContext, id: string, patch: UpdateA
   if ((patch.commands !== undefined || patch.tools !== undefined) && data.status === "active" && data.bot_id) {
     await syncTelegramCommands(ctx.workspaceId, data.bot_id as string, parseCommands(data.commands), parseTools(data.tools)).catch(() => undefined);
   }
-  return toAgentDto(data);
+  const dto = toAgentDto(data);
+  const agentConfigChanged =
+    patch.modelSlug !== undefined ||
+    patch.imageModelSlug !== undefined ||
+    patch.instructions !== undefined ||
+    patch.commands !== undefined ||
+    patch.tools !== undefined ||
+    patch.temperature !== undefined ||
+    patch.maxTokens !== undefined ||
+    patch.memoryTurns !== undefined;
+  if (agentConfigChanged) {
+    await notify({
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      kind: "agent_updated",
+      title: `AI Agent updated: ${dto.name}`,
+      body: "Model, prompt, commands, or capability settings were saved.",
+      actionUrl: `/ai/agents/${dto.id}`,
+      dedupeHours: 0.02,
+      dedupeByTitle: true,
+    });
+  }
+  return dto;
 }
 
 /** Publishes the built-in and custom commands as the bot's menu in Telegram. */
@@ -264,7 +302,14 @@ export async function deleteAiAgent(ctx: AuthContext, id: string): Promise<void>
   const { error } = await ctx.supabase.from("ai_agents").delete().eq("id", id).eq("workspace_id", ctx.workspaceId);
   if (error) throw new Error("Failed to delete the AI agent");
   // The Telegram bot only exists for this agent, so remove it (and its webhook) too.
-  if (agent.bot_id) await deleteBot(ctx, agent.bot_id as string).catch(() => undefined);
+  if (agent.bot_id) await deleteBot(ctx, agent.bot_id as string, { skipNotify: true }).catch(() => undefined);
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "agent_deleted",
+    title: `AI Agent deleted: ${agent.name as string}`,
+    body: "The AI agent and its linked Telegram configuration were removed.",
+  });
 }
 
 export async function addKnowledge(ctx: AuthContext, agentId: string, input: z.infer<typeof knowledgeInput>): Promise<KnowledgeDto> {
@@ -287,10 +332,14 @@ export async function connectTelegram(ctx: AuthContext, id: string, token: strin
   const row = await loadRow(ctx, id);
   if (row.bot_id) throw Errors.conflict("This agent is already connected to a Telegram bot.");
   const a = toAgentDto(row);
-  const bot = await createBot(ctx, {
-    name: a.name, description: a.description, category: a.category, token,
-    welcomeMessage: a.welcomeMessage ?? undefined, defaultResponse: a.fallbackMessage ?? undefined,
-  });
+  const bot = await createBot(
+    ctx,
+    {
+      name: a.name, description: a.description, category: a.category, token,
+      welcomeMessage: a.welcomeMessage ?? undefined, defaultResponse: a.fallbackMessage ?? undefined,
+    },
+    { skipNotify: true },
+  );
   const { data, error } = await ctx.supabase
     .from("ai_agents")
     .update({
@@ -304,11 +353,21 @@ export async function connectTelegram(ctx: AuthContext, id: string, token: strin
     .select(COLUMNS)
     .single();
   if (error) {
-    await deleteBot(ctx, bot.id).catch(() => undefined);
+    await deleteBot(ctx, bot.id, { skipNotify: true }).catch(() => undefined);
     if (error.code === "23505") throw Errors.conflict("Another AI agent in this workspace already uses this Telegram bot.");
     throw new Error("Failed to link the Telegram bot");
   }
-  return toAgentDto(data);
+  const dto = toAgentDto(data);
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "agent_connected",
+    title: `AI Agent connected: ${dto.name}`,
+    body: `@${dto.username} is linked to Telegram and ready for model setup.`,
+    emailKey: "botConnected",
+    actionUrl: `/ai/agents/${dto.id}`,
+  });
+  return dto;
 }
 
 /**
@@ -320,10 +379,14 @@ export async function createAgentFromToken(ctx: AuthContext, token: string): Pro
   await assertBotLimit(ctx.workspaceId);
   const me = await getMe(token);
   if (!me.username) throw Errors.invalid("This Telegram bot has no username yet. Finish creating it in @BotFather first.");
-  const agent = await createAiAgent(ctx, {
-    name: (me.firstName || me.username).slice(0, 50), username: me.username, description: "An AI assistant on Telegram.",
-    avatarPath: null, language: "English", category: "Community Manager", modelSlug: null,
-  } as CreateAiAgentInput);
+  const agent = await createAiAgent(
+    ctx,
+    {
+      name: (me.firstName || me.username).slice(0, 50), username: me.username, description: "An AI assistant on Telegram.",
+      avatarPath: null, language: "English", category: "Community Manager", modelSlug: null,
+    } as CreateAiAgentInput,
+    { skipNotify: true },
+  );
   try {
     return await connectTelegram(ctx, agent.id, token);
   } catch (e) {
@@ -339,20 +402,39 @@ export async function activateAiAgent(ctx: AuthContext, id: string): Promise<AiA
   const a = toAgentDto(row);
   if (!a.botId) throw Errors.invalid("Connect a Telegram bot first.");
   if (!a.modelSlug) throw Errors.invalid("Choose a model for this agent first.");
-  await activateBot(ctx, a.botId);
+  await activateBot(ctx, a.botId, { skipNotify: true });
   await syncTelegramCommands(ctx.workspaceId, a.botId, a.commands, a.tools).catch(() => undefined);
   const { data, error } = await ctx.supabase.from("ai_agents").update({ status: "active" }).eq("id", id).eq("workspace_id", ctx.workspaceId).select(COLUMNS).single();
   if (error) throw new Error("Failed to activate the AI agent");
-  return toAgentDto(data);
+  const dto = toAgentDto(data);
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "agent_activated",
+    title: `AI Agent live: ${dto.name}`,
+    body: `@${dto.username} is online and replying with ${dto.modelName ?? dto.modelSlug}.`,
+    actionUrl: `/ai/agents/${dto.id}`,
+  });
+  return dto;
 }
 
 export async function deactivateAiAgent(ctx: AuthContext, id: string): Promise<AiAgentDto> {
   requireWrite(ctx);
   const a = toAgentDto(await loadRow(ctx, id));
-  if (a.botId) await deactivateBot(ctx, a.botId);
+  if (a.botId) await deactivateBot(ctx, a.botId, { skipNotify: true });
   const { data, error } = await ctx.supabase.from("ai_agents").update({ status: a.botId ? "inactive" : "draft" }).eq("id", id).eq("workspace_id", ctx.workspaceId).select(COLUMNS).single();
   if (error) throw new Error("Failed to deactivate the AI agent");
-  return toAgentDto(data);
+  const dto = toAgentDto(data);
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "agent_deactivated",
+    title: `AI Agent paused: ${dto.name}`,
+    body: `@${dto.username} was paused and will not reply until activated again.`,
+    emailKey: "botOffline",
+    actionUrl: `/ai/agents/${dto.id}`,
+  });
+  return dto;
 }
 
 /** One reply from the agent for the in-app chat preview. Uses the saved configuration, agent knowledge, open web search and linked KB collections. */
@@ -386,7 +468,9 @@ async function testAiAgentInner(
       return { reply: "Open Web Search is turned off for this agent. Enable it in Tools & Capabilities to use /search." };
     }
     rateLimit(`agent-search:${ctx.userId}`, 12, 60_000);
-    const bundle = await searchOpenWeb(commandInput, { maxResults: 6, maxImages: 4, maxVideos: 4 });
+    const { provider, query } = parseSearchProviderPrefix(commandInput);
+    if (!query) return { reply: `Usage: /${custom?.command ?? "search"} <what to search on the web>` };
+    const bundle = await searchOpenWeb(query, { provider, maxResults: 6, maxImages: 4, maxVideos: 4 });
     const citations = webSearchToCitations(bundle.results);
     const extraGuide = custom?.instruction?.trim() ? `\n\nExtra search instructions: ${custom.instruction.trim()}` : "";
     const system = `${buildSystemPrompt(config, [], new Date(), [])}\n\n${buildWebSearchSystemContext(bundle)}${extraGuide}`;
@@ -394,7 +478,7 @@ async function testAiAgentInner(
       config.model,
       [
         { role: "system", content: system },
-        { role: "user", content: commandInput },
+        { role: "user", content: query },
       ],
       {
         temperature: Math.min(config.temperature, 0.45),
@@ -407,7 +491,7 @@ async function testAiAgentInner(
     return {
       reply: r.text.slice(0, 8000),
       ...(citations.length ? { sources: citations } : {}),
-      webMedia: { query: bundle.query, engine: bundle.engine, images: bundle.images, videos: bundle.videos },
+      webMedia: { query: bundle.query, engine: bundle.engine, providerSlug: bundle.providerSlug, images: bundle.images, videos: bundle.videos },
       ms: Date.now() - started,
     };
   }

@@ -65,7 +65,7 @@ export async function assertBotLimit(workspaceId: string) {
     admin.from("ai_agents").select("id", { count: "exact", head: true }).eq("workspace_id", workspaceId).is("bot_id", null),
   ]);
   if ((botCount ?? 0) + (draftAgentCount ?? 0) >= plan.limits.bots) {
-    await notifyOwners(workspaceId, { kind: "plan_limit", title: "Bot limit reached", body: `The ${plan.name} plan allows up to ${plan.limits.bots} bots. Upgrade to add more.`, dedupeHours: 24 });
+    await notifyOwners(workspaceId, { kind: "plan_limit", title: "Bot limit reached", body: `The ${plan.name} plan allows up to ${plan.limits.bots} bots. Upgrade to add more.`, emailKey: "billing", dedupeHours: 24 });
     throw new ApiError(402, "PLAN_LIMIT", `The ${plan.name} plan allows up to ${plan.limits.bots} bots. Upgrade your plan to add more.`);
   }
 }
@@ -101,6 +101,6 @@ export async function executionAllowed(workspaceId: string): Promise<boolean> {
   const { plan } = await getEntitlements(workspaceId);
   const allowed = plan.limits.executionsPerMonth === Infinity || (await executionsThisMonth(workspaceId)) < plan.limits.executionsPerMonth;
   execCache.set(workspaceId, { at: Date.now(), allowed });
-  if (!allowed) await notifyOwners(workspaceId, { kind: "plan_limit", title: "Monthly execution limit reached", body: `Your ${plan.name} plan allows ${plan.limits.executionsPerMonth.toLocaleString()} executions per month. Bots stop replying until you upgrade or the month resets.`, dedupeHours: 24 });
+  if (!allowed) await notifyOwners(workspaceId, { kind: "plan_limit", title: "Monthly execution limit reached", body: `Your ${plan.name} plan allows ${plan.limits.executionsPerMonth.toLocaleString()} executions per month. Bots stop replying until you upgrade or the month resets.`, emailKey: "billing", dedupeHours: 24 });
   return allowed;
 }

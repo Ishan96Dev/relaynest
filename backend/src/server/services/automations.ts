@@ -67,6 +67,14 @@ export async function createAutomation(ctx: AuthContext, input: AutomationInput)
     throw new Error("Failed to create the automation");
   }
   await createAdminClient().from("activity_logs").insert({ workspace_id: ctx.workspaceId, actor_id: ctx.userId, action: "automation.created", detail: input.name });
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "automation_created",
+    title: `Automation created: ${input.name}`,
+    body: "Saved as a draft. Publish it when you're ready to start running triggers.",
+    actionUrl: `/workflows/${wf.id as string}`,
+  });
   return toDto(ctx, wf as WfRow);
 }
 /**
@@ -96,6 +104,13 @@ export async function deleteAutomation(ctx: AuthContext, id: string): Promise<vo
   const cur = await load(ctx, id);
   const { error } = await ctx.supabase.from("agents").delete().eq("id", cur.agent_id).eq("workspace_id", ctx.workspaceId);
   if (error) throw new Error("Failed to delete the automation");
+  await notify({
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    kind: "automation_deleted",
+    title: `Automation deleted: ${cur.name}`,
+    body: "The workflow and its schedules were removed from your workspace.",
+  });
 }
 export interface PublishResult { automation: AutomationDto; /** Shown once; only its hash is stored. */ webhookSecret?: string }
 export async function publishAutomation(ctx: AuthContext, id: string): Promise<PublishResult> {

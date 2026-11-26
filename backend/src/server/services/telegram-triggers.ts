@@ -1,11 +1,17 @@
 import "server-only";
 import { createAdminClient } from "@backend/lib/supabase/admin";
+import { isCloudflareQueueConfigured } from "@backend/server/cloudflare/bindings";
+import { publishKafkaEvent } from "@backend/server/queue/kafka";
 import { runWorkflow } from "@backend/server/services/workflow-runner";
 import type { TelegramUpdate } from "@backend/server/telegram/client";
+
+const LOCAL_CONCURRENCY = 3;
+
 /**
  * Starts every published automation whose "Telegram Message Received" trigger points at this bot.
- * The event payload (read in nodes as {{event.text}}, {{event.chatId}} and so on) is the message data.
- * Failures are contained: automations never block the bot's own reply.
+ * On Cloudflare Workers with `RELAYNEST_QUEUE` bound, matching workflows are enqueued onto Cloudflare Queues
+ * so bursts across bots/workflows drain smoothly without tripping Telegram rate limits.
+ * Outside Cloudflare, runs in bounded batches of 3 so failures stay contained.
  */
 export async function triggerTelegramWorkflows(bot: { id: string; workspace_id: string }, update: TelegramUpdate): Promise<void> {
   const msg = update.message;
@@ -24,7 +30,40 @@ export async function triggerTelegramWorkflows(bot: { id: string; workspace_id: 
       const filter = t.config?.commandFilter?.replace(/^\//, "").trim().toLowerCase();
       return !filter || filter === command;
     });
-    await Promise.allSettled(matches.map((w) => runWorkflow({ workflowId: w.id as string, trigger: "telegram", payload, idempotencyKey: `tgwf:${w.id}:${update.update_id}` })));
+    if (!matches.length) return;
+
+    if (isCloudflareQueueConfigured()) {
+      await Promise.allSettled(
+        matches.map((w, idx) =>
+          publishKafkaEvent(
+            "workflows.execute",
+            {
+              workflowId: w.id as string,
+              trigger: "telegram",
+              payload,
+              idempotencyKey: `tgwf:${w.id}:${update.update_id}`,
+            },
+            `${bot.id}:${w.id}`,
+            idx > 0 ? { delaySeconds: Math.min(idx, 10) } : undefined,
+          ),
+        ),
+      );
+      return;
+    }
+
+    for (let i = 0; i < matches.length; i += LOCAL_CONCURRENCY) {
+      const slice = matches.slice(i, i + LOCAL_CONCURRENCY);
+      await Promise.allSettled(
+        slice.map((w) =>
+          runWorkflow({
+            workflowId: w.id as string,
+            trigger: "telegram",
+            payload,
+            idempotencyKey: `tgwf:${w.id}:${update.update_id}`,
+          }),
+        ),
+      );
+    }
   } catch {
     console.error("[automations] telegram trigger failed");
   }

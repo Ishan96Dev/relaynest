@@ -21,6 +21,8 @@ export const Errors = {
   invalid: (msg: string, details: unknown[] = []) => new ApiError(422, "UNPROCESSABLE", msg, details),
   telegramBotDeleted: (msg = "This bot was deleted on Telegram or its token was revoked in @BotFather.") =>
     new ApiError(410, "TELEGRAM_BOT_DELETED", msg),
+  telegramRateLimited: (retryAfterSec: number, msg = "Telegram rate limit reached. Message will be retried shortly.") =>
+    new ApiError(429, "TELEGRAM_RATE_LIMITED", msg, [{ retryAfterSec: Math.max(1, Math.ceil(retryAfterSec)) }]),
   upstream: (msg: string) => new ApiError(502, "UPSTREAM_ERROR", msg),
   notConfigured: () => new ApiError(503, "NOT_CONFIGURED", "The server is not configured for this operation."),
 };
