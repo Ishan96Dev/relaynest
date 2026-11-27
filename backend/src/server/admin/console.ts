@@ -588,7 +588,7 @@ export async function getAdminLogsData(section: string = "all", level: string = 
   const [aiRes, actRes, kbRes] = await Promise.all([
     db.from("ai_usage_events").select("id, source, model_slug, origin, total_tokens, latency_ms, cost_usd, created_at").order("created_at", { ascending: false }).limit(35),
     db.from("activity_logs").select("id, action, detail, created_at").order("created_at", { ascending: false }).limit(35),
-    db.from("kb_documents").select("id, name, status, chunk_count, error_message, updated_at").order("updated_at", { ascending: false }).limit(25),
+    db.from("kb_documents").select("id, name, status, chunk_count, error, created_at, indexed_at").order("created_at", { ascending: false }).limit(25),
   ]);
 
   const persisted: ConsoleLogEntry[] = [
@@ -609,10 +609,10 @@ export async function getAdminLogsData(section: string = "all", level: string = 
     })),
     ...(kbRes.data ?? []).map((r) => ({
       id: `db-vec-${r.id}`,
-      ts: r.updated_at as string,
+      ts: (r.indexed_at as string | null) ?? (r.created_at as string),
       section: "vector" as LogSection,
       level: (r.status === "failed" ? "error" : "info") as LogLevel,
-      message: `KB "${r.name}" · status=${r.status} · chunks=${r.chunk_count ?? 0}${r.error_message ? ` · ${r.error_message}` : ""}`,
+      message: `KB "${r.name}" · status=${r.status} · chunks=${r.chunk_count ?? 0}${r.error ? ` · ${r.error}` : ""}`,
     })),
   ].filter((e) => (section === "all" || e.section === section) && (level === "all" || e.level === level));
 

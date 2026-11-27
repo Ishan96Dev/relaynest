@@ -1,8 +1,8 @@
 "use client";
 
 import {
-  ArrowRight, Bell, Bot, Check, ChevronLeft, Download, Flame, Headphones, LayoutGrid, List, Paperclip, Search, Send, ShoppingCart,
-  Sparkles, Star, Target, UserCog, Users, X, Zap, type LucideIcon,
+  ArrowRight, Bell, Bot, CalendarClock, Check, ChevronLeft, Download, Flame, Globe, Headphones, LayoutGrid, List, Paperclip, Play, Search, Send, ShoppingCart,
+  Sparkles, Star, Target, TrendingUp, UserCog, Users, X, Zap, type LucideIcon,
 } from "lucide-react";
 import Image from "next/image";
 import * as React from "react";
@@ -12,8 +12,7 @@ import { Card } from "@/components/ui/card";
 import { IconTile, type TileTone } from "@/components/ui/icon-tile";
 import { Input, Select } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
-import { AGENT_TEMPLATES } from "@/lib/agent-templates";
-
+import { AGENTIC_TEMPLATES, AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { demoTemplates, templateCategories } from "@/lib/demo-data";
 import { cn } from "@/lib/utils";
 import type { BotTemplate } from "@/types";
@@ -35,6 +34,7 @@ export function TemplatesBrowser() {
   const [filter, setFilter] = React.useState("all");
   const [sort, setSort] = React.useState("popular");
   const [view, setView] = React.useState<"grid" | "list">("grid");
+  const [agentCat, setAgentCat] = React.useState<string>("All");
   const [selected, setSelected] = React.useState<BotTemplate | null>(demoTemplates[0] ?? null);
   const [tab, setTab] = React.useState("overview");
 
@@ -46,36 +46,149 @@ export function TemplatesBrowser() {
     return sort === "name" ? [...f].sort((a, b) => a.name.localeCompare(b.name)) : f;
   }, [q, cat, filter, sort]);
 
-  const agentList = AGENT_TEMPLATES.filter((t) => (!cat || t.category === cat || (cat === "Customer Support" && t.category === "FAQ Assistant")) && (t.name + t.tagline).toLowerCase().includes(q.toLowerCase()));
+  const agenticCategories = React.useMemo(
+    () => ["All", ...Array.from(new Set(AGENTIC_TEMPLATES.map((t) => t.category)))],
+    [],
+  );
+
+  const agenticList = React.useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return AGENTIC_TEMPLATES.filter((t) => {
+      if (agentCat !== "All" && t.category !== agentCat) return false;
+      if (!needle) return true;
+      const hay = `${t.name} ${t.tagline} ${t.description} ${t.category} ${(t.badges ?? []).join(" ")} ${(t.commands ?? []).map((c) => c.command).join(" ")}`.toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [q, agentCat]);
+
+  const classicAgentList = AGENT_TEMPLATES.filter(
+    (t) =>
+      !t.isAgentic &&
+      (!cat || t.category === cat || (cat === "Customer Support" && t.category === "FAQ Assistant")) &&
+      (t.name + t.tagline + t.category).toLowerCase().includes(q.toLowerCase()),
+  );
+
   return (
     <div className="grid-cols-1 grid gap-6 xl:grid-cols-[minmax(0,1fr)_450px] 2xl:grid-cols-[minmax(0,1fr)_560px]">
       <div className="min-w-0 space-y-5">
         <div className="relative">
           <div className="max-w-xl">
-            <h1 className="text-4xl font-extrabold tracking-tight"><PageTitle text="Explore Bot Templates" /></h1>
-            <p className="mt-1 text-[15px] text-foreground/80">Start building faster with ready-to-use Telegram bot templates.</p>
+            <h1 className="text-4xl font-extrabold tracking-tight"><PageTitle text="Explore Bot & Agentic Templates" /></h1>
+            <p className="mt-1 text-[15px] text-foreground/80">Launch ready-to-use Telegram bots and autonomous Agentic AI templates — test any template live in Playground first.</p>
           </div>
           <Image src="/images/illustrations/templates-plane.png" alt="" width={342} height={129} priority className="pointer-events-none absolute -top-3 right-0 hidden h-24 w-auto fade-edges lg:block light:hidden" />
         </div>
 
         <div className="grid-cols-1 grid gap-3 sm:grid-cols-[1fr_220px]">
-          <Input aria-label="Search templates" icon={<Search />} placeholder="Search templates (e.g. support bot, FAQ, notification...)" className="h-12" value={q} onChange={(e) => setQ(e.target.value)} />
+          <Input aria-label="Search templates" icon={<Search />} placeholder="Search NSE, BSE, MSE, land broker, student, sports, gaming, support..." className="h-12" value={q} onChange={(e) => setQ(e.target.value)} />
           <Select aria-label="Category" className="h-12" value={cat} onChange={(e) => setCat(e.target.value)}>
-            <option value="">All Categories</option>
+            <option value="">All Standard Categories</option>
             {templateCategories.map((c) => <option key={c}>{c}</option>)}
           </Select>
         </div>
 
+        <section aria-labelledby="agentic-tpl" className="space-y-3 rounded-2xl border border-lavender/35 bg-primary/5 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 id="agentic-tpl" className="flex items-center gap-2 text-lg font-extrabold">
+                <Sparkles className="size-4 text-lavender" aria-hidden />
+                Agentic AI Templates (Live Search, Markets &amp; Daily Briefings)
+              </h2>
+              <p className="text-sm text-muted">
+                Autonomous role-based agents for Brokers (NSE/BSE/MSE, Land, Commodities), Students, Sports, Gaming &amp; more — test live in Playground or deploy to Telegram with daily briefings.
+              </p>
+            </div>
+            <ButtonLink href="/ai/playground?template=stock-market-broker" variant="subtle" size="sm">
+              <Play className="size-3.5" aria-hidden />
+              Open Agentic Playground
+            </ButtonLink>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Agentic AI template domains">
+            {agenticCategories.map((c) => (
+              <button
+                key={c}
+                type="button"
+                role="tab"
+                aria-selected={agentCat === c}
+                onClick={() => setAgentCat(c)}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-xs font-semibold transition",
+                  agentCat === c
+                    ? "border-lavender bg-primary/20 text-foreground"
+                    : "border-border bg-surface/80 text-muted hover:border-lavender/50 hover:text-foreground",
+                )}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(290px,1fr))] gap-4">
+            {agenticList.map((t) => (
+              <li key={t.id}>
+                <Card hover className="flex h-full flex-col p-4">
+                  <div className="flex items-start gap-3">
+                    <IconTile tone={t.tools?.marketData ? "amber" : "primary"} size="lg">
+                      {t.tools?.marketData ? <TrendingUp /> : <Bot />}
+                    </IconTile>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-bold leading-tight">{t.name}</h3>
+                      <p className="mt-1 text-[13px] text-foreground/75">{t.tagline}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    <Badge tone="primary">{t.category}</Badge>
+                    {t.tools?.marketData && (
+                      <Badge tone="success">
+                        <TrendingUp className="size-3" aria-hidden />NSE / BSE / MSE
+                      </Badge>
+                    )}
+                    {t.tools?.autoSearch && (
+                      <Badge tone="info">
+                        <Globe className="size-3" aria-hidden />Auto Search
+                      </Badge>
+                    )}
+                    {t.dailyBriefing && (
+                      <Badge tone="warning">
+                        <CalendarClock className="size-3" aria-hidden />Daily Brief
+                      </Badge>
+                    )}
+                  </div>
+                  {t.commands && t.commands.length > 0 && (
+                    <div className="mt-2.5 flex flex-wrap gap-1">
+                      {t.commands.slice(0, 4).map((c) => (
+                        <code key={c.command} className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-lavender">
+                          /{c.command}
+                        </code>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-auto grid grid-cols-2 gap-2 pt-4">
+                    <ButtonLink href={`/ai/playground?template=${t.id}`} variant="outline" size="sm">
+                      <Play className="size-3.5" aria-hidden />Playground
+                    </ButtonLink>
+                    <ButtonLink href={`/bots/new?type=ai&template=${t.id}`} size="sm">
+                      Telegram <ArrowRight className="size-3.5" aria-hidden />
+                    </ButtonLink>
+                  </div>
+                </Card>
+              </li>
+            ))}
+          </ul>
+          {agenticList.length === 0 && <p className="text-sm text-muted">No agentic templates match this search.</p>}
+        </section>
+
         <Tabs label="Template filters" value={filter} onChange={setFilter} className="w-fit"
           tabs={[
-            { id: "all", label: "All Templates", icon: <LayoutGrid />, count: demoTemplates.length },
+            { id: "all", label: "All Standard Bots", icon: <LayoutGrid />, count: demoTemplates.length },
             { id: "popular", label: "Popular", icon: <Flame /> },
             { id: "recent", label: "Recently Added", icon: <Star /> },
             { id: "easy", label: "Beginner Friendly", icon: <Sparkles /> },
           ]} />
 
         <section aria-labelledby="by-cat">
-          <div className="mb-3 flex items-center justify-between"><h2 id="by-cat" className="text-lg font-bold">Browse by Category</h2>
+          <div className="mb-3 flex items-center justify-between"><h2 id="by-cat" className="text-lg font-bold">Browse Standard Bots by Category</h2>
             <button className="text-sm font-semibold text-lavender hover:underline" onClick={() => setCat("")}>View All Categories <span aria-hidden>&rarr;</span></button></div>
           <ul className="grid-cols-1 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {templateCategories.map((c) => {
@@ -93,7 +206,7 @@ export function TemplatesBrowser() {
         </section>
 
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-bold">All Templates ({list.length})</h2>
+          <h2 className="text-lg font-bold">Standard Bot Templates ({list.length})</h2>
           <div className="flex items-center gap-2 text-sm">
             <span className="text-muted">Sort by:</span>
             <Select aria-label="Sort templates" className="w-36" value={sort} onChange={(e) => setSort(e.target.value)}><option value="popular">Popular</option><option value="name">Name</option></Select>
@@ -128,13 +241,14 @@ export function TemplatesBrowser() {
             })}
           </ul>
         )}
+
         <section aria-labelledby="ai-tpl" className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div><h2 id="ai-tpl" className="flex items-center gap-2 text-lg font-bold"><Sparkles className="size-4 text-lavender" aria-hidden />AI Agent Templates</h2><p className="text-sm text-muted">Pre-written instructions and messages for an AI-powered agent. You can edit everything.</p></div>
+            <div><h2 id="ai-tpl" className="flex items-center gap-2 text-lg font-bold"><Bot className="size-4 text-lavender" aria-hidden />Classic AI Agent Templates</h2><p className="text-sm text-muted">Pre-written instructions and messages for general-purpose AI agents. Test in Playground or deploy to Telegram.</p></div>
             <ButtonLink href="/bots/new?type=ai" variant="outline" size="sm">Import from file instead</ButtonLink>
           </div>
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(290px,1fr))] gap-4">
-            {agentList.map((t) => (
+            {classicAgentList.map((t) => (
               <li key={t.id}>
                 <Card hover className="flex h-full flex-col p-4">
                   <div className="flex items-start gap-3">
@@ -142,12 +256,19 @@ export function TemplatesBrowser() {
                     <div className="min-w-0 flex-1"><h3 className="font-bold leading-tight">{t.name}</h3><p className="mt-1 text-[13px] text-foreground/75">{t.tagline}</p></div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2"><Badge tone="primary">{t.category}</Badge><Badge tone="info">AI Agent</Badge></div>
-                  <div className="mt-auto pt-4"><ButtonLink href={`/bots/new?type=ai&template=${t.id}`} size="sm" className="w-full">Use Template <ArrowRight className="size-3.5" aria-hidden /></ButtonLink></div>
+                  <div className="mt-auto grid grid-cols-2 gap-2 pt-4">
+                    <ButtonLink href={`/ai/playground?template=${t.id}`} variant="outline" size="sm">
+                      <Play className="size-3.5" aria-hidden />Playground
+                    </ButtonLink>
+                    <ButtonLink href={`/bots/new?type=ai&template=${t.id}`} size="sm">
+                      Telegram <ArrowRight className="size-3.5" aria-hidden />
+                    </ButtonLink>
+                  </div>
                 </Card>
               </li>
             ))}
           </ul>
-          {agentList.length === 0 && <p className="text-sm text-muted">No AI agent templates match this filter.</p>}
+          {classicAgentList.length === 0 && <p className="text-sm text-muted">No classic AI agent templates match this filter.</p>}
         </section>
       </div>
 
@@ -202,7 +323,7 @@ function TemplateDetail({ t, tab, setTab, onClose }: { t: BotTemplate; tab: stri
         </div>
 
         <div className="grid-cols-1 mt-5 grid gap-3 sm:grid-cols-2">
-          <Button variant="outline" disabled title="Telegram preview is not available yet."><Send className="size-4" />Preview in Telegram</Button>
+          <ButtonLink href="/ai/playground?template=stock-market-broker" variant="outline"><Play className="size-4" aria-hidden />Try Playground</ButtonLink>
           <ButtonLink href={`/bots/new?template=${t.id}`}>Use This Template <ArrowRight className="size-4" aria-hidden /></ButtonLink>
         </div>
       </Card>

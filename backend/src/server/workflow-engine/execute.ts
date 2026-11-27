@@ -15,6 +15,15 @@ export interface ActionAdapters {
   sendTelegramMessage(input: { botId: string; chatId: string; text: string; idempotencyKey: string }): Promise<{ externalMessageId?: string }>;
   httpRequest(input: { method: string; url: URL; body?: string }): Promise<{ status: number }>;
   insertRecord?(input: { collection: string; record: Record<string, string> }): Promise<void>;
+  runAiResearch?(input: {
+    prompt: string;
+    systemPrompt?: string;
+    agentId?: string;
+    category?: string;
+    modelSlug?: string;
+    includeWebSearch: boolean;
+    includeMarketData: boolean;
+  }): Promise<{ text: string; sourcesCount?: number; quotesCount?: number; modelUsed?: string }>;
 }
 
 export type StepStatus = "succeeded" | "failed" | "skipped";
@@ -45,10 +54,11 @@ export function getPath(obj: unknown, path: string): unknown {
     .reduce<unknown>((acc, key) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[key] : undefined), obj);
 }
 
-/** `{{event.field}}` substitution; unknown paths become empty strings. */
-export function renderTemplate(text: string, event: TriggerEvent): string {
+/** `{{event.field}}` and `{{ai.text}}` substitution; unknown paths become empty strings. */
+export function renderTemplate(text: string, event: TriggerEvent, extra?: Record<string, unknown>): string {
+  const scope: Record<string, unknown> = { event: event.payload, ...extra };
   return text.replace(/\{\{\s*([A-Za-z0-9_.\[\]-]+)\s*\}\}/g, (_, p: string) => {
-    const v = getPath({ event: event.payload }, p);
+    const v = getPath(scope, p);
     return v === undefined || v === null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
   });
 }
@@ -95,6 +105,7 @@ export async function executeWorkflow(
   const steps: StepResult[] = [];
   let actions = 0;
   let lastHttpStatus: number | undefined;
+  let aiVars: Record<string, unknown> | undefined;
   let failed = false;
 
   const trigger = definition.nodes.find((n) => category(n.type) === "trigger")!;
@@ -159,13 +170,14 @@ export async function executeWorkflow(
         break;
       }
       try {
-        const c = node.config as Record<string, string>;
+        const c = node.config as Record<string, unknown>;
+        const tplVars = aiVars ? { ai: aiVars } : undefined;
         if (node.type === "action.telegram.sendMessage") {
           const chatId = c.chatIdSource === "trigger" ? String(getPath({ event: event.payload }, "event.chatId") ?? "") : String(c.chatId ?? "");
           if (!chatId) throw Object.assign(new Error("No chat ID."), { code: "NO_CHAT_ID" });
-          const rendered = renderTemplate(c.text!, event);
+          const rendered = renderTemplate(String(c.text ?? ""), event, tplVars);
           const r = await adapters.sendTelegramMessage({
-            botId: c.botId!,
+            botId: String(c.botId ?? ""),
             chatId,
             text: rendered,
             idempotencyKey: `${opts.executionId}:${id}`,
@@ -178,12 +190,12 @@ export async function executeWorkflow(
             startedAt: stepStartedAt,
             finishedAt: new Date(doneMs).toISOString(),
             durationMs: Math.max(0, doneMs - stepStartMs),
-            inputSummary: { botId: c.botId, chatId, preview: rendered.slice(0, 500) },
+            inputSummary: { botId: String(c.botId ?? ""), chatId, preview: rendered.slice(0, 500) },
             outputSummary: { externalMessageId: r.externalMessageId },
           });
         } else if (node.type === "action.http.request") {
-          const url = assertSafeOutboundUrl(c.url!);
-          const r = await adapters.httpRequest({ method: c.method!, url, body: c.body ? renderTemplate(c.body, event) : undefined });
+          const url = assertSafeOutboundUrl(String(c.url ?? ""));
+          const r = await adapters.httpRequest({ method: String(c.method ?? "GET"), url, body: c.body ? renderTemplate(String(c.body), event, tplVars) : undefined });
           lastHttpStatus = r.status;
           const doneMs = now();
           steps.push({
@@ -193,12 +205,12 @@ export async function executeWorkflow(
             startedAt: stepStartedAt,
             finishedAt: new Date(doneMs).toISOString(),
             durationMs: Math.max(0, doneMs - stepStartMs),
-            inputSummary: { method: c.method, url: url.origin + url.pathname },
+            inputSummary: { method: String(c.method ?? "GET"), url: url.origin + url.pathname },
             outputSummary: { status: r.status },
           });
         } else if (node.type === "action.database.insert") {
           if (!adapters.insertRecord) throw Object.assign(new Error("Unavailable."), { code: "UNSUPPORTED" });
-          await adapters.insertRecord({ collection: c.collection!, record: c.record as unknown as Record<string, string> });
+          await adapters.insertRecord({ collection: String(c.collection ?? ""), record: c.record as Record<string, string> });
           const doneMs = now();
           steps.push({
             nodeId: id,
@@ -207,7 +219,37 @@ export async function executeWorkflow(
             startedAt: stepStartedAt,
             finishedAt: new Date(doneMs).toISOString(),
             durationMs: Math.max(0, doneMs - stepStartMs),
-            inputSummary: { collection: c.collection },
+            inputSummary: { collection: String(c.collection ?? "") },
+          });
+        } else if (node.type === "action.ai.research") {
+          if (!adapters.runAiResearch) throw Object.assign(new Error("AI research adapter unavailable."), { code: "UNSUPPORTED" });
+          const renderedPrompt = renderTemplate(String(c.prompt ?? ""), event, tplVars);
+          const r = await adapters.runAiResearch({
+            prompt: renderedPrompt,
+            systemPrompt: typeof c.systemPrompt === "string" && c.systemPrompt.trim() ? renderTemplate(c.systemPrompt, event, tplVars) : undefined,
+            agentId: typeof c.agentId === "string" && c.agentId.trim() ? c.agentId.trim() : undefined,
+            category: typeof c.category === "string" && c.category.trim() ? c.category.trim() : undefined,
+            modelSlug: typeof c.modelSlug === "string" && c.modelSlug.trim() ? c.modelSlug.trim() : undefined,
+            includeWebSearch: c.includeWebSearch !== false,
+            includeMarketData: c.includeMarketData !== false,
+          });
+          aiVars = {
+            text: r.text,
+            summary: r.text.slice(0, 500),
+            sourcesCount: r.sourcesCount ?? 0,
+            quotesCount: r.quotesCount ?? 0,
+            modelUsed: r.modelUsed ?? "",
+          };
+          const doneMs = now();
+          steps.push({
+            nodeId: id,
+            nodeType: node.type,
+            status: "succeeded",
+            startedAt: stepStartedAt,
+            finishedAt: new Date(doneMs).toISOString(),
+            durationMs: Math.max(0, doneMs - stepStartMs),
+            inputSummary: { promptPreview: renderedPrompt.slice(0, 300), includeWebSearch: c.includeWebSearch !== false, includeMarketData: c.includeMarketData !== false },
+            outputSummary: { modelUsed: r.modelUsed, sourcesCount: r.sourcesCount ?? 0, quotesCount: r.quotesCount ?? 0, outputPreview: r.text.slice(0, 600) },
           });
         }
       } catch (e) {

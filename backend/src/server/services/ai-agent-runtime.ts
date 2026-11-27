@@ -10,6 +10,7 @@ import { notifyOwners } from "@backend/server/notifications";
 import { enforceRateLimit } from "@backend/server/security/rate-limit";
 import { AGENT_COLUMNS, toAgentConfig } from "@backend/server/services/ai-agents";
 import { runMediaCommand } from "@backend/server/services/ai-agent-commands";
+import { runAgenticTools } from "@backend/server/services/agentic-runner";
 import { loadToken } from "@backend/server/services/bots";
 import {
   buildTelegramTriggerPayload,
@@ -47,6 +48,27 @@ const DEFAULT_SEARCH_CMD: AgentCommand = {
   instruction: "",
 };
 
+const DEFAULT_STOCK_CMD: AgentCommand = {
+  command: "stock",
+  description: "Check live NSE, BSE & MSE stock prices or detailed reports",
+  kind: "market",
+  instruction: "Check live NSE, BSE and MSE stock prices. Give a quick single quote or a detailed multi-exchange breakdown based on the prompt.",
+};
+
+const DEFAULT_MARKET_CMD: AgentCommand = {
+  command: "market",
+  description: "Today's NIFTY 50, SENSEX & Indian market overview",
+  kind: "market",
+  instruction: "Fetch live NIFTY 50, SENSEX, BANK NIFTY, INDIA VIX and latest Indian market headlines.",
+};
+
+const DEFAULT_BRIEF_CMD: AgentCommand = {
+  command: "brief",
+  description: "Run an on-demand live intelligence briefing",
+  kind: "brief",
+  instruction: "",
+};
+
 /**
  * Handles a Telegram update for a bot that belongs to an AI agent. Returns false when the bot has no agent,
  * so the caller falls back to the rule-based command and keyword flow.
@@ -77,7 +99,7 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
     cmd === "help" ||
     cmd === "reset" ||
     Boolean(custom && custom.kind !== "chat") ||
-    (!custom && (cmd === "search" || cmd === "imagine" || cmd === "describe")) ||
+    (!custom && (cmd === "search" || cmd === "imagine" || cmd === "describe" || cmd === "stock" || cmd === "market" || cmd === "brief")) ||
     Boolean(custom && !parsed.input) ||
     Boolean(hasImage && !custom);
   if (!isSpecialBranch && !isPrivate && config.tools.mentionOnly && !mentioned) {
@@ -201,9 +223,27 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
             inputSummary: { command: "/help" },
             outputSummary: { command: "/help", kind: staticTextReply ? "custom-text" : "built-in" },
           });
+          const customLines = config.commands.map((c) => `• /${c.command} — ${c.description}`);
+          const defaultLines = [
+            ...(config.tools.marketData && !config.commands.some((c) => c.command === "stock")
+              ? ["• /stock <symbol> — live NSE, BSE & MSE stock quote or detailed analysis"]
+              : []),
+            ...(config.tools.marketData && !config.commands.some((c) => c.command === "market")
+              ? ["• /market — live NIFTY 50, SENSEX & Indian market overview"]
+              : []),
+            ...((config.tools.autoSearch || config.tools.webSearch !== false) && !config.commands.some((c) => c.command === "brief")
+              ? ["• /brief [topic] — live intelligence briefing"]
+              : []),
+            ...(config.tools.webSearch !== false && !config.commands.some((c) => c.command === "search")
+              ? ["• /search <topic> — search the open web with summaries, tables, links, images & videos"]
+              : []),
+            "• /imagine <prompt> — generate a high-detail image",
+            "• /describe (with a photo) — analyze images, text & charts",
+            "• /reset — clear our conversation",
+          ];
           await send(
             staticTextReply ||
-              `I'm ${config.name}. Send me a message or photo and I'll answer in detail.\n\nCommands:\n• /search <topic> — search the open web with detailed summaries, tables, links, images & videos\n• /imagine <prompt> — generate a high-detail image\n• /describe (with a photo) — analyze images, text & charts\n• /reset — clear our conversation`,
+              `I'm ${config.name}. Send me a message or photo and I'll answer in detail.${config.tools.autoSearch || config.tools.marketData ? " I automatically search live data when needed." : ""}\n\nCommands:\n${[...customLines, ...defaultLines].join("\n")}`,
           );
         } else if (cmd === "reset") {
           trigger = "command:/reset";
@@ -246,6 +286,21 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
           } else {
             await runMediaCommand({ ...media, command: DEFAULT_SEARCH_CMD });
           }
+        } else if (!custom && (cmd === "stock" || cmd === "market")) {
+          trigger = `command:/${cmd}`;
+          const builtInCmd = cmd === "stock" ? DEFAULT_STOCK_CMD : DEFAULT_MARKET_CMD;
+          tracer.record("route_command", "command.parsed", {
+            inputSummary: { command: `/${cmd}`, input: parsed.input },
+            outputSummary: { command: `/${cmd}`, kind: "market", marketDataEnabled: Boolean(config.tools.marketData || config.tools.webSearch !== false) },
+          });
+          await runMediaCommand({ ...media, command: builtInCmd });
+        } else if (!custom && cmd === "brief") {
+          trigger = "command:/brief";
+          tracer.record("route_command", "command.parsed", {
+            inputSummary: { command: "/brief", input: parsed.input },
+            outputSummary: { command: "/brief", kind: "brief" },
+          });
+          await runMediaCommand({ ...media, command: DEFAULT_BRIEF_CMD });
         } else if (!custom && cmd === "imagine") {
           trigger = "command:/imagine";
           tracer.record("route_command", "command.parsed", {
@@ -341,9 +396,33 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
           );
           const knowledgeItems = (knowledge ?? []) as KnowledgeItem[];
           const history = ((past ?? []) as { role: "user" | "assistant"; content: string }[]).reverse();
-          const citations = buildCitationSources(knowledgeItems, passages);
+          const baseCitations = buildCitationSources(knowledgeItems, passages);
+
+          // Autonomous Agentic Research: automatically fetch live NSE/BSE/MSE market quotes & web sources when enabled.
+          const agentic =
+            config.tools.autoSearch || config.tools.marketData
+              ? await runAgenticTools({
+                  message: text,
+                  command: custom ?? null,
+                  autoSearch: Boolean(config.tools.autoSearch),
+                  marketData: Boolean(config.tools.marketData),
+                  agentCategory: config.category,
+                  citationStartIndex: baseCitations.length + 1,
+                  maxResults: 6,
+                  maxImages: 3,
+                  maxVideos: 3,
+                  tracer,
+                })
+              : null;
+
+          const citations = agentic ? [...baseCitations, ...agentic.citations] : baseCitations;
+          const systemParts = [
+            buildSystemPrompt(config, knowledgeItems, new Date(), passages),
+            custom ? commandTask(custom) : "",
+            agentic?.systemContext ?? "",
+          ].filter(Boolean);
           const messages: ChatMessage[] = [
-            { role: "system", content: buildSystemPrompt(config, knowledgeItems, new Date(), passages) + (custom ? `\n\n${commandTask(custom)}` : "") },
+            { role: "system", content: systemParts.join("\n\n") },
             ...history,
             { role: "user", content: text.slice(0, 4000) },
           ];
@@ -360,6 +439,7 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
               maxTokens: Math.min(Math.max(config.maxTokens, 1536), 3072),
               promptPreview: text.slice(0, 400),
               citations: citations.length,
+              agenticPlan: agentic?.plan.reason ?? "none",
             },
             () =>
               chat(config.model!, messages, {
@@ -382,9 +462,10 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
             }),
           );
 
-          const htmlChunks = formatTelegramHtmlChunks(r.text, citations);
-          const plainChunks = formatTelegramPlainChunks(r.text, citations);
-          const previewUrl = pickFeaturedLinkPreviewUrl(r.text, citations);
+          const mediaLinks = agentic?.webMedia?.videos.length ? { videos: agentic.webMedia.videos } : undefined;
+          const htmlChunks = formatTelegramHtmlChunks(r.text, citations, mediaLinks);
+          const plainChunks = formatTelegramPlainChunks(r.text, citations, mediaLinks);
+          const previewUrl = pickFeaturedLinkPreviewUrl(r.text, citations, mediaLinks);
           await tracer.trace(
             "telegram_send_reply",
             "telegram.send_message",
@@ -398,6 +479,7 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
                 htmlChunks,
                 plainChunks,
                 linkPreviewUrl: previewUrl,
+                preferLargeMedia: Boolean(mediaLinks?.videos.length),
                 isGroup: !isPrivate,
               }),
             (res) => ({

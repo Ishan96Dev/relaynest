@@ -4,17 +4,17 @@ import { ApiError, Errors } from "@backend/lib/http/api";
 import { modelSlug, uuid } from "@backend/lib/validation/schemas";
 import type { AuthContext } from "@backend/server/auth/context";
 import type { CitationSource, RetrievalMode } from "@backend/server/ai/citations";
+import { parseCommandText } from "@backend/server/ai/commands";
+import type { AgenticPayload, AgenticStepEvent } from "@backend/server/ai/market-data-types";
 import { executionMode, supportsImageInput, type ExecutionMode } from "@backend/server/ai/model-catalog";
 import { chat, chatStream, decide, embed, generateImage, rateLimit, vlmText, type ChatMessage, type Usage } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
 import {
-  buildWebSearchSystemContext,
   SEARCH_PROVIDER_SLUGS,
-  webSearchToCitations,
   type WebMediaPayload,
 } from "@backend/server/ai/web-search-types";
 import { assertExecutionLimit } from "@backend/server/billing/entitlements";
-import { searchOpenWeb } from "@backend/server/search/web-search";
+import { runAgenticTools } from "@backend/server/services/agentic-runner";
 import { getModelBySlug } from "@backend/server/services/ai-models";
 import { passagesToCitations, retrieve } from "@backend/server/services/knowledge-retrieval";
 
@@ -34,6 +34,12 @@ export const runInput = z.discriminatedUnion("kind", [
     stream: z.boolean().default(false),
     /** Live open-source web search (web articles, images, videos) grounded with inline citations. */
     webSearch: z.boolean().default(false),
+    /** Autonomous Agentic Mode: auto-detects live web/market intent and handles Telegram-style slash commands (/stock, /market, /brief, /compare, /search). */
+    agenticMode: z.boolean().default(false),
+    /** Live Indian Stock Market & Multi-Asset Data Feed (NSE, BSE, MSE, Indices, Commodities, Forex, Crypto). */
+    marketData: z.boolean().default(false),
+    /** Optional domain category hint from an active Playground Agentic Template. */
+    agentCategory: z.string().trim().max(60).optional(),
     /** Preferred web search provider from Supabase `public.search_providers` (defaults to auto priority). */
     searchProvider: z.enum(SEARCH_PROVIDER_SLUGS).default("auto"),
     /** Knowledge Base collections to ground the answer in (RAG). */
@@ -48,7 +54,19 @@ export const runInput = z.discriminatedUnion("kind", [
 export type RunInput = z.infer<typeof runInput>;
 
 export type RunResult =
-  | { kind: "chat"; text: string; thinking?: string; thinkingMs?: number; usage: Usage; ms: number; sources?: CitationSource[]; retrieval?: RetrievalMode; webMedia?: WebMediaPayload; modelUsed?: string }
+  | {
+      kind: "chat";
+      text: string;
+      thinking?: string;
+      thinkingMs?: number;
+      usage: Usage;
+      ms: number;
+      sources?: CitationSource[];
+      retrieval?: RetrievalMode;
+      webMedia?: WebMediaPayload;
+      agentic?: AgenticPayload;
+      modelUsed?: string;
+    }
   | { kind: "embedding"; dimensions: number; preview: number[]; norm: number; usage: Usage; ms: number }
   | { kind: "image"; imageBase64: string; revisedPrompt?: string; modelUsed?: string; ms: number }
   | { kind: "decision"; probability: number; ms: number };
@@ -70,7 +88,13 @@ const RAG_SYSTEM_GUIDE =
   "- If the sources do not contain the requested detail, clearly state what is and is not in the sources instead of guessing.\n" +
   "- Do not add a separate Sources list at the end (citations are displayed automatically below your answer).";
 
-async function prepareChatContext(ctx: AuthContext, input: Extract<RunInput, { kind: "chat" }>, allowImage: boolean, deepThink = false) {
+async function prepareChatContext(
+  ctx: AuthContext,
+  input: Extract<RunInput, { kind: "chat" }>,
+  allowImage: boolean,
+  deepThink = false,
+  onAgentStep?: (step: AgenticStepEvent) => void,
+) {
   let system = input.system?.trim() || DEFAULT_DETAIL_SYSTEM;
   if (deepThink) {
     system = `${system}\n\n${DEEP_THINKING_GUIDE}`;
@@ -78,11 +102,34 @@ async function prepareChatContext(ctx: AuthContext, input: Extract<RunInput, { k
   const combinedSources: CitationSource[] = [];
   let retrieval: RetrievalMode | undefined;
   let webMedia: WebMediaPayload | undefined;
+  let agenticPayload: AgenticPayload | undefined;
 
   const question = [...input.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+  const parsedSlash = parseCommandText(question);
+  const slashCommand = parsedSlash.cmd
+    ? {
+        command: parsedSlash.cmd,
+        kind: (parsedSlash.cmd === "stock" || parsedSlash.cmd === "market" || parsedSlash.cmd === "gold" || parsedSlash.cmd === "forex" || parsedSlash.cmd === "crypto"
+          ? "market"
+          : parsedSlash.cmd === "brief" || parsedSlash.cmd === "digest"
+            ? "brief"
+            : parsedSlash.cmd === "search" || parsedSlash.cmd === "rates" || parsedSlash.cmd === "exam" || parsedSlash.cmd === "score" || parsedSlash.cmd === "patch" || parsedSlash.cmd === "news" || parsedSlash.cmd === "compare" || parsedSlash.cmd === "deals" || parsedSlash.cmd === "mandi" || parsedSlash.cmd === "circular" || parsedSlash.cmd === "gst" || parsedSlash.cmd === "tax" || parsedSlash.cmd === "trip" || parsedSlash.cmd === "visa" || parsedSlash.cmd === "weather" || parsedSlash.cmd === "scholarship" || parsedSlash.cmd === "standings" || parsedSlash.cmd === "fixture" || parsedSlash.cmd === "esports" || parsedSlash.cmd === "funding" || parsedSlash.cmd === "company" || parsedSlash.cmd === "competitor" || parsedSlash.cmd === "locality" || parsedSlash.cmd === "specs" || parsedSlash.cmd === "scheme"
+              ? "search"
+              : "chat") as "chat" | "search" | "market" | "brief",
+        instruction: "",
+      }
+    : null;
+  const effectiveQuery = parsedSlash.cmd ? parsedSlash.input : question;
+  const runLiveTools = Boolean(
+    question &&
+      (input.webSearch ||
+        input.agenticMode ||
+        input.marketData ||
+        (slashCommand && slashCommand.kind !== "chat")),
+  );
 
-  // Run Knowledge Base retrieval and Open-Source Web Search concurrently when both are enabled.
-  const [kbRes, webBundle] = await Promise.all([
+  // Run Knowledge Base retrieval first count-wise or concurrently; re-index live citations cleanly after KB passages.
+  const [kbRes, agenticRes] = await Promise.all([
     input.collectionIds?.length
       ? (async () => {
           const { data } = await ctx.supabase
@@ -92,11 +139,24 @@ async function prepareChatContext(ctx: AuthContext, input: Extract<RunInput, { k
             .in("id", input.collectionIds!);
           const ids = (data ?? []).map((c) => c.id as string);
           if (!ids.length) return { ids, found: null };
-          return { ids, found: await retrieve(ctx.workspaceId, ids, question, 5) };
+          return { ids, found: await retrieve(ctx.workspaceId, ids, effectiveQuery || question, 5) };
         })()
       : Promise.resolve(null),
-    input.webSearch && question
-      ? searchOpenWeb(question, { provider: input.searchProvider, maxResults: 6, maxImages: 4, maxVideos: 4 })
+    runLiveTools
+      ? runAgenticTools({
+          message: effectiveQuery,
+          command: slashCommand,
+          autoSearch: Boolean(input.agenticMode),
+          marketData: Boolean(input.marketData || slashCommand?.kind === "market"),
+          forceWebSearch: Boolean(input.webSearch),
+          agentCategory: input.agentCategory,
+          searchProvider: input.searchProvider,
+          citationStartIndex: 1,
+          maxResults: 6,
+          maxImages: 4,
+          maxVideos: 4,
+          onStep: onAgentStep,
+        })
       : Promise.resolve(null),
   ]);
 
@@ -114,19 +174,23 @@ async function prepareChatContext(ctx: AuthContext, input: Extract<RunInput, { k
     }
   }
 
-  if (webBundle) {
-    const startIdx = combinedSources.length + 1;
-    const webCitations = webSearchToCitations(webBundle.results, startIdx);
-    combinedSources.push(...webCitations);
+  if (agenticRes && (agenticRes.systemContext || agenticRes.citations.length || agenticRes.agenticPayload)) {
+    const offset = combinedSources.length;
+    const shiftedCitations = offset > 0
+      ? agenticRes.citations.map((c) => ({ ...c, index: c.index + offset }))
+      : agenticRes.citations;
+    combinedSources.push(...shiftedCitations);
     if (!retrieval || retrieval === "none") retrieval = "web";
-    webMedia = {
-      query: webBundle.query,
-      engine: webBundle.engine,
-      providerSlug: webBundle.providerSlug,
-      images: webBundle.images,
-      videos: webBundle.videos,
-    };
-    system = `${system}\n\n${buildWebSearchSystemContext(webBundle, startIdx)}`;
+    if (agenticRes.webMedia) webMedia = agenticRes.webMedia;
+    if (agenticRes.agenticPayload) agenticPayload = agenticRes.agenticPayload;
+    if (agenticRes.systemContext) {
+      // Shift bracketed source indices inside systemContext when KB passages preceded live citations.
+      const ctxBlock =
+        offset > 0
+          ? agenticRes.systemContext.replace(/^\[(\d+)\]/gm, (_, n: string) => `[${Number(n) + offset}]`)
+          : agenticRes.systemContext;
+      system = `${system}\n\n${ctxBlock}`;
+    }
   }
 
   const chatMessages: ChatMessage[] = [
@@ -146,7 +210,13 @@ async function prepareChatContext(ctx: AuthContext, input: Extract<RunInput, { k
     }),
   ];
 
-  return { chatMessages, sources: combinedSources.length ? combinedSources : undefined, retrieval, webMedia };
+  return {
+    chatMessages,
+    sources: combinedSources.length ? combinedSources : undefined,
+    retrieval,
+    webMedia,
+    agentic: agenticPayload,
+  };
 }
 
 /** Runs a catalog model for the Playground. Limited to 25 requests per minute per user. */
@@ -172,7 +242,7 @@ async function runModelInner(ctx: AuthContext, input: RunInput): Promise<RunResu
       if (input.image && !supportsImageInput(model)) {
         throw Errors.invalid(`${model.name} accepts text only. Switch to a multimodal model such as Nemotron 3.5 Super VL to analyze images.`);
       }
-      const { chatMessages, sources, retrieval, webMedia } = await prepareChatContext(ctx, input, supportsImageInput(model), Boolean(input.thinking && model.isThinking));
+      const { chatMessages, sources, retrieval, webMedia, agentic } = await prepareChatContext(ctx, input, supportsImageInput(model), Boolean(input.thinking && model.isThinking));
       const r = await chat(model, chatMessages, {
         temperature: input.temperature,
         maxTokens: input.maxTokens,
@@ -187,6 +257,7 @@ async function runModelInner(ctx: AuthContext, input: RunInput): Promise<RunResu
         ms: ms(),
         ...(retrieval ? { sources, retrieval } : {}),
         ...(webMedia ? { webMedia } : {}),
+        ...(agentic ? { agentic } : {}),
         ...(r.modelUsed ? { modelUsed: r.modelUsed } : {}),
       };
     }
@@ -261,8 +332,19 @@ export async function runModelStream(
             }
 
             const deepThink = Boolean(input.thinking && model.isThinking);
-            const { chatMessages, sources, retrieval, webMedia } = await prepareChatContext(ctx, input, supportsImageInput(model), deepThink);
+            const { chatMessages, sources, retrieval, webMedia, agentic } = await prepareChatContext(
+              ctx,
+              input,
+              supportsImageInput(model),
+              deepThink,
+              (step) => {
+                if (!signal?.aborted) send(controller, "agent_step", step);
+              },
+            );
             if (signal?.aborted) return;
+            if (agentic) {
+              send(controller, "agentic", agentic);
+            }
             if (retrieval) {
               send(controller, "sources", { sources: sources ?? [], retrieval });
             }
@@ -290,6 +372,7 @@ export async function runModelStream(
                   ms: Date.now() - started,
                   ...(retrieval ? { sources: sources ?? [], retrieval } : {}),
                   ...(webMedia ? { webMedia } : {}),
+                  ...(agentic ? { agentic } : {}),
                   modelUsed: ev.modelUsed,
                 });
               }

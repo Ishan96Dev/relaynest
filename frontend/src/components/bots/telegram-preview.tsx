@@ -4,7 +4,9 @@
 import { ArrowLeft, Bot, MoreVertical, Paperclip, Send, Smile } from "lucide-react";
 import * as React from "react";
 import type { CitationSource } from "@backend/server/ai/citations";
+import type { AgenticPayload } from "@backend/server/ai/market-data-types";
 import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
+import { AgenticActivityPanel } from "@/components/ai/agentic-activity-panel";
 import { CitedText, MessageLinkPreviews, SourcesPanel } from "@/components/ai/citations-panel";
 import { CopyBubbleButton } from "@/components/ai/copy-bubble-button";
 import { WebMediaPanel } from "@/components/ai/web-media-panel";
@@ -22,6 +24,7 @@ interface Msg {
   image?: string;
   sources?: CitationSource[];
   webMedia?: WebMediaPayload;
+  agentic?: AgenticPayload;
   ms?: number;
 }
 
@@ -39,7 +42,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
   onAsk?: (
     history: { role: "user" | "assistant"; content: string }[],
     message: string,
-  ) => Promise<{ ok: true; reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number } | { ok: false; message: string }>;
+  ) => Promise<{ ok: true; reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; agentic?: AgenticPayload; ms?: number } | { ok: false; message: string }>;
   note?: string;
 }) {
   const title = name || "Your AI Agent";
@@ -88,6 +91,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
             image: r.imageBase64 ? `data:${sniffMime(r.imageBase64)};base64,${r.imageBase64}` : undefined,
             sources: r.sources?.length ? r.sources : undefined,
             webMedia: r.webMedia,
+            agentic: r.agentic,
             ms: r.ms,
           }
         : { id: Date.now() + 1, from: "bot", text: r.message, time: nowTime(), error: true },
@@ -130,6 +134,9 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
                 {m.from === "bot" && avatarEl("size-7")}
                 <div className={cn("max-w-[84%] rounded-2xl px-3 py-2 text-sm", m.from === "user" ? "btn-primary-bg rounded-br-sm text-white" : m.error ? "rounded-bl-sm bg-danger/10 text-bad ring-1 ring-danger/40" : "rounded-bl-sm bg-surface text-foreground ring-1 ring-border")}>
                   {m.image && <img src={m.image} alt={m.text || "Generated image"} className="mb-1.5 h-auto max-h-64 w-full rounded-lg object-contain" />}
+                  {m.from === "bot" && !m.error && m.agentic && (
+                    <AgenticActivityPanel steps={m.agentic.steps} quotes={m.agentic.marketQuotes} variant="telegram" />
+                  )}
                   {(m.text || !m.image) && (
                     m.from === "bot" && !m.error ? (
                       <>
@@ -196,7 +203,7 @@ export function TelegramPreview({ name, avatar, onAsk, note }: {
 
         <form onSubmit={send} className="flex items-center gap-2 border-t border-border p-2.5">
           <Smile className="size-5 shrink-0 text-muted" aria-hidden />
-          <input aria-label="Type a message to preview" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={500} placeholder="Type a message, /search ..., or /imagine ..."
+          <input aria-label="Type a message to preview" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={500} placeholder="Ask naturally, /stock RELIANCE, /brief, /search ..."
             className="h-9 min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted focus:outline-none" />
           <Paperclip className="size-5 shrink-0 text-muted" aria-hidden />
           <button type="submit" aria-label="Send" disabled={!draft.trim() || typing} className="btn-primary-bg grid size-9 shrink-0 place-items-center rounded-full text-white transition disabled:opacity-50">

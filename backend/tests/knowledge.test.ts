@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
+import { strToU8, zipSync } from "fflate";
 import { expect } from "./expect";
+import { urlDocumentInput } from "../src/lib/validation/schemas";
 import { buildCitationSources, buildSystemPrompt, DEFAULT_TOOLS, type AgentConfig } from "../src/server/ai/agent";
 import {
   extractCitedIndices,
@@ -18,7 +20,8 @@ import {
 } from "../src/server/search/web-search";
 import { loadSearchProvidersFromDb } from "../src/server/services/search-providers";
 import { chunkText } from "../src/server/knowledge/chunk";
-import { htmlToText, kindFromFilename } from "../src/server/knowledge/extract";
+import { extractFileText, extractRtfText, htmlToText, kindFromFilename, parseCsvRows } from "../src/server/knowledge/extract";
+import { extractLinksFromHtml, normalizePublicUrl, parseSitemapXml } from "../src/server/knowledge/scrape";
 import { extractTerms, isOverviewQuery, keywordQuery, lexicalScore } from "../src/server/knowledge/query";
 
 const agent: AgentConfig = {
@@ -47,18 +50,115 @@ describe("chunkText", () => {
 });
 
 describe("extraction helpers", () => {
-  it("recognises supported file types", () => {
+  it("recognises all supported document, spreadsheet, presentation, and structured formats", () => {
     expect(kindFromFilename("Guide.PDF")).toBe("pdf");
+    expect(kindFromFilename("contract.docx")).toBe("docx");
+    expect(kindFromFilename("legacy.doc")).toBe("docx");
+    expect(kindFromFilename("memo.odt")).toBe("docx");
+    expect(kindFromFilename("notes.rtf")).toBe("docx");
+    expect(kindFromFilename("financials.xlsx")).toBe("xlsx");
+    expect(kindFromFilename("nse-bhavcopy.xls")).toBe("xlsx");
+    expect(kindFromFilename("budget.ods")).toBe("xlsx");
+    expect(kindFromFilename("market.csv")).toBe("csv");
+    expect(kindFromFilename("export.tsv")).toBe("csv");
+    expect(kindFromFilename("deck.pptx")).toBe("pptx");
+    expect(kindFromFilename("slides.odp")).toBe("pptx");
     expect(kindFromFilename("notes.md")).toBe("md");
     expect(kindFromFilename("a.txt")).toBe("txt");
+    expect(kindFromFilename("catalog.json")).toBe("json");
+    expect(kindFromFilename("config.yaml")).toBe("json");
+    expect(kindFromFilename("feed.xml")).toBe("json");
+    expect(kindFromFilename("report.html")).toBe("html");
     expect(kindFromFilename("a.exe")).toBe(null);
   });
+
   it("turns HTML into text and drops scripts and styles", () => {
     const { title, text } = htmlToText("<html><head><title>Docs &amp; FAQ</title><style>p{}</style></head><body><h1>Hello</h1><script>alert(1)</script><p>Fish &amp; chips</p></body></html>");
     expect(title).toBe("Docs & FAQ");
     expect(text).toContain("Fish & chips");
     expect(text.includes("alert")).toBe(false);
     expect(text.includes("p{}")).toBe(false);
+  });
+
+  it("extracts CSV and TSV files with header-labeled RAG rows", async () => {
+    const csv = 'Symbol,Company,Close\nRELIANCE,"Reliance Industries, Ltd.",2950.5\nTCS,"Tata ""Consultancy"" Services",4120.0\n';
+    expect(parseCsvRows(csv).length).toBe(3);
+    const out = await extractFileText("csv", strToU8(csv), "stocks.csv");
+    expect(out).toContain("Columns: Symbol | Company | Close");
+    expect(out).toContain("Symbol: RELIANCE | Company: Reliance Industries, Ltd. | Close: 2950.5");
+    expect(out).toContain('Company: Tata "Consultancy" Services');
+  });
+
+  it("extracts Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) archives", async () => {
+    const docxBytes = zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>NSE Quarterly Summary</w:t></w:r></w:p><w:p><w:r><w:t>Equity turnover rose 14% &amp; derivatives rose 9%.</w:t></w:r></w:p></w:body></w:document>`,
+      ),
+    });
+    const docxText = await extractFileText("docx", docxBytes, "summary.docx");
+    expect(docxText).toContain("NSE Quarterly Summary");
+    expect(docxText).toContain("Equity turnover rose 14% & derivatives rose 9%.");
+
+    const xlsxBytes = zipSync({
+      "xl/workbook.xml": strToU8(`<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Equities" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      "xl/_rels/workbook.xml.rels": strToU8(`<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>`),
+      "xl/sharedStrings.xml": strToU8(`<sst><si><t>Ticker</t></si><si><t>Trade Date</t></si><si><t>Price</t></si><si><t>INFY</t></si></sst>`),
+      "xl/styles.xml": strToU8(`<styleSheet><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>`),
+      "xl/worksheets/sheet1.xml": strToU8(
+        `<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row><row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2" s="1"><v>45658</v></c><c r="C2"><v>1840.25</v></c></row></sheetData></worksheet>`,
+      ),
+    });
+    const xlsxText = await extractFileText("xlsx", xlsxBytes, "equities.xlsx");
+    expect(xlsxText).toContain("## Sheet: Equities");
+    expect(xlsxText).toContain("Ticker: INFY | Trade Date: 2025-01-01 | Price: 1840.25");
+
+    const pptxBytes = zipSync({
+      "ppt/slides/slide1.xml": strToU8(`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>Q4 Revenue Deck</a:t></a:r></a:p></p:sld>`),
+      "ppt/notesSlides/notesSlide1.xml": strToU8(`<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>Highlight enterprise growth.</a:t></a:r></a:p></p:notes>`),
+    });
+    const pptxText = await extractFileText("pptx", pptxBytes, "q4.pptx");
+    expect(pptxText).toContain("## Slide 1");
+    expect(pptxText).toContain("Q4 Revenue Deck");
+    expect(pptxText).toContain("Speaker Notes: Highlight enterprise growth.");
+  });
+
+  it("extracts RTF, JSON, HTML-disguised XLS, sitemap XML, and subpage links cleanly", async () => {
+    const rtf = `{\\rtf1\\ansi{\\fonttbl{\\f0 Arial;}}Hello \\b World\\b0\\par NSE Report 2026}`;
+    expect(extractRtfText(rtf)).toContain("Hello World");
+    expect(extractRtfText(rtf)).toContain("NSE Report 2026");
+
+    const jsonText = await extractFileText("json", strToU8(JSON.stringify([{ symbol: "NIFTY50", change: "+1.2%" }])), "index.json");
+    expect(jsonText).toContain("symbol: NIFTY50 | change: +1.2%");
+
+    const htmlXls = await extractFileText("xlsx", strToU8("<html><body><table><tr><th>Code</th><th>Value</th></tr><tr><td>NIFTY</td><td>24500</td></tr></table></body></html>"), "export.xls");
+    expect(htmlXls).toContain("NIFTY");
+    expect(htmlXls).toContain("24500");
+
+    const sitemapXml = `<?xml version="1.0"?><sitemapindex><sitemap><loc>https://www.nseindia.in/sitemap-reports.xml</loc></sitemap></sitemapindex>`;
+    expect(parseSitemapXml(sitemapXml).childSitemaps).toEqual(["https://www.nseindia.in/sitemap-reports.xml"]);
+
+    const urlsetXml = `<urlset><url><loc>https://www.nseindia.in/all-reports</loc></url><url><loc><![CDATA[https://www.nseindia.in/market-data/equity-market]]></loc></url></urlset>`;
+    expect(parseSitemapXml(urlsetXml).urls).toEqual([
+      "https://www.nseindia.in/all-reports",
+      "https://www.nseindia.in/market-data/equity-market",
+    ]);
+
+    const links = extractLinksFromHtml(
+      `<a href="/all-reports?utm_source=x#top">Reports</a><a href="/logo.png">Img</a><a href="mailto:hi@nse.in">Mail</a><a href="https://www.nseindia.in/market-data/">Data</a>`,
+      "https://www.nseindia.in/",
+    );
+    expect(links).toEqual(["https://www.nseindia.in/all-reports", "https://www.nseindia.in/market-data"]);
+
+    expect(normalizePublicUrl("www.nseindia.in/all-reports").toString()).toBe("https://www.nseindia.in/all-reports");
+    const parsedInput = urlDocumentInput.parse({
+      collectionId: "f4c876fe-a98e-407e-a3f2-a130baf5ec3a",
+      url: "https://www.nseindia.in/all-reports",
+      mode: "sitemap",
+      maxPages: 20,
+      pathPrefix: "/all-reports",
+    });
+    expect(parsedInput.mode).toBe("sitemap");
+    expect(parsedInput.maxPages).toBe(20);
   });
 });
 

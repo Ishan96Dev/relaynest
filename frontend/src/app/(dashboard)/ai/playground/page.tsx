@@ -10,7 +10,7 @@ import { getSessionUser } from "@backend/server/services/session";
 
 export const metadata = { title: "Model Playground" };
 
-export default async function PlaygroundPage({ searchParams }: { searchParams: Promise<{ model?: string }> }) {
+export default async function PlaygroundPage({ searchParams }: { searchParams: Promise<{ model?: string; template?: string }> }) {
   const sp = await searchParams;
   const demo = !isSupabaseConfigured();
   const ctx = demo ? null : await requireAuth();
@@ -32,9 +32,9 @@ export default async function PlaygroundPage({ searchParams }: { searchParams: P
   };
   return (
     <div className="mx-auto max-w-[1400px]">
-      <PageHeader icon={<Play />} title="Model Playground" description="Try any model in the catalog: chat, embeddings, image generation and decisions." />
+      <PageHeader icon={<Play />} title="Model Playground" description="Test any AI model or Agentic AI template live with NSE/BSE/MSE market feeds, open web search, RAG & slash commands." />
       {demo && <p role="status" className="mb-4 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warn">Demo mode: connect Supabase and add your provider API keys to run models.</p>}
-      <Playground models={models} initialSlug={sp.model} collections={collections} searchProviders={searchProviders} user={playgroundUser} />
+      <Playground models={models} initialSlug={sp.model} initialTemplateId={sp.template} collections={collections} searchProviders={searchProviders} user={playgroundUser} />
     </div>
   );
 }

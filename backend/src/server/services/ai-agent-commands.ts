@@ -13,6 +13,7 @@ import { buildWebSearchSystemContext, webSearchToCitations } from "@backend/serv
 import { logEvent } from "@backend/server/logger";
 import { parseSearchProviderPrefix, searchOpenWeb } from "@backend/server/search/web-search";
 import { enforceRateLimit } from "@backend/server/security/rate-limit";
+import { runAgenticTools } from "@backend/server/services/agentic-runner";
 import { getDbDefaultImageModel, getDbFastChatModel } from "@backend/server/services/ai-models";
 import type { ExecutionTracer } from "@backend/server/services/execution-trace";
 import {
@@ -182,6 +183,119 @@ export async function runMediaCommand(a: MediaCommandArgs): Promise<void> {
       mime,
       messageId: delivered.messageId,
     });
+    return;
+  }
+
+  if (a.command.kind === "market" || a.command.kind === "brief") {
+    const isMarketOverview = a.command.command === "market" || a.command.kind === "brief";
+    if (!a.input && !isMarketOverview) return void (await sendText("usage_reply", usageText(a.command)));
+    const model = a.config.model ?? (await getDbFastChatModel());
+    if (!model) return void (await sendText("no_model_reply", "No AI model is configured for this agent yet."));
+    await enforceRateLimit(`agentic:${a.botId}:${a.chatId}`, 15, 60_000);
+    void sendChatAction(a.token, a.chatId, "typing").catch(() => undefined);
+
+    const { provider, query: parsedQuery } = a.input ? parseSearchProviderPrefix(a.input) : { provider: "auto" as const, query: "" };
+    const effectiveQuery =
+      parsedQuery ||
+      (a.command.kind === "brief"
+        ? a.command.instruction.trim() || `Daily ${a.config.category} briefing today`
+        : "NSE BSE NIFTY 50 SENSEX BANK NIFTY Indian stock market overview today");
+
+    const agentic = await runAgenticTools({
+      message: effectiveQuery,
+      command: a.command,
+      autoSearch: true,
+      marketData: a.command.kind === "market" || Boolean(a.config.tools.marketData),
+      agentCategory: a.config.category,
+      searchProvider: provider,
+      maxResults: 6,
+      maxImages: 3,
+      maxVideos: 3,
+      tracer: a.tracer,
+    });
+
+    const extraGuide = a.command.instruction.trim() ? `\n\nCommand guidance: ${a.command.instruction.trim()}` : "";
+    const system = [buildSystemPrompt(a.config, [], new Date(), []), agentic.systemContext, extraGuide].filter(Boolean).join("\n\n");
+
+    const callModel = () =>
+      chat(
+        model,
+        [
+          { role: "system", content: system },
+          { role: "user", content: effectiveQuery.slice(0, 1200) },
+        ],
+        {
+          temperature: Math.min(a.config.temperature, 0.35),
+          maxTokens: Math.min(Math.max(a.config.maxTokens, 1536), 3072),
+          thinking: false,
+          timeoutMs: 22_000,
+          allowFallback: true,
+        },
+      );
+
+    const r = a.tracer
+      ? await a.tracer.trace(
+          "ai_agentic_synthesis",
+          "ai.chat",
+          {
+            model: model.apiModelId,
+            modelSlug: model.slug,
+            source: model.source,
+            promptPreview: effectiveQuery.slice(0, 400),
+            citations: agentic.citations.length,
+            marketQuotes: agentic.marketSnapshot?.quotes.length ?? 0,
+          },
+          callModel,
+          (res) => ({
+            modelUsed: res.modelUsed ?? model.apiModelId,
+            modelSlug: res.modelSlug ?? model.slug,
+            source: res.source ?? model.source,
+            usedFallback: Boolean(res.usedFallback),
+            promptTokens: res.usage.promptTokens,
+            completionTokens: res.usage.completionTokens,
+            totalTokens: res.usage.totalTokens,
+            costUsd: res.usage.costUsd ?? 0,
+            outputPreview: res.text.slice(0, 800),
+          }),
+        )
+      : await callModel();
+
+    const videos = agentic.webMedia?.videos ?? [];
+    const mediaLinks = { videos };
+    const htmlChunks = formatTelegramHtmlChunks(r.text, agentic.citations, mediaLinks);
+    const plainChunks = formatTelegramPlainChunks(r.text, agentic.citations, mediaLinks);
+    const previewUrl = pickFeaturedLinkPreviewUrl(r.text, agentic.citations, mediaLinks);
+
+    const dispatchFormatted = () =>
+      dispatchTelegramFormattedMessages({
+        botId: a.botId,
+        workspaceId: a.workspaceId,
+        token: a.token,
+        chatId: a.chatId,
+        htmlChunks,
+        plainChunks,
+        linkPreviewUrl: previewUrl,
+        preferLargeMedia: videos.length > 0,
+        isGroup: a.isGroup,
+      });
+
+    if (a.tracer) {
+      await a.tracer.trace(
+        "telegram_send_agentic",
+        "telegram.send_message",
+        { chatId: String(a.chatId), chunks: htmlChunks.length, linkPreviewUrl: previewUrl ?? undefined },
+        dispatchFormatted,
+        (res) => ({
+          deliveredCount: res.deliveredCount,
+          queuedCount: res.queuedCount,
+          messageIds: res.messageIds,
+          chunks: htmlChunks.length,
+          replyPreview: r.text.slice(0, 600),
+        }),
+      );
+    } else {
+      await dispatchFormatted();
+    }
     return;
   }
 

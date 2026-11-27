@@ -43,6 +43,8 @@ const CMD_TYPE_LABEL: Record<BotCommandResponseType, string> = {
   builtin: "Built-in",
   chat: "AI Chat",
   search: "Web Search",
+  market: "Live Market",
+  brief: "Daily Brief",
   image: "Image Gen",
   describe: "Photo Vision",
 };
@@ -52,6 +54,8 @@ const CMD_RESPONSE_PLACEHOLDER: Record<BotCommandResponseType, string> = {
   builtin: "Built-in handler response",
   chat: "AI prompt instruction (optional)",
   search: "Optional web search focus",
+  market: "Optional live market focus, e.g. Compare NSE vs BSE prices",
+  brief: "Optional default briefing topic or watchlist",
   image: "Optional style template, e.g. A minimalist logo of {input}",
   describe: "What to look for in the photo",
 };

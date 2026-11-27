@@ -143,7 +143,7 @@ function Editor({ workflowId, initial, persisted, bots, initialBotId }: { workfl
   const [savedAt, setSavedAt] = React.useState<string>();
   const [showMap, setShowMap] = React.useState(true);
   const [query, setQuery] = React.useState("");
-  const [open, setOpen] = React.useState<Record<string, boolean>>({ Triggers: true, Conditions: true, Actions: true });
+  const [open, setOpen] = React.useState<Record<string, boolean>>({ Triggers: true, AI: true, Conditions: true, Actions: true });
   const [, force] = React.useReducer((x: number) => x + 1, 0);
   const counter = React.useRef(Math.max(10, ...init.nodes.map((n) => Number(n.id.split("_").pop()) || 0)));
   const past = React.useRef<Snap[]>([]);
@@ -223,7 +223,12 @@ function Editor({ workflowId, initial, persisted, bots, initialBotId }: { workfl
     if (!r.valid) return;
     // Dry run in the browser: actions are simulated, nothing is sent.
     const res = await executeWorkflow(definition, { type: "test", workspaceId: "local", source: "editor", occurredAt: new Date().toISOString(), payload: { status: "success" } },
-      { sendTelegramMessage: async () => ({ externalMessageId: "simulated" }), httpRequest: async () => ({ status: 200 }), insertRecord: async () => {} }, { executionId: "test" });
+      {
+        sendTelegramMessage: async () => ({ externalMessageId: "simulated" }),
+        httpRequest: async () => ({ status: 200 }),
+        insertRecord: async () => {},
+        runAiResearch: async (i) => ({ text: `[Simulated AI Research for: ${i.prompt.slice(0, 80)}]`, sourcesCount: 4, quotesCount: i.includeMarketData ? 3 : 0, modelUsed: "simulated" }),
+      }, { executionId: "test" });
     setRun(res);
     setStats((s) => (res.status === "succeeded" ? { ...s, ok: s.ok + 1 } : { ...s, failed: s.failed + 1 }));
   }
@@ -315,9 +320,35 @@ function Editor({ workflowId, initial, persisted, bots, initialBotId }: { workfl
     setConfigs((c) => ({ ...c, [selectedId]: { ...c[selectedId], [k]: v } })); touch();
   };
 
-  const groups = (["Triggers", "Conditions", "Actions"] as const).map((g) => ({
+  const groups = (["Triggers", "AI", "Conditions", "Actions"] as const).map((g) => ({
     g, items: NODE_SPECS.filter((s) => s.group === g && s.label.toLowerCase().includes(query.toLowerCase())),
   }));
+
+  function loadBriefingPreset(preset: { title: string; desc: string; cron: string; category: string; market: boolean; prompt: string }) {
+    snapshot();
+    const defaultBotId = initialBotId || bots[0]?.id || "";
+    setName(preset.title);
+    setDescription(preset.desc);
+    setNodes([
+      { id: "trigger_1", type: "rn", position: { x: 260, y: 20 }, data: { type: "trigger.schedule" } },
+      { id: "act_ai_1", type: "rn", position: { x: 260, y: 190 }, data: { type: "action.ai.research" } },
+      { id: "act_tg_1", type: "rn", position: { x: 260, y: 370 }, data: { type: "action.telegram.sendMessage" } },
+    ]);
+    setEdges([
+      { id: "e_1", source: "trigger_1", target: "act_ai_1" },
+      { id: "e_2", source: "act_ai_1", target: "act_tg_1" },
+    ]);
+    setConfigs({
+      trigger_1: { cron: preset.cron, timezone: "Asia/Kolkata" },
+      act_ai_1: { prompt: preset.prompt, category: preset.category, includeWebSearch: true, includeMarketData: preset.market, systemPrompt: "" },
+      act_tg_1: { botId: defaultBotId, chatIdSource: "configured", chatId: "", text: "{{ai.text}}" },
+    });
+    setSelectedId("act_tg_1");
+    setPanelTab("config");
+    touch();
+    force();
+    toast.info(`Loaded "${preset.title}" preset — pick your Bot & Telegram Chat ID, then Publish.`);
+  }
 
   return (
     <div className="flex min-h-[640px] flex-col gap-3 lg:h-[calc(100vh-8.5rem)]">
@@ -377,10 +408,57 @@ function Editor({ workflowId, initial, persisted, bots, initialBotId }: { workfl
                 )}
               </div>
             ))}
-            <div>
-              <p className="flex items-center justify-between px-1 text-sm font-bold"><span className="flex items-center gap-1.5"><Sparkles className="size-4 text-lavender" aria-hidden />AI</span><Badge tone="primary" className="rounded-full text-[10px]">Coming Soon</Badge></p>
-              <ul className="mt-1.5 space-y-1.5" aria-label="AI nodes (coming soon)">
-                {["AI Response", "AI Classification", "AI Content Generation"].map((n) => <li key={n} className="panel flex items-center gap-2 px-2.5 py-2 text-xs font-semibold text-muted"><Sparkles className="size-3.5" aria-hidden />{n}<Lock className="ml-auto size-3.5" aria-hidden /></li>)}
+            <div className="border-t border-border/60 pt-3">
+              <p className="flex items-center justify-between px-1 text-xs font-bold text-foreground/90">
+                <span className="flex items-center gap-1.5"><Sparkles className="size-3.5 text-lavender" aria-hidden />Daily Briefing Presets</span>
+                <Badge tone="success" className="rounded-full text-[9.5px]">1-Click</Badge>
+              </p>
+              <ul className="mt-1.5 space-y-1.5" aria-label="Daily AI briefing workflow presets">
+                {[
+                  {
+                    title: "NSE / BSE / MSE Broker Brief",
+                    desc: "Weekdays 9 AM IST live Indian stock market briefing to Telegram.",
+                    cron: "0 9 * * 1-5",
+                    category: "Finance & Markets",
+                    market: true,
+                    prompt: "Daily Indian Stock Market Broker Briefing: NIFTY 50, SENSEX, BANK NIFTY, INDIA VIX, USD/INR, plus NSE/BSE live prices for RELIANCE, TCS, HDFCBANK, INFY, ICICIBANK and key market news.",
+                  },
+                  {
+                    title: "Real Estate & Land Digest",
+                    desc: "Daily 8:30 AM IST land rates, RERA & infra updates to Telegram.",
+                    cron: "30 8 * * *",
+                    category: "Real Estate & Land",
+                    market: false,
+                    prompt: "Daily Real Estate & Land Broker Briefing: latest property & plot price trends in India, circle rate updates, RERA announcements, and metro/highway infrastructure news.",
+                  },
+                  {
+                    title: "Student Exam & Scholarship Brief",
+                    desc: "Daily 8 AM IST JEE/NEET/UPSC/GATE dates & scholarships.",
+                    cron: "0 8 * * *",
+                    category: "Education",
+                    market: false,
+                    prompt: "Daily Student Briefing: latest official JEE, NEET, UPSC, GATE, CUET exam dates, admit cards, results, and open Indian scholarships.",
+                  },
+                  {
+                    title: "Sports & Gaming Daily Recap",
+                    desc: "Daily 7 PM IST live cricket/football scores & gaming updates.",
+                    cron: "0 19 * * *",
+                    category: "Sports",
+                    market: false,
+                    prompt: "Daily Sports & Gaming Recap: top Cricket, Football & F1 match scores/fixtures plus major gaming patch notes, esports results, and Steam/console deals.",
+                  },
+                ].map((preset) => (
+                  <li key={preset.title}>
+                    <button
+                      type="button"
+                      onClick={() => loadBriefingPreset(preset)}
+                      className="panel flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs font-semibold hover:border-lavender/60"
+                    >
+                      <Sparkles className="size-3.5 shrink-0 text-lavender" aria-hidden />
+                      <span className="truncate">{preset.title}</span>
+                    </button>
+                  </li>
+                ))}
               </ul>
             </div>
           </div>

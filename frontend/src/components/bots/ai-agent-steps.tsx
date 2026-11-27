@@ -16,7 +16,9 @@ import {
 } from "@/components/bots/response-template-picker";
 import { TelegramConnectCard } from "@/components/bots/telegram-connect-card";
 import { TelegramUsernameChecker } from "@/components/bots/telegram-username-check";
+import { AgentBriefingPanel } from "@/components/bots/agent-briefing-panel";
 import { BotKnowledge } from "@/components/knowledge/bot-knowledge";
+import type { AgentDailyBriefingPreset } from "@/lib/agent-templates";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FileUpload, type PendingImage } from "@/components/ui/file-upload";
@@ -50,7 +52,24 @@ export interface AgentForm {
 export type Patch = (p: Partial<AgentForm>) => void;
 
 export const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Hindi", "Arabic", "Japanese", "Chinese", "Russian"];
-export const CATEGORIES = ["Community Manager", "Customer Support", "Sales Assistant", "FAQ Assistant", "Productivity", "Education", "Entertainment", "Other"];
+export const CATEGORIES = [
+  "Finance & Markets",
+  "Real Estate & Land",
+  "Education",
+  "Sports",
+  "Gaming",
+  "Business & Ops",
+  "Legal & Tax",
+  "Shopping & Deals",
+  "Lifestyle & Travel",
+  "Community Manager",
+  "Customer Support",
+  "Sales Assistant",
+  "FAQ Assistant",
+  "Productivity",
+  "Entertainment",
+  "Other",
+];
 export const DESC_MAX = 300;
 export const INSTRUCTIONS_MIN = 20;
 export type FieldErrors = Partial<Record<keyof AgentForm | "telegram", string>>;
@@ -395,6 +414,8 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
 }
 
 const TOOL_ROWS: { key: keyof AgentTools; title: string; body: string }[] = [
+  { key: "autoSearch", title: "Autonomous Live Web Search (Agentic)", body: "Automatically searches the live web on normal messages when fresh data, prices, news, exams, land rates, or scores are needed — no /search required." },
+  { key: "marketData", title: "Live Market & Exchange Data (NSE / BSE / MSE)", body: "Fetches real-time NSE & BSE stock quotes, NIFTY/SENSEX indices, Gold, Forex, Crypto, and MSE context — single price or full breakdown." },
   { key: "webSearch", title: "Open Web Search (/search)", body: "Lets users run /search <topic> to fetch live open-web answers, tables, links, images and videos with citations." },
   { key: "datetime", title: "Date and time awareness", body: "Tells the agent the current date and time (UTC) so it can answer \"today\" and \"tomorrow\"." },
   { key: "matchLanguage", title: "Reply in the user's language", body: "Answers in the language the person writes in, even if it differs from the primary language." },
@@ -418,16 +439,23 @@ export function validateCommands(list: AgentCommand[]): string | undefined {
 const KIND_LABEL: Record<AgentCommand["kind"], string> = {
   chat: "Chat reply",
   search: "Open Web Search",
+  market: "Live Market (NSE/BSE/MSE)",
+  brief: "Daily Intelligence Brief",
   image: "Generate image",
   describe: "Describe a photo",
 };
 const KIND_HINT: Record<AgentCommand["kind"], string> = {
   chat: "What should the model do with the text after the command?",
   search: "Optional focus for web research, e.g. Emphasize technical specs, pricing tables, and video tutorials.",
+  market: "Optional focus for live stock/index lookups, e.g. Compare NSE vs BSE prices and include 52W range and latest news.",
+  brief: "Default topic or watchlist when the user runs /brief with no arguments, e.g. NIFTY 50, SENSEX, RELIANCE, TCS.",
   image: "Optional style. Use {input} where the person's text goes, for example: A minimalist logo of {input}",
   describe: "What should the model look for? For example: Read all the text in this image.",
 };
 const PRESETS: AgentCommand[] = [
+  { command: "stock", description: "Live NSE/BSE/MSE stock quote or full analysis", kind: "market", instruction: "Fetch live NSE/BSE/MSE stock prices; give single price or detailed breakdown as requested." },
+  { command: "market", description: "NIFTY 50, SENSEX & Indian market overview", kind: "market", instruction: "Fetch live NIFTY 50, SENSEX, BANK NIFTY, INDIA VIX and market headlines." },
+  { command: "brief", description: "On-demand live intelligence briefing", kind: "brief", instruction: "" },
   { command: "search", description: "Search the web with details, images & videos", kind: "search", instruction: "" },
   { command: "imagine", description: "Generate an image from a description", kind: "image", instruction: "" },
   { command: "describe", description: "Describe a photo you send", kind: "describe", instruction: "Describe this image." },
@@ -484,7 +512,23 @@ function CommandsEditor({ form, patch, imageModels = [] }: { form: AgentForm; pa
   );
 }
 
-export function StepTools({ form, patch, imageModels = [] }: { form: AgentForm; patch: Patch; imageModels?: ModelDto[] }) {
+export function StepTools({
+  form,
+  patch,
+  imageModels = [],
+  agentId = null,
+  botConnected = false,
+  demo = false,
+  defaultBriefing,
+}: {
+  form: AgentForm;
+  patch: Patch;
+  imageModels?: ModelDto[];
+  agentId?: string | null;
+  botConnected?: boolean;
+  demo?: boolean;
+  defaultBriefing?: AgentDailyBriefingPreset;
+}) {
   return (
     <div className="space-y-4">
       <Field label="Conversation memory" htmlFor="agent-memory" required hint="How many recent exchanges the agent remembers per chat. Use /reset in Telegram to clear it.">
@@ -505,6 +549,13 @@ export function StepTools({ form, patch, imageModels = [] }: { form: AgentForm; 
         ))}
       </ul>
       <CommandsEditor form={form} patch={patch} imageModels={imageModels} />
+      <AgentBriefingPanel
+        agentId={agentId}
+        botConnected={botConnected}
+        category={form.category}
+        defaultBriefing={defaultBriefing}
+        demo={demo}
+      />
     </div>
   );
 }

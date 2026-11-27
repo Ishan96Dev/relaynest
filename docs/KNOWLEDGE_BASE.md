@@ -1,17 +1,15 @@
 ﻿# Knowledge Base (RAG)
 
-Collections hold documents (PDF, TXT, Markdown up to 10 MB, or a public HTTPS web page). Each document is split into
-overlapping chunks of about 1,000 characters. A collection can be shared with any bot, and with the Model Playground.
+Collections hold documents up to 10 MB — **PDF**, **Word** (`.docx`, `.doc`, `.odt`, `.rtf`), **Excel / Spreadsheets** (`.xlsx`, `.xls`, `.ods`), **CSV / TSV**, **PowerPoint** (`.pptx`, `.odp`), **Plain Text** (`.txt`, `.log`), **Markdown** (`.md`, `.markdown`, `.mdx`), **Structured Data** (`.json`, `.jsonl`, `.yaml`, `.yml`, `.xml`), and **HTML** (`.html`, `.htm`) — plus public HTTPS websites (**Single Page**, **XML Sitemap**, or **Subpages Crawl**).
+
+Each document is extracted and split into overlapping chunks of about 1,000 characters (spreadsheets and CSV files preserve column header labels on every row for accurate retrieval). A collection can be shared with any bot and with the Model Playground.
 
 ## Data flow
 
-1. Upload: `POST /api/v1/knowledge/documents` stores the file in the private `knowledge` bucket and creates a `kb_documents`
-   row with status `processing`. Indexing runs after the response (`after()`), and the page polls until it finishes.
-2. Indexing (`processDocument` in `backend/src/server/services/knowledge.ts`): extract text, chunk, insert rows into
-   `kb_chunks`, then (only if `MILVUS_URI` is set) embed the chunks with `nvidia/nemotron-3-embed-1b` (2048 dimensions) and
-   upsert them into Milvus. A Milvus failure does not fail the document. It stays searchable by keyword and the row keeps a note.
-3. Retrieval (`knowledge-retrieval.ts`): embed the question, search Milvus filtered by workspace and collection, then load the
-   chunk text from Supabase. If Milvus is not configured, returns nothing, or errors, it uses `kb_keyword_search` (Postgres full text).
+1. **Upload / Crawl**: `POST /api/v1/knowledge/documents` stores uploaded files in the private `knowledge` bucket or saves a website crawl job (`single`, `sitemap`, or `subpages` with configurable max pages, depth, path prefix, and exclude patterns) in `kb_documents` with status `processing`. Ingestion runs after the response (`after()`), streaming step-by-step progress to `kb_ingestion_logs` while the UI polls live logs in real time (`GET /api/v1/knowledge/logs` and `GET /api/v1/knowledge/documents/:id/logs`).
+2. **Web Scraping Resilience**: `backend/src/server/knowledge/scrape.ts` uses realistic browser navigation headers with SSRF-checked redirects and per-session cookie forwarding + origin warm-up (preventing CDN/Akamai HTTP 520 and HTTP/2 stream resets on sites such as NSE India). If direct fetch is rejected from an edge IP or encounters a client-rendered SPA shell, it automatically falls back to configured web readers (`FIRECRAWL_API_KEY`, `JINA_API_KEY`, `TINYFISH_API_KEY`).
+3. **Indexing (`processDocument` in `backend/src/server/services/knowledge.ts`)**: extracts text, chunks per page (preserving `source_url` and `page_title` on each `kb_chunks` row for multi-page citations), inserts into `kb_chunks`, and (when `MILVUS_URI` is set) embeds chunks and upserts them into Milvus. A Milvus failure does not fail the document; it stays searchable by keyword.
+4. **Retrieval (`knowledge-retrieval.ts`)**: hybrid vector + Postgres full-text search with lexical reranking and exact subpage citation links.
 
 ## Who uses it
 
@@ -40,7 +38,7 @@ re-index button on the Knowledge Base page. Embeddings need `NVIDIA_API_KEY`.
 
 ## Security notes
 
-- Writes to documents and chunks use the service role after an owner/admin check; members can read. Collections and links use RLS.
+- Writes to documents, chunks, and ingestion logs use the service role after an owner/admin check; workspace members can read via RLS.
 - Retrieved text and web pages are treated as data: prompts label them as reference material, never instructions.
-- Web pages must be HTTPS and public (same SSRF guard as the workflow HTTP action, redirects re-checked, 2 MB cap).
+- Web pages, sitemaps, and discovered subpages must be public HTTPS URLs (same SSRF & anti-phishing guard on every redirect hop and discovered link, with hard caps on page size, ZIP expansion, and crawl count).
 - Original files are only reachable through 60-second signed URLs.

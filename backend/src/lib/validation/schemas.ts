@@ -171,5 +171,15 @@ export const collectionInput = z.object({
 });
 export const updateCollectionInput = collectionInput.partial().refine((v) => Object.keys(v).length > 0, "At least one field is required.");
 export const collectionBotsInput = z.object({ botIds: z.array(uuid).max(200) });
-export const urlDocumentInput = z.object({ collectionId: uuid, url: z.string().trim().url().max(2000) });
+export const urlScrapeMode = z.enum(["single", "sitemap", "subpages"]);
+export const urlDocumentInput = z.object({
+  collectionId: uuid,
+  url: z.string().trim().min(3, "Enter a valid website URL.").max(2000),
+  mode: urlScrapeMode.default("single"),
+  maxPages: z.coerce.number().int().min(1).max(50).optional(),
+  maxDepth: z.coerce.number().int().min(1).max(3).optional(),
+  samePathPrefix: z.boolean().optional(),
+  pathPrefix: z.string().trim().max(200).optional(),
+  excludePatterns: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
+});
 export const knowledgeSearchInput = z.object({ query: z.string().trim().min(2).max(1000), collectionIds: z.array(uuid).max(50).optional() });

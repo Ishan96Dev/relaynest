@@ -1,11 +1,18 @@
 import "server-only";
 import { publicEnv } from "@backend/lib/env/public";
 import { createAdminClient } from "@backend/lib/supabase/admin";
+import { buildSystemPrompt } from "@backend/server/ai/agent";
+import { formatTelegramHtmlChunks, formatTelegramPlainChunks, pickFeaturedLinkPreviewUrl } from "@backend/server/ai/citations";
+import { chat } from "@backend/server/ai/provider";
+import { withUsageScope } from "@backend/server/ai/usage";
 import { executionAllowed } from "@backend/server/billing/entitlements";
 import { automationFailedEmail } from "@backend/server/email/templates";
 import { notify, notifyOwners } from "@backend/server/notifications";
+import { runAgenticTools } from "@backend/server/services/agentic-runner";
+import { AGENT_COLUMNS, toAgentConfig } from "@backend/server/services/ai-agents";
+import { getDbFastChatModel } from "@backend/server/services/ai-models";
 import { loadToken } from "@backend/server/services/bots";
-import { dispatchTelegramMessage } from "@backend/server/telegram/outbound";
+import { dispatchTelegramFormattedMessages, dispatchTelegramMessage } from "@backend/server/telegram/outbound";
 import { executeWorkflow, workflowDefinitionSchema, type ActionAdapters, type ExecutionResult } from "@backend/server/workflow-engine";
 export type TriggerKind = "schedule" | "webhook" | "telegram" | "manual";
 export interface RunRequest {
@@ -20,9 +27,29 @@ export type RunOutcome =
   | { outcome: "skipped"; reason: "inactive" | "plan_limit" | "duplicate" | "invalid" };
 /** Real action adapters for one workspace. Bot IDs are checked against the workspace so a workflow cannot use another tenant's bot. */
 function adapters(workspaceId: string): ActionAdapters {
+  let lastAiCitations: Awaited<ReturnType<typeof runAgenticTools>>["citations"] = [];
   return {
     async sendTelegramMessage({ botId, chatId, text, idempotencyKey }) {
       const token = await loadToken(botId, workspaceId);
+      const looksFormatted = lastAiCitations.length > 0 || text.length > 3600 || /(\*\*|^###?\s|\|.*\|.*\|)/m.test(text);
+      if (looksFormatted) {
+        const htmlChunks = formatTelegramHtmlChunks(text, lastAiCitations);
+        const plainChunks = formatTelegramPlainChunks(text, lastAiCitations);
+        const previewUrl = pickFeaturedLinkPreviewUrl(text, lastAiCitations);
+        const r = await dispatchTelegramFormattedMessages({
+          botId,
+          workspaceId,
+          token,
+          chatId,
+          htmlChunks,
+          plainChunks,
+          linkPreviewUrl: previewUrl,
+        });
+        return {
+          externalMessageId:
+            r.messageIds[0] !== undefined ? String(r.messageIds[0]) : r.queuedCount > 0 ? "queued" : undefined,
+        };
+      }
       const r = await dispatchTelegramMessage({
         botId,
         workspaceId,
@@ -44,6 +71,92 @@ function adapters(workspaceId: string): ActionAdapters {
         headers: body ? { "content-type": "application/json", "user-agent": "RelayNest-Automations/1.0" } : { "user-agent": "RelayNest-Automations/1.0" },
       });
       return { status: res.status };
+    },
+    async runAiResearch({ prompt, systemPrompt, agentId, category, modelSlug, includeWebSearch, includeMarketData }) {
+      return withUsageScope({ workspaceId, origin: "agent" }, async () => {
+        const db = createAdminClient();
+        let agentSystem = systemPrompt?.trim() || "";
+        let resolvedCategory = category;
+        let model = null;
+
+        if (agentId) {
+          const { data: agentRow } = await db
+            .from("ai_agents")
+            .select(AGENT_COLUMNS)
+            .eq("id", agentId)
+            .eq("workspace_id", workspaceId)
+            .maybeSingle();
+          if (agentRow) {
+            const cfg = toAgentConfig(agentRow, workspaceId);
+            if (!agentSystem) agentSystem = buildSystemPrompt(cfg, [], new Date(), []);
+            if (!resolvedCategory) resolvedCategory = cfg.category;
+            model = cfg.model;
+          }
+        }
+        if (!model && modelSlug) {
+          const { data: mRow } = await db
+            .from("ai_models")
+            .select("slug, source, api_model_id, is_thinking, is_active, fallback_model_slug, endpoint_path")
+            .eq("slug", modelSlug)
+            .maybeSingle();
+          if (mRow) {
+            model = {
+              slug: mRow.slug as string,
+              source: mRow.source as "nvidia" | "vercel",
+              apiModelId: mRow.api_model_id as string,
+              isThinking: Boolean(mRow.is_thinking),
+              isActive: mRow.is_active as boolean | undefined,
+              fallbackModelSlug: (mRow.fallback_model_slug as string | null) ?? null,
+              endpointPath: (mRow.endpoint_path as string | null) ?? null,
+            };
+          }
+        }
+        if (!model) {
+          model = await getDbFastChatModel();
+        }
+        if (!model) {
+          throw Object.assign(new Error("No active AI model available for workflow research."), { code: "NO_MODEL" });
+        }
+
+        const agentic = await runAgenticTools({
+          message: prompt,
+          command: { command: "brief", kind: "brief", instruction: prompt },
+          autoSearch: includeWebSearch,
+          marketData: includeMarketData,
+          forceWebSearch: includeWebSearch,
+          agentCategory: resolvedCategory,
+          maxResults: 6,
+          maxImages: 0,
+          maxVideos: 0,
+        });
+        lastAiCitations = agentic.citations;
+
+        const baseSystem =
+          agentSystem ||
+          `You are a RelayNest Agentic Daily Briefing assistant${resolvedCategory ? ` (${resolvedCategory})` : ""}. Produce a crisp, scannable, mobile-friendly Telegram briefing with Markdown headings, bullet highlights, structured tables for prices/metrics, and inline source citations [1]. Current UTC time: ${new Date().toISOString().slice(0, 16).replace("T", " ")}.`;
+        const fullSystem = [baseSystem, agentic.systemContext].filter(Boolean).join("\n\n");
+
+        const r = await chat(
+          model,
+          [
+            { role: "system", content: fullSystem },
+            { role: "user", content: prompt.slice(0, 3000) },
+          ],
+          {
+            temperature: 0.3,
+            maxTokens: 2048,
+            thinking: false,
+            timeoutMs: 22_000,
+            allowFallback: true,
+          },
+        );
+        return {
+          text: r.text,
+          sourcesCount: agentic.citations.length,
+          quotesCount: agentic.marketSnapshot?.quotes.length ?? 0,
+          modelUsed: r.modelUsed ?? model.apiModelId,
+        };
+      });
     },
   };
 }

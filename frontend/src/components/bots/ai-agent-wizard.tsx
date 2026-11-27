@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import * as React from "react";
 import { DEFAULT_TOOLS } from "@backend/server/ai/agent";
 import type { CitationSource } from "@backend/server/ai/citations";
+import type { AgenticPayload } from "@backend/server/ai/market-data-types";
 import type { ModelDto } from "@backend/server/ai/model-catalog";
 import type { WebMediaPayload } from "@backend/server/ai/web-search-types";
 import type { AiAgentDto, KnowledgeDto } from "@backend/server/services/ai-agents";
@@ -300,9 +301,9 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
   const onAsk = React.useMemo(() => {
     if (!agent || !form.modelSlug || demo) return undefined;
     return async (history: { role: "user" | "assistant"; content: string }[], message: string) => {
-      const r = await api<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number }>(`/api/v1/ai-agents/${agent.id}/test`, { body: { message, history } });
+      const r = await api<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; agentic?: AgenticPayload; ms?: number }>(`/api/v1/ai-agents/${agent.id}/test`, { body: { message, history } });
       return r.ok
-        ? { ok: true as const, reply: r.data.reply, imageBase64: r.data.imageBase64, sources: r.data.sources, webMedia: r.data.webMedia, ms: r.data.ms }
+        ? { ok: true as const, reply: r.data.reply, imageBase64: r.data.imageBase64, sources: r.data.sources, webMedia: r.data.webMedia, agentic: r.data.agentic, ms: r.data.ms }
         : { ok: false as const, message: r.message };
     };
   }, [agent, form.modelSlug, demo]);
@@ -375,7 +376,17 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
               {step === 0 && <StepTelegram agent={agent} demo={demo} onConnected={(a) => { setAgent(a); setErrors((e) => ({ ...e, telegram: undefined })); if (!initial) router.replace(`/ai/agents/${a.id}?step=1`, { scroll: false }); else setStep(1); }} blockedMessage={errors.telegram} />}
               {step === 2 && <StepModel form={form} patch={patch} models={models} imageModels={imageModels} error={errors.modelSlug} errors={errors} />}
               {step === 3 && <StepKnowledge form={form} patch={patch} errors={errors} agentId={agent?.id ?? null} botId={agent?.botId ?? null} demo={demo} knowledge={knowledge} onKnowledge={setKnowledge} />}
-              {step === 4 && <StepTools form={form} patch={patch} imageModels={imageModels} />}
+              {step === 4 && (
+                <StepTools
+                  form={form}
+                  patch={patch}
+                  imageModels={imageModels}
+                  agentId={agent?.id ?? null}
+                  botConnected={Boolean(agent?.botId)}
+                  demo={demo}
+                  defaultBriefing={startTemplate?.dailyBriefing}
+                />
+              )}
               {step === 5 && (
                 <StepReview
                   form={form}

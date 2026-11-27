@@ -41,6 +41,8 @@ type HydrateRow = {
   position: number;
   document_id: string;
   collection_id: string;
+  source_url: string | null;
+  page_title: string | null;
   kb_documents: { name: string; source_url: string | null } | null;
   kb_collections: { name: string } | null;
 };
@@ -52,7 +54,7 @@ async function hydrate(
   if (!hits.length) return [];
   const { data } = await createAdminClient()
     .from("kb_chunks")
-    .select("id, content, position, document_id, collection_id, kb_documents(name, source_url), kb_collections(name)")
+    .select("id, content, position, document_id, collection_id, source_url, page_title, kb_documents(name, source_url), kb_collections(name)")
     .eq("workspace_id", workspaceId)
     .in("id", hits.map((h) => h.id));
   const byId = new Map((data ?? []).map((r) => [r.id as string, r as unknown as HydrateRow]));
@@ -66,8 +68,8 @@ async function hydrate(
         position: Number(r.position ?? 0),
         documentId: r.document_id,
         collectionId: r.collection_id,
-        source: r.kb_documents?.name ?? "Document",
-        sourceUrl: r.kb_documents?.source_url ?? null,
+        source: r.page_title || r.kb_documents?.name || "Document",
+        sourceUrl: r.source_url ?? r.kb_documents?.source_url ?? null,
         collectionName: r.kb_collections?.name ?? "Collection",
         score: h.score,
         retrieval: h.retrieval,
@@ -93,7 +95,7 @@ async function keywordSearchIds(workspaceId: string, collectionIds: string[], qu
 async function loadOverviewChunks(workspaceId: string, collectionIds: string[], query: string, limit: number): Promise<Passage[]> {
   const { data } = await createAdminClient()
     .from("kb_chunks")
-    .select("id, content, position, document_id, collection_id, kb_documents(name, source_url), kb_collections(name)")
+    .select("id, content, position, document_id, collection_id, source_url, page_title, kb_documents(name, source_url), kb_collections(name)")
     .eq("workspace_id", workspaceId)
     .in("collection_id", collectionIds)
     .order("position", { ascending: true })
@@ -102,15 +104,16 @@ async function loadOverviewChunks(workspaceId: string, collectionIds: string[], 
   if (!rows.length) return [];
   const terms = extractTerms(query);
   const scored = rows.map((r) => {
-    const lex = lexicalScore(terms, r.content, r.kb_documents?.name ?? "");
+    const docLabel = r.page_title || r.kb_documents?.name || "Document";
+    const lex = lexicalScore(terms, r.content, docLabel);
     return {
       chunkId: r.id,
       content: r.content,
       position: Number(r.position ?? 0),
       documentId: r.document_id,
       collectionId: r.collection_id,
-      source: r.kb_documents?.name ?? "Document",
-      sourceUrl: r.kb_documents?.source_url ?? null,
+      source: docLabel,
+      sourceUrl: r.source_url ?? r.kb_documents?.source_url ?? null,
       collectionName: r.kb_collections?.name ?? "Collection",
       score: lex > 0 ? Math.min(0.95, 0.45 + lex * 0.5) : 0.4,
       retrieval: (lex > 0 ? "keyword" : "overview") as Passage["retrieval"],

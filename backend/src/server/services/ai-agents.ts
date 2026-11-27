@@ -11,7 +11,9 @@ import { commandTask, imagePrompt, parseCommandText, usageText } from "@backend/
 import { chat, generateImage, rateLimit, type ChatMessage } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
 import { buildWebSearchSystemContext, webSearchToCitations, type WebMediaPayload } from "@backend/server/ai/web-search-types";
+import type { AgenticPayload } from "@backend/server/ai/market-data-types";
 import { parseSearchProviderPrefix, searchOpenWeb } from "@backend/server/search/web-search";
+import { runAgenticTools } from "@backend/server/services/agentic-runner";
 import { getDbDefaultImageModel } from "@backend/server/services/ai-models";
 import { recordBotHistory } from "@backend/server/services/bot-history";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
@@ -412,10 +414,20 @@ export async function updateAiAgent(
 /** Publishes the built-in, AI agent, and any custom static bot_commands as the bot's menu in Telegram. */
 export async function syncTelegramCommands(workspaceId: string, botId: string, commands: AgentCommand[], tools?: AgentTools): Promise<void> {
   const token = await loadToken(botId, workspaceId);
-  const hasSearch = commands.some((c) => c.command === "search");
-  const extras = !hasSearch && tools?.webSearch !== false
-    ? [{ command: "search", description: "Search the web with details, images & videos" }]
-    : [];
+  const existingNames = new Set(commands.map((c) => c.command));
+  const extras: Array<{ command: string; description: string }> = [];
+  if (tools?.marketData && !existingNames.has("stock")) {
+    extras.push({ command: "stock", description: "Live NSE, BSE & MSE stock quote or detailed info" });
+  }
+  if (tools?.marketData && !existingNames.has("market")) {
+    extras.push({ command: "market", description: "Today's NIFTY 50, SENSEX & Indian market overview" });
+  }
+  if ((tools?.autoSearch || tools?.marketData) && !existingNames.has("brief")) {
+    extras.push({ command: "brief", description: "Run an on-demand live intelligence briefing" });
+  }
+  if (!existingNames.has("search") && tools?.webSearch !== false) {
+    extras.push({ command: "search", description: "Search the web with details, images & videos" });
+  }
   const base = [
     { command: "start", description: "Start the conversation" },
     { command: "help", description: "How to use this bot" },
@@ -596,31 +608,80 @@ export async function deactivateAiAgent(ctx: AuthContext, id: string): Promise<A
   return dto;
 }
 
-/** One reply from the agent for the in-app chat preview. Uses the saved configuration, agent knowledge, open web search and linked KB collections. */
+/** One reply from the agent for the in-app chat preview. Uses the saved configuration, agent knowledge, live market/web tools and linked KB collections. */
 export function testAiAgent(
   ctx: AuthContext,
   id: string,
   input: z.infer<typeof testInput>,
-): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number }> {
+): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; agentic?: AgenticPayload; ms?: number }> {
   return withUsageScope({ workspaceId: ctx.workspaceId, userId: ctx.userId, origin: "agent" }, () => testAiAgentInner(ctx, id, input));
 }
 async function testAiAgentInner(
   ctx: AuthContext,
   id: string,
   input: z.infer<typeof testInput>,
-): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; ms?: number }> {
+): Promise<{ reply: string; imageBase64?: string; sources?: CitationSource[]; webMedia?: WebMediaPayload; agentic?: AgenticPayload; ms?: number }> {
   const started = Date.now();
   rateLimit(`agent-test:${ctx.userId}`, 30, 60_000);
   const [, row] = await Promise.all([assertExecutionLimit(ctx.workspaceId), loadRow(ctx, id)]);
   const config = toAgentConfig(row, ctx.workspaceId);
   if (!config.model) throw Errors.invalid("Choose a model for this agent first (step 3).");
-  // Slash commands behave like they do in Telegram: search fetches live web/media, image draws, describe needs a photo.
+  // Slash commands behave like they do in Telegram: market/brief/search fetch live data, image draws, describe needs a photo.
   const { cmd, input: commandInput } = parseCommandText(input.message);
   const custom = cmd ? config.commands.find((c) => c.command === cmd) : undefined;
   if (custom?.kind === "describe" || (!custom && cmd === "describe")) {
     return { reply: `Send a photo with the caption /${custom?.command ?? "describe"} in Telegram. The preview cannot attach pictures.` };
   }
-  if (custom && !commandInput) return { reply: usageText(custom) };
+  const allowsEmptyInput = custom?.kind === "brief" || custom?.command === "market" || (!custom && (cmd === "brief" || cmd === "market"));
+  if (custom && !commandInput && !allowsEmptyInput) return { reply: usageText(custom) };
+  if (custom?.kind === "market" || custom?.kind === "brief" || (!custom && (cmd === "stock" || cmd === "market" || cmd === "brief"))) {
+    const kind = custom?.kind ?? (cmd === "brief" ? "brief" : "market");
+    const cmdName = custom?.command ?? cmd ?? "market";
+    if (!commandInput && !allowsEmptyInput) {
+      return { reply: usageText({ command: cmdName, kind }) };
+    }
+    rateLimit(`agent-search:${ctx.userId}`, 15, 60_000);
+    const { provider, query: parsedQuery } = commandInput ? parseSearchProviderPrefix(commandInput) : { provider: "auto" as const, query: "" };
+    const effectiveQuery =
+      parsedQuery ||
+      (kind === "brief"
+        ? custom?.instruction?.trim() || `Daily ${config.category} briefing today`
+        : "NSE BSE NIFTY 50 SENSEX BANK NIFTY Indian stock market overview today");
+    const agentic = await runAgenticTools({
+      message: effectiveQuery,
+      command: custom ?? { command: cmdName, kind, instruction: "" },
+      autoSearch: true,
+      marketData: kind === "market" || Boolean(config.tools.marketData),
+      agentCategory: config.category,
+      searchProvider: provider,
+      maxResults: 6,
+      maxImages: 4,
+      maxVideos: 4,
+    });
+    const extraGuide = custom?.instruction?.trim() ? `\n\nCommand guidance: ${custom.instruction.trim()}` : "";
+    const system = [buildSystemPrompt(config, [], new Date(), []), agentic.systemContext, extraGuide].filter(Boolean).join("\n\n");
+    const r = await chat(
+      config.model,
+      [
+        { role: "system", content: system },
+        { role: "user", content: effectiveQuery },
+      ],
+      {
+        temperature: Math.min(config.temperature, 0.35),
+        maxTokens: Math.min(Math.max(config.maxTokens, 1536), 3072),
+        thinking: false,
+        timeoutMs: 22_000,
+        allowFallback: true,
+      },
+    );
+    return {
+      reply: r.text.slice(0, 8000),
+      ...(agentic.citations.length ? { sources: agentic.citations } : {}),
+      ...(agentic.webMedia ? { webMedia: agentic.webMedia } : {}),
+      ...(agentic.agenticPayload ? { agentic: agentic.agenticPayload } : {}),
+      ms: Date.now() - started,
+    };
+  }
   if (custom?.kind === "search" || (!custom && cmd === "search")) {
     if (!commandInput) return { reply: `Usage: /${custom?.command ?? "search"} <what to search on the web>` };
     if (!custom && config.tools.webSearch === false) {
@@ -663,18 +724,41 @@ async function testAiAgentInner(
     const img = await generateImage(imageModel, prompt);
     return { reply: commandInput.slice(0, 200), imageBase64: img.imageBase64, ms: Date.now() - started };
   }
+  const userMessage = custom ? commandInput : input.message;
   const [knowledge, passages] = await Promise.all([
     listKnowledge(ctx, id),
-    row.bot_id ? retrieveForBot(row.bot_id as string, ctx.workspaceId, input.message, 5) : Promise.resolve([]),
+    row.bot_id ? retrieveForBot(row.bot_id as string, ctx.workspaceId, userMessage, 5) : Promise.resolve([]),
   ]);
   const knowledgeItems = knowledge as KnowledgeItem[];
-  const citations = buildCitationSources(knowledgeItems, passages);
+  const baseCitations = buildCitationSources(knowledgeItems, passages);
+
+  const agentic =
+    config.tools.autoSearch || config.tools.marketData
+      ? await runAgenticTools({
+          message: userMessage,
+          command: custom ?? null,
+          autoSearch: Boolean(config.tools.autoSearch),
+          marketData: Boolean(config.tools.marketData),
+          agentCategory: config.category,
+          citationStartIndex: baseCitations.length + 1,
+          maxResults: 6,
+          maxImages: 4,
+          maxVideos: 4,
+        })
+      : null;
+
+  const citations = agentic ? [...baseCitations, ...agentic.citations] : baseCitations;
   const keep = config.memoryTurns * 2;
   const history = keep > 0 ? input.history.slice(-keep) : [];
+  const systemParts = [
+    buildSystemPrompt(config, knowledgeItems, new Date(), passages),
+    custom ? commandTask(custom) : "",
+    agentic?.systemContext ?? "",
+  ].filter(Boolean);
   const messages: ChatMessage[] = [
-    { role: "system", content: buildSystemPrompt(config, knowledgeItems, new Date(), passages) + (custom ? `\n\n${commandTask(custom)}` : "") },
+    { role: "system", content: systemParts.join("\n\n") },
     ...history,
-    { role: "user", content: custom ? commandInput : input.message },
+    { role: "user", content: userMessage },
   ];
   const r = await chat(config.model, messages, {
     temperature: config.temperature,
@@ -686,6 +770,8 @@ async function testAiAgentInner(
   return {
     reply: r.text.slice(0, 8000),
     ...(citations.length ? { sources: citations } : {}),
+    ...(agentic?.webMedia ? { webMedia: agentic.webMedia } : {}),
+    ...(agentic?.agenticPayload ? { agentic: agentic.agenticPayload } : {}),
     ms: Date.now() - started,
   };
 }

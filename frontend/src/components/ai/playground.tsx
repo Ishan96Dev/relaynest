@@ -2,8 +2,10 @@
 /* The generated image is a base64 data URL, which next/image cannot optimise. */
 /* eslint-disable @next/next/no-img-element */
 import {
+  ArrowRight,
   ArrowUp,
   BookOpen,
+  Bot,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
@@ -14,11 +16,15 @@ import {
   LayoutTemplate,
   Loader2,
   Sparkles,
+  TrendingUp,
   User,
+  Wand2,
+  X,
   Zap,
 } from "lucide-react";
 import * as React from "react";
 import type { CitationSource, RetrievalMode } from "@backend/server/ai/citations";
+import type { AgenticPayload, AgenticStepEvent } from "@backend/server/ai/market-data-types";
 import {
   executionMode,
   PLAYGROUND_TOKEN_OPTIONS,
@@ -28,6 +34,8 @@ import {
 } from "@backend/server/ai/model-catalog";
 import type { SearchProviderChoice, SearchProviderDto, WebMediaPayload } from "@backend/server/ai/web-search-types";
 import type { SessionUser } from "@backend/server/services/session";
+import { AgenticActivityPanel } from "@/components/ai/agentic-activity-panel";
+import { AgenticTemplateModal } from "@/components/ai/agentic-template-picker";
 import { CitedText, MessageLinkPreviews, SourcesPanel } from "@/components/ai/citations-panel";
 import { CopyBubbleButton } from "@/components/ai/copy-bubble-button";
 import { ImageResult } from "@/components/ai/image-result";
@@ -35,11 +43,12 @@ import { PromptTemplateModal } from "@/components/ai/prompt-template-picker";
 import { ProviderMark } from "@/components/ai/provider-mark";
 import { WebMediaPanel } from "@/components/ai/web-media-panel";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/choice";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { AGENT_TEMPLATES, findAgentTemplate, type AgentTemplate } from "@/lib/agent-templates";
 import { api } from "@/lib/api-client";
 import { initialsOf } from "@/lib/initials";
 import { formatTokens } from "@/lib/model-format";
@@ -48,7 +57,7 @@ import { cn } from "@/lib/utils";
 
 interface Usage { promptTokens: number; completionTokens: number; totalTokens: number }
 type RunResult =
-  | { kind: "chat"; text: string; thinking?: string; thinkingMs?: number; usage: Usage; ms: number; sources?: CitationSource[]; retrieval?: RetrievalMode; webMedia?: WebMediaPayload; modelUsed?: string }
+  | { kind: "chat"; text: string; thinking?: string; thinkingMs?: number; usage: Usage; ms: number; sources?: CitationSource[]; retrieval?: RetrievalMode; webMedia?: WebMediaPayload; agentic?: AgenticPayload; modelUsed?: string }
   | { kind: "embedding"; dimensions: number; preview: number[]; norm: number; usage: Usage; ms: number }
   | { kind: "image"; imageBase64: string; revisedPrompt?: string; modelUsed?: string; ms: number }
   | { kind: "decision"; probability: number; ms: number };
@@ -67,6 +76,8 @@ interface Turn {
   sources?: CitationSource[];
   retrieval?: RetrievalMode;
   webMedia?: WebMediaPayload;
+  agenticSteps?: AgenticStepEvent[];
+  agentic?: AgenticPayload;
   streaming?: boolean;
   providerKey?: string;
   providerName?: string;
@@ -100,46 +111,67 @@ const RETRIEVAL_META: Record<RetrievalMode, string> = {
 };
 
 const QUICK_PLAYGROUND_TEMPLATE_IDS = [
+  "pg-nse-bse-mse-broker",
+  "pg-real-estate-land-broker",
   "pg-senior-engineer",
   "pg-research-analyst",
-  "pg-copywriter",
-  "pg-data-sql-analyst",
+] as const;
+
+const QUICK_AGENTIC_TEMPLATE_IDS = [
+  "stock-market-broker",
+  "real-estate-land-broker",
+  "student-exam-researcher",
+  "commodities-forex-crypto",
+  "sports-live-analyst",
+  "gaming-esports-intel",
 ] as const;
 
 export function Playground({
   models,
   initialSlug,
+  initialTemplateId,
   collections = [],
   user,
   searchProviders = [],
 }: {
   models: ModelDto[];
   initialSlug?: string;
+  initialTemplateId?: string;
   collections?: PlaygroundCollection[];
   user?: PlaygroundUser;
   searchProviders?: SearchProviderDto[];
 }) {
+  const bootTemplate = React.useMemo(() => findAgentTemplate(initialTemplateId) ?? null, [initialTemplateId]);
   const [avatarFailed, setAvatarFailed] = React.useState(false);
   React.useEffect(() => { setAvatarFailed(false); }, [user?.avatarUrl, user?.demo]);
   const [kb, setKb] = React.useState<string[]>([]);
   const [image, setImage] = React.useState<string | null>(null);
   const [thinking, setThinking] = React.useState(false);
-  const [webSearch, setWebSearch] = React.useState(false);
+  const [webSearch, setWebSearch] = React.useState(() => Boolean(bootTemplate?.isAgentic || bootTemplate?.tools?.autoSearch));
+  const [agenticMode, setAgenticMode] = React.useState(() => Boolean(bootTemplate?.isAgentic || bootTemplate?.tools?.autoSearch));
+  const [marketData, setMarketData] = React.useState(() => Boolean(bootTemplate?.tools?.marketData));
   const [searchProvider, setSearchProvider] = React.useState<SearchProviderChoice>("auto");
   const activeSearchProvider = searchProviders.find((p) => p.slug === searchProvider);
   // Default model comes directly from Supabase `public.ai_models` ordering (`sort_order`, `is_featured`).
-  const [slug, setSlug] = React.useState(() => (models.some((m) => m.slug === initialSlug) ? initialSlug! : (models.find((m) => m.isFeatured && executionMode(m) === "chat") ?? models.find((m) => executionMode(m) === "chat") ?? models[0])?.slug ?? ""));
+  const [slug, setSlug] = React.useState(() => {
+    if (initialSlug && models.some((m) => m.slug === initialSlug)) return initialSlug;
+    if (bootTemplate?.modelSlug && models.some((m) => m.slug === bootTemplate.modelSlug)) return bootTemplate.modelSlug;
+    return (models.find((m) => m.isFeatured && executionMode(m) === "chat") ?? models.find((m) => executionMode(m) === "chat") ?? models[0])?.slug ?? "";
+  });
   const model = models.find((m) => m.slug === slug);
   const mode = model ? executionMode(model) : "chat";
   const canAttachImage = model ? supportsImageInput(model) : false;
 
-  const [system, setSystem] = React.useState("");
-  const [activeTemplateName, setActiveTemplateName] = React.useState<string | null>(null);
+  const [activeAgentTemplate, setActiveAgentTemplate] = React.useState<AgentTemplate | null>(bootTemplate);
+  const [agentTemplateModalOpen, setAgentTemplateModalOpen] = React.useState(false);
+  const [system, setSystem] = React.useState(() => bootTemplate?.instructions ?? "");
+  const [activeTemplateName, setActiveTemplateName] = React.useState<string | null>(() => bootTemplate?.name ?? null);
   const [templateModalOpen, setTemplateModalOpen] = React.useState(false);
-  const [temperature, setTemperature] = React.useState(model?.defaultTemperature ?? 0.5);
+  const [temperature, setTemperature] = React.useState(() => bootTemplate?.temperature ?? model?.defaultTemperature ?? 0.5);
   const [maxTokens, setMaxTokens] = React.useState(() => String(model ? recommendedMaxTokens(model, false) : 2048));
   const [autoTokenScaled, setAutoTokenScaled] = React.useState(false);
   const savedFastMaxTokensRef = React.useRef<string>(String(model ? recommendedMaxTokens(model, false) : 2048));
+  const pendingTempOverrideRef = React.useRef<number | null>(bootTemplate?.temperature ?? null);
 
   const [turns, setTurns] = React.useState<Turn[]>([]);
   const [activeCite, setActiveCite] = React.useState<Record<number, number | null>>({});
@@ -188,7 +220,12 @@ export function Playground({
     setBusy(false);
     const m = models.find((x) => x.slug === slug);
     if (m) {
-      setTemperature(m.defaultTemperature);
+      if (pendingTempOverrideRef.current !== null) {
+        setTemperature(pendingTempOverrideRef.current);
+        pendingTempOverrideRef.current = null;
+      } else {
+        setTemperature(m.defaultTemperature);
+      }
       const baseTokens = String(recommendedMaxTokens(m, false));
       savedFastMaxTokensRef.current = baseTokens;
       setMaxTokens(baseTokens);
@@ -216,12 +253,45 @@ export function Playground({
   }
 
   function applyPromptTemplate(tpl: SystemPromptTemplate) {
+    setActiveAgentTemplate(null);
     setSystem(tpl.prompt);
     setActiveTemplateName(tpl.name);
     if (tpl.recommendedTemperature !== undefined) {
       setTemperature(tpl.recommendedTemperature);
     }
+    if (tpl.recommendWebSearch) {
+      setWebSearch(true);
+      setAgenticMode(true);
+    }
+    if (tpl.recommendMarketData) {
+      setMarketData(true);
+    }
   }
+
+  function applyAgentTemplate(tpl: AgentTemplate) {
+    abortRef.current?.abort();
+    activeStreamRef.current = null;
+    setBusy(false);
+    setTurns([]);
+    setError(undefined);
+    setActiveAgentTemplate(tpl);
+    setSystem(tpl.instructions);
+    setActiveTemplateName(tpl.name);
+    setTemperature(tpl.temperature);
+    const wantsAuto = Boolean(tpl.isAgentic || tpl.tools?.autoSearch);
+    setAgenticMode(wantsAuto);
+    setWebSearch(wantsAuto);
+    setMarketData(Boolean(tpl.tools?.marketData));
+    if (tpl.modelSlug && models.some((m) => m.slug === tpl.modelSlug) && tpl.modelSlug !== slug) {
+      pendingTempOverrideRef.current = tpl.temperature;
+      setSlug(tpl.modelSlug);
+    }
+  }
+
+  const quickAgenticTemplates = React.useMemo(
+    () => QUICK_AGENTIC_TEMPLATE_IDS.map((id) => AGENT_TEMPLATES.find((t) => t.id === id)).filter((t): t is AgentTemplate => Boolean(t)),
+    [],
+  );
 
   const quickTemplates = React.useMemo(
     () => QUICK_PLAYGROUND_TEMPLATE_IDS.map((id) => PLAYGROUND_PROMPT_TEMPLATES.find((t) => t.id === id)).filter((t): t is SystemPromptTemplate => Boolean(t)),
@@ -301,7 +371,10 @@ export function Playground({
       maxTokens: effectiveMaxTokens,
       thinking: useThinking,
       webSearch,
-      ...(webSearch ? { searchProvider } : {}),
+      agenticMode,
+      marketData,
+      ...(activeAgentTemplate?.category ? { agentCategory: activeAgentTemplate.category } : {}),
+      ...(webSearch || agenticMode ? { searchProvider } : {}),
       stream: true,
       ...(kb.length ? { collectionIds: kb } : {}),
       ...(attached ? { image: attached } : {}),
@@ -340,6 +413,7 @@ export function Playground({
           sources: r.sources?.length ? r.sources : undefined,
           retrieval: r.retrieval,
           webMedia: r.webMedia,
+          agentic: r.agentic,
         });
         setBusy(false);
         activeStreamRef.current = null;
@@ -357,6 +431,8 @@ export function Playground({
       let streamSources: CitationSource[] | undefined;
       let streamRetrieval: RetrievalMode | undefined;
       let streamMedia: WebMediaPayload | undefined;
+      let streamAgentic: AgenticPayload | undefined;
+      let liveAgentSteps: AgenticStepEvent[] = [];
       let finished = false;
 
       while (true) {
@@ -375,7 +451,16 @@ export function Playground({
           let payload: Record<string, unknown>;
           try { payload = JSON.parse(line.slice(5).trim()) as Record<string, unknown>; } catch { continue; }
 
-          if (currentEvent === "sources") {
+          if (currentEvent === "agent_step") {
+            const stepEv = payload as unknown as AgenticStepEvent;
+            const idx = liveAgentSteps.findIndex((x) => x.id === stepEv.id);
+            liveAgentSteps = idx === -1 ? [...liveAgentSteps, stepEv] : liveAgentSteps.map((x, i) => (i === idx ? stepEv : x));
+            patchBot({ agenticSteps: liveAgentSteps });
+          } else if (currentEvent === "agentic") {
+            streamAgentic = payload as unknown as AgenticPayload;
+            liveAgentSteps = streamAgentic.steps ?? liveAgentSteps;
+            patchBot({ agentic: streamAgentic, agenticSteps: liveAgentSteps });
+          } else if (currentEvent === "sources") {
             const s = (payload.sources as CitationSource[] | undefined) ?? [];
             streamRetrieval = payload.retrieval as RetrievalMode | undefined;
             streamSources = s.length ? s : undefined;
@@ -417,7 +502,9 @@ export function Playground({
             const finalSources = (payload.sources as CitationSource[] | undefined) ?? streamSources;
             const finalRetrieval = (payload.retrieval as RetrievalMode | undefined) ?? streamRetrieval;
             const finalMedia = (payload.webMedia as WebMediaPayload | undefined) ?? streamMedia;
+            const finalAgentic = (payload.agentic as AgenticPayload | undefined) ?? streamAgentic;
             const modeTag = skippedFromMs ? "skipped thinking" : useThinking ? "deep thinking" : undefined;
+            const marketTag = finalAgentic?.marketQuotes?.length ? `${finalAgentic.marketQuotes.length} live quotes` : undefined;
             patchBot({
               content: finalText,
               thinking: finalThinking,
@@ -427,7 +514,9 @@ export function Playground({
               sources: finalSources?.length ? finalSources : undefined,
               retrieval: finalRetrieval,
               webMedia: finalMedia,
-              meta: `${(ms / 1000).toFixed(1)}s \u2022 ${usage.totalTokens || "?"} tokens${modeTag ? ` \u2022 ${modeTag}` : ""}${finalRetrieval ? ` \u2022 ${RETRIEVAL_META[finalRetrieval]}` : ""}`,
+              agentic: finalAgentic,
+              agenticSteps: finalAgentic?.steps ?? (liveAgentSteps.length ? liveAgentSteps : undefined),
+              meta: `${(ms / 1000).toFixed(1)}s \u2022 ${usage.totalTokens || "?"} tokens${modeTag ? ` \u2022 ${modeTag}` : ""}${marketTag ? ` \u2022 ${marketTag}` : ""}${finalRetrieval ? ` \u2022 ${RETRIEVAL_META[finalRetrieval]}` : ""}`,
             });
           } else if (currentEvent === "error") {
             throw new Error(typeof payload.message === "string" ? payload.message : "The model returned an error.");
@@ -501,9 +590,8 @@ export function Playground({
     });
   }
 
-  async function sendChat(e: React.FormEvent) {
-    e.preventDefault();
-    const content = draft.trim();
+  async function submitPromptText(rawText: string) {
+    const content = rawText.trim();
     if (!content || busy || !model) return;
     if (model.slug === "paligemma" && !image) return setError("Attach an image first. PaliGemma describes pictures.");
 
@@ -525,7 +613,7 @@ export function Playground({
         thinkingActive: useThinking,
         providerKey: model.providerKey,
         providerName: model.providerName,
-        modelName: model.name,
+        modelName: activeAgentTemplate ? `${activeAgentTemplate.name} · ${model.name}` : model.name,
       },
     ]);
     setDraft("");
@@ -542,6 +630,11 @@ export function Playground({
       attached,
       useThinking,
     });
+  }
+
+  async function sendChat(e: React.FormEvent) {
+    e.preventDefault();
+    await submitPromptText(draft);
   }
 
   /** Resizes an attached image crisply (up to 1024px JPEG for high-accuracy OCR & charts). */
@@ -604,7 +697,19 @@ export function Playground({
               {thinking ? "Deep thinking" : "Fast streaming"}
             </Badge>
           )}
-          {mode === "chat" && webSearch && (
+          {mode === "chat" && agenticMode && (
+            <Badge tone="info" className="rounded-full">
+              <Wand2 className="size-3" aria-hidden />
+              Agentic
+            </Badge>
+          )}
+          {mode === "chat" && marketData && (
+            <Badge tone="success" className="rounded-full">
+              <TrendingUp className="size-3" aria-hidden />
+              NSE / BSE / MSE
+            </Badge>
+          )}
+          {mode === "chat" && webSearch && !agenticMode && (
             <Badge tone="info" className="rounded-full">
               <Globe className="size-3" aria-hidden />
               Web search
@@ -615,20 +720,98 @@ export function Playground({
 
         {mode === "chat" && (
           <>
+            <div className="space-y-2 rounded-xl border border-lavender/35 bg-primary/10 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                  <Bot className="size-3.5 text-lavender" aria-hidden />
+                  Agentic AI Templates
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setAgentTemplateModalOpen(true)}
+                  className="text-[11px] font-semibold text-lavender hover:underline"
+                >
+                  All {AGENT_TEMPLATES.length} &rarr;
+                </button>
+              </div>
+              <p className="text-[11px] leading-snug text-muted">
+                Load any Telegram Agentic template (Brokers, Land, Students, Sports, Gaming…) to test live right here.
+              </p>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Quick Agentic AI templates">
+                {quickAgenticTemplates.map((tpl) => {
+                  const active = activeAgentTemplate?.id === tpl.id;
+                  return (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      onClick={() => applyAgentTemplate(tpl)}
+                      title={tpl.tagline}
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10.5px] font-semibold transition",
+                        active
+                          ? "border-lavender bg-primary/25 text-foreground"
+                          : "border-border bg-surface/80 text-foreground/80 hover:border-lavender/60 hover:text-foreground",
+                      )}
+                    >
+                      {tpl.name.replace(" (NSE / BSE / MSE)", " NSE/BSE").replace(" & Analyst", "").replace(" Intel Agent", "").replace(" & Study Agent", "")}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="space-y-2.5 rounded-xl border border-border bg-surface-2/60 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="flex items-center gap-1.5 text-xs font-bold">
-                    <Globe className="size-3.5 text-lavender" aria-hidden />
-                    Open Web Search
+                    <Wand2 className="size-3.5 text-lavender" aria-hidden />
+                    Autonomous Agentic Search
                   </p>
                   <p className="text-[11px] text-muted">
-                    {webSearch ? "Live web articles, images, videos & citations." : "Search the open web with rich media & sources."}
+                    Auto-searches live web &amp; runs /stock, /market, /brief, /compare.
+                  </p>
+                </div>
+                <Switch
+                  label="Autonomous Agentic Search"
+                  checked={agenticMode}
+                  onCheckedChange={(on) => {
+                    setAgenticMode(on);
+                    if (on) setWebSearch(true);
+                  }}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-2.5">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs font-bold">
+                    <TrendingUp className="size-3.5 text-ok" aria-hidden />
+                    Live Market Data (NSE / BSE / MSE)
+                  </p>
+                  <p className="text-[11px] text-muted">
+                    Real-time stock quotes, NIFTY/SENSEX, Gold, Forex &amp; Crypto.
+                  </p>
+                </div>
+                <Switch
+                  label="Live Market Data"
+                  checked={marketData}
+                  onCheckedChange={(on) => {
+                    setMarketData(on);
+                    if (on) setAgenticMode(true);
+                  }}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-2.5">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs font-bold">
+                    <Globe className="size-3.5 text-sky" aria-hidden />
+                    Always Search Open Web
+                  </p>
+                  <p className="text-[11px] text-muted">
+                    {webSearch ? "Forces live web articles, images, videos & citations." : "Force open-web lookup on every prompt."}
                   </p>
                 </div>
                 <Switch label="Open Web Search" checked={webSearch} onCheckedChange={setWebSearch} />
               </div>
-              {webSearch && searchProviders.length > 0 && (
+              {(webSearch || agenticMode) && searchProviders.length > 0 && (
                 <div className="space-y-1.5 border-t border-border/60 pt-2.5">
                   <label htmlFor="pg-search-provider" className="block text-[11px] font-semibold text-foreground/85">
                     Search provider
@@ -841,21 +1024,99 @@ export function Playground({
       <Card className="flex min-h-[540px] flex-col p-4">
         {mode === "chat" ? (
           <>
+            {activeAgentTemplate && (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-lavender/35 bg-primary/10 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Bot className="size-4 shrink-0 text-lavender" aria-hidden />
+                    <span className="truncate text-xs font-extrabold text-foreground">
+                      Testing Template: {activeAgentTemplate.name}
+                    </span>
+                    <Badge tone="primary" className="text-[10px]">{activeAgentTemplate.category}</Badge>
+                    {marketData && <Badge tone="success" className="text-[10px]">NSE / BSE / MSE</Badge>}
+                    {agenticMode && <Badge tone="info" className="text-[10px]">Auto Search</Badge>}
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted">{activeAgentTemplate.tagline}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setAgentTemplateModalOpen(true)}>
+                    Switch
+                  </Button>
+                  <ButtonLink href={`/bots/new?type=ai&template=${activeAgentTemplate.id}`} size="sm">
+                    Deploy to Telegram <ArrowRight className="size-3.5" aria-hidden />
+                  </ButtonLink>
+                  <button
+                    type="button"
+                    aria-label="Clear active agent template"
+                    onClick={() => {
+                      setActiveAgentTemplate(null);
+                      setActiveTemplateName(null);
+                      setSystem("");
+                    }}
+                    className="rounded-md p-1 text-muted hover:bg-foreground/10 hover:text-foreground"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="min-h-[360px] flex-1 space-y-3 overflow-y-auto pr-1" role="log" aria-live="polite" aria-label="Conversation">
               {turns.length === 0 && !busy && (
                 <div className="grid h-full min-h-[320px] place-items-center text-center text-muted">
-                  <div>
+                  <div className="max-w-xl px-2">
                     <Sparkles className="mx-auto mb-2 size-8 text-lavender" aria-hidden />
-                    <p className="text-sm font-medium text-foreground/85">Send a message to start chatting with {model.name}.</p>
-                    <p className="mt-1 text-xs text-muted">
-                      {webSearch
-                        ? "Live Open Web Search active — replies include web sources, tables, images & videos."
-                        : thinking && model.isThinking
-                          ? `Deep Thinking active (${Number(maxTokens).toLocaleString("en-US")} max tokens) — focused reasoning with Skip option.`
-                          : kb.length > 0
-                            ? `Grounded in ${kb.length} selected knowledge ${kb.length === 1 ? "collection" : "collections"} with live citations.`
-                            : "Responses stream token-by-token in real time."}
+                    <p className="text-sm font-semibold text-foreground/90">
+                      {activeAgentTemplate
+                        ? `Test ${activeAgentTemplate.name} live with ${model.name}`
+                        : `Send a message to start chatting with ${model.name}.`}
                     </p>
+                    <p className="mt-1 text-xs text-muted">
+                      {marketData
+                        ? "Live NSE/BSE/MSE market quotes + open web research active. Ask for a single price, full analysis, comparison, or /brief."
+                        : webSearch || agenticMode
+                          ? "Autonomous Live Search active — replies include verified web sources, tables, images & videos."
+                          : thinking && model.isThinking
+                            ? `Deep Thinking active (${Number(maxTokens).toLocaleString("en-US")} max tokens) — focused reasoning with Skip option.`
+                            : kb.length > 0
+                              ? `Grounded in ${kb.length} selected knowledge ${kb.length === 1 ? "collection" : "collections"} with live citations.`
+                              : "Responses stream token-by-token in real time. Or load an Agentic AI template below."}
+                    </p>
+
+                    {activeAgentTemplate?.starterPrompts && activeAgentTemplate.starterPrompts.length > 0 ? (
+                      <div className="mt-4 space-y-2">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-muted">Try a starter prompt</p>
+                        <div className="flex flex-wrap justify-center gap-2">
+                          {activeAgentTemplate.starterPrompts.map((sp) => (
+                            <button
+                              key={sp.label}
+                              type="button"
+                              onClick={() => void submitPromptText(sp.prompt)}
+                              className="rounded-xl border border-lavender/40 bg-surface-2/80 px-3 py-1.5 text-left text-xs font-semibold text-foreground transition hover:border-lavender hover:bg-primary/15"
+                            >
+                              {sp.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 space-y-2">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-muted">Quick-test an Agentic AI Template</p>
+                        <div className="flex flex-wrap justify-center gap-2">
+                          {quickAgenticTemplates.slice(0, 4).map((tpl) => (
+                            <button
+                              key={tpl.id}
+                              type="button"
+                              onClick={() => applyAgentTemplate(tpl)}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-surface-2/75 px-3 py-1.5 text-xs font-semibold text-foreground/90 transition hover:border-lavender/60 hover:bg-primary/10"
+                            >
+                              <Bot className="size-3.5 text-lavender" aria-hidden />
+                              {tpl.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -933,6 +1194,14 @@ export function Playground({
                             </div>
                           )}
 
+                          {(t.agentic || (t.agenticSteps && t.agenticSteps.length > 0)) && (
+                            <AgenticActivityPanel
+                              steps={t.agentic?.steps ?? t.agenticSteps}
+                              quotes={t.agentic?.marketQuotes}
+                              variant="playground"
+                            />
+                          )}
+
                           {showThinkingBar && (
                             <div className="rn-think-box mb-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -986,11 +1255,13 @@ export function Playground({
                                 <Loader2 className="size-3.5 animate-spin" aria-hidden />
                                 {t.skippedThinking
                                   ? "Generating direct answer..."
-                                  : webSearch
-                                    ? "Searching open web, images & videos..."
-                                    : kb.length > 0
-                                      ? "Searching knowledge & generating..."
-                                      : `${model.name} is replying...`}
+                                  : marketData
+                                    ? "Fetching live NSE/BSE/MSE quotes & web sources..."
+                                    : webSearch || agenticMode
+                                      ? "Running autonomous web search & synthesizing..."
+                                      : kb.length > 0
+                                        ? "Searching knowledge & generating..."
+                                        : `${model.name} is replying...`}
                               </span>
                             )
                           ) : (
@@ -1042,9 +1313,39 @@ export function Playground({
                 <button type="button" className="font-semibold text-bad hover:underline" onClick={() => setImage(null)}>Remove</button>
               </div>
             )}
+            {activeAgentTemplate?.starterPrompts && activeAgentTemplate.starterPrompts.length > 0 && turns.length > 0 && !busy && (
+              <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Quick test prompts">
+                {activeAgentTemplate.starterPrompts.map((sp) => (
+                  <button
+                    key={sp.label}
+                    type="button"
+                    onClick={() => void submitPromptText(sp.prompt)}
+                    className="rounded-full border border-border bg-surface-2/70 px-2.5 py-0.5 text-[11px] font-semibold text-muted transition hover:border-lavender/60 hover:text-foreground"
+                  >
+                    {sp.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <form onSubmit={sendChat} className="mt-3 flex items-end gap-2">
-              <Textarea aria-label="Message" rows={2} maxLength={8000} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={webSearch ? "Search the open web for news, specs, guides, images & videos..." : kb.length > 0 ? "Ask about your knowledge base..." : "Type a message..."} className="min-h-[52px] flex-1"
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} />
+              <Textarea
+                aria-label="Message"
+                rows={2}
+                maxLength={8000}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder={
+                  marketData
+                    ? "Ask for NSE/BSE/MSE stock prices (single or detailed), /stock TCS, /market, /compare, or /brief..."
+                    : webSearch || agenticMode
+                      ? "Ask naturally or run /brief, /search, /rates, /exam, /score, /patch..."
+                      : kb.length > 0
+                        ? "Ask about your knowledge base..."
+                        : "Type a message..."
+                }
+                className="min-h-[52px] flex-1"
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }}
+              />
               <Button type="submit" disabled={busy || !draft.trim()} aria-label="Send message" className="size-11 px-0"><ArrowUp className="size-5" aria-hidden /></Button>
             </form>
           </>
@@ -1089,6 +1390,13 @@ export function Playground({
         scope="playground"
         activePrompt={system}
         onApply={applyPromptTemplate}
+      />
+
+      <AgenticTemplateModal
+        open={agentTemplateModalOpen}
+        onClose={() => setAgentTemplateModalOpen(false)}
+        activeTemplateId={activeAgentTemplate?.id ?? null}
+        onApply={applyAgentTemplate}
       />
     </div>
   );

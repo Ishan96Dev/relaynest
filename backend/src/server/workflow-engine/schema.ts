@@ -13,6 +13,7 @@ export const NODE_TYPES = [
   "action.telegram.sendMessage",
   "action.http.request",
   "action.database.insert",
+  "action.ai.research",
 ] as const;
 export type NodeType = (typeof NODE_TYPES)[number];
 
@@ -44,6 +45,15 @@ export const configSchemas: Record<NodeType, z.ZodType> = {
     body: z.string().max(10_000).optional(),
   }),
   "action.database.insert": z.object({ collection: z.string().trim().min(1).max(64), record: z.record(z.string(), z.string()) }),
+  "action.ai.research": z.object({
+    prompt: z.string().trim().min(1, "Enter a research or briefing prompt.").max(4000),
+    systemPrompt: z.string().trim().max(4000).optional(),
+    agentId: z.string().trim().max(64).optional(),
+    category: z.string().trim().max(60).optional(),
+    modelSlug: z.string().trim().max(90).optional(),
+    includeWebSearch: z.boolean().default(true),
+    includeMarketData: z.boolean().default(true),
+  }),
 };
 
 export const nodeSchema = z.object({

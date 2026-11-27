@@ -1,13 +1,13 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { AlertCircle, Check, Clock, Code2, Globe, GitBranch, MessageSquare, Send, Webhook, type LucideIcon } from "lucide-react";
+import { AlertCircle, Check, Clock, Code2, Globe, GitBranch, MessageSquare, Send, Sparkles, Webhook, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { specFor } from "./node-specs";
 
 const icons: Record<string, LucideIcon> = {
   "trigger.telegram.message": Send, "trigger.webhook": Webhook, "trigger.schedule": Clock,
-  "action.telegram.sendMessage": MessageSquare, "action.http.request": Globe,
+  "action.telegram.sendMessage": MessageSquare, "action.http.request": Globe, "action.ai.research": Sparkles,
 };
 
 export interface FlowNodeData extends Record<string, unknown> { type: string; error?: boolean; ok?: boolean }

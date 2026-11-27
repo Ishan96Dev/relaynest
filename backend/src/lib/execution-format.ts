@@ -254,6 +254,8 @@ export interface BotAnalyticsPayload {
       typing: boolean;
       matchLanguage: boolean;
       webSearch: boolean;
+      autoSearch: boolean;
+      marketData: boolean;
     };
     instructions: string;
   } | null;
