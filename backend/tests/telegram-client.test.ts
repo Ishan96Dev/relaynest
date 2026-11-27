@@ -71,6 +71,25 @@ describe("telegram client against a fake Bot API", () => {
     expect(req.body.includes(PHOTO)).toBe(true);
   });
 
+  it("uploads generated JPEG bytes with caption via sendPhoto and retries cleanly on transient 429", async () => {
+    const { sendPhoto } = await import("../src/server/telegram/client");
+    const { base64ToBytes, sniffImageMime } = await import("../src/server/ai/provider");
+    seen.length = 0;
+    const b64 = PHOTO.toString("base64");
+    const { mime, ext } = sniffImageMime(b64);
+    expect(mime).toBe("image/jpeg");
+    expect(ext).toBe("jpg");
+    const bytes = base64ToBytes(b64);
+    const delivered = await sendPhoto(TOKEN, 42, bytes, "goku", `image.${ext}`, mime);
+    expect(delivered.messageId).toBe(9);
+    const req = seen.at(-1)!;
+    expect(req.url).toBe(`/bot${TOKEN}/sendPhoto`);
+    expect(req.body.includes(PHOTO)).toBe(true);
+    const text = req.body.toString("latin1");
+    expect(text).toContain("goku");
+    expect(text).toContain('filename="image.jpg"');
+  });
+
   it("publishes the command menu", async () => {
     const { setMyCommands } = await import("../src/server/telegram/client");
     seen.length = 0;

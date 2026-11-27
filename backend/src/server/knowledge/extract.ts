@@ -708,7 +708,7 @@ function readOle2Streams(bytes: Uint8Array): Map<string, Uint8Array> {
 
   const firstDirSector = view.getInt32(48, true);
   const miniCutoff = view.getUint32(56, true);
-  let firstMiniFatSector = view.getInt32(60, true);
+  const firstMiniFatSector = view.getInt32(60, true);
   let firstDifatSector = view.getInt32(68, true);
 
   const sectorOffset = (sec: number) => (sec + 1) * sectorSize;
@@ -745,7 +745,7 @@ function readOle2Streams(bytes: Uint8Array): Map<string, Uint8Array> {
     for (let i = 0; i < sectorSize / 4; i++) fat.push(dv.getInt32(i * 4, true));
   }
 
-  const readChain = (start: number, maxLen?: number): Uint8Array => {
+  const readChain = (start: number, maxLen?: number): Uint8Array<ArrayBuffer> => {
     const chunks: Uint8Array[] = [];
     const seen = new Set<number>();
     let cur = start;
@@ -779,9 +779,9 @@ function readOle2Streams(bytes: Uint8Array): Map<string, Uint8Array> {
   }
 
   const dirBytes = readChain(firstDirSector);
-  let miniStream = new Uint8Array(0);
+  let miniStream: Uint8Array<ArrayBuffer> = new Uint8Array(0);
 
-  const readMiniChain = (start: number, len: number): Uint8Array => {
+  const readMiniChain = (start: number, len: number): Uint8Array<ArrayBuffer> => {
     const out = new Uint8Array(len);
     const seen = new Set<number>();
     let cur = start;
