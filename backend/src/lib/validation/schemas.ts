@@ -12,8 +12,8 @@ export const telegramToken = z
 
 export const createBotInput = z.object({
   name: z.string().trim().min(1).max(50),
-  description: z.string().trim().max(200).optional(),
-  category: z.string().trim().max(50).optional(),
+  description: z.string().trim().max(300).optional(),
+  category: z.string().trim().max(60).optional(),
   token: telegramToken,
   welcomeMessage: z.string().trim().max(4096).optional(),
   defaultResponse: z.string().trim().max(4096).optional(),
@@ -22,8 +22,8 @@ export const createBotInput = z.object({
 export const updateBotInput = z
   .object({
     name: z.string().trim().min(1).max(50),
-    description: z.string().trim().max(200),
-    category: z.string().trim().max(50),
+    description: z.string().trim().max(300),
+    category: z.string().trim().max(60),
     welcomeMessage: z.string().trim().max(4096),
     defaultResponse: z.string().trim().max(4096),
     avatarPath: z.string().trim().max(240).nullable(),
@@ -34,11 +34,42 @@ export const updateBotInput = z
 
 export const validateTokenInput = z.object({ token: telegramToken });
 
-export const commandInput = z.object({
-  command: z.string().trim().regex(/^\/?[a-z0-9_]{1,32}$/i, "Use 1-32 letters, digits or underscores."),
-  description: z.string().trim().max(256).optional(),
-  responseText: z.string().trim().min(1).max(4096),
-  enabled: z.boolean().default(true),
+export const botCommandResponseType = z.enum(["text", "builtin", "chat", "image", "describe", "search", "market", "brief"]);
+export type BotCommandResponseType = z.infer<typeof botCommandResponseType>;
+
+export const commandInput = z
+  .object({
+    command: z.string().trim().regex(/^\/?[a-z0-9_]{1,32}$/i, "Use 1-32 letters, digits or underscores."),
+    description: z.string().trim().max(256).optional(),
+    responseType: botCommandResponseType.default("text"),
+    responseText: z.string().trim().max(4096).default(""),
+    instruction: z.string().trim().max(1000).optional(),
+    enabled: z.boolean().default(true),
+  })
+  .superRefine((v, ctx) => {
+    if (v.responseType === "text" && v.responseText.trim().length === 0) {
+      ctx.addIssue({ code: "custom", path: ["responseText"], message: "Enter a reply text for this command." });
+    }
+  });
+
+export const botResponseRuleInput = z
+  .object({
+    matchType: z.enum(["welcome", "default", "keyword"]),
+    matchValue: z.string().trim().max(200).nullable().optional(),
+    responseText: z.string().trim().min(1, "Enter a response message.").max(4096),
+    priority: z.number().int().min(1).max(1000).default(100),
+    enabled: z.boolean().default(true),
+  })
+  .superRefine((v, ctx) => {
+    if (v.matchType === "keyword" && (!v.matchValue || !v.matchValue.trim())) {
+      ctx.addIssue({ code: "custom", path: ["matchValue"], message: "Enter a keyword or phrase to match." });
+    }
+  });
+
+export const botResponsesUpdateInput = z.object({
+  welcomeMessage: z.string().trim().max(4096).default(""),
+  defaultResponse: z.string().trim().max(4096).default(""),
+  rules: z.array(botResponseRuleInput).max(50).default([]),
 });
 
 export const paginationInput = z.object({
@@ -80,6 +111,10 @@ export const toolsSchema = z.object({
   typing: z.boolean().default(true),
   matchLanguage: z.boolean().default(true),
   webSearch: z.boolean().default(true),
+  /** Autonomously run live web search on natural messages when fresh data is needed (without requiring /search). */
+  autoSearch: z.boolean().default(false),
+  /** Enable live NSE, BSE, MSE stock quotes, indices, commodities, forex & crypto lookups. */
+  marketData: z.boolean().default(false),
 });
 
 /** Slash commands that start with the bot menu entries. start, help and reset are built in. */
@@ -87,8 +122,8 @@ export const RESERVED_COMMANDS = ["start", "help", "reset"];
 export const agentCommandSchema = z.object({
   command: z.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_]{0,31}$/, "Use 1-32 lowercase letters, digits or underscores, starting with a letter.").refine((c) => !RESERVED_COMMANDS.includes(c), "start, help and reset are built in."),
   description: z.string().trim().min(1, "Add a short description.").max(100),
-  /** chat: answer with the language model. image: generate a picture. describe: read a photo sent with the command. search: live open-source web search with images, videos & sources. */
-  kind: z.enum(["chat", "image", "describe", "search"]),
+  /** chat: language model reply. image: generate image. describe: photo OCR/vision. search: live web search. market: live NSE/BSE/MSE market lookup. brief: daily multi-source intelligence brief. */
+  kind: z.enum(["chat", "image", "describe", "search", "market", "brief"]),
   /** Extra guidance for this command. For image commands, {input} is replaced by what the person typed. */
   instruction: z.string().trim().max(1000).default(""),
 });
@@ -107,15 +142,19 @@ export const updateAiAgentInput = z
     imageModelSlug: modelSlug.nullable(),
     commands: agentCommandsSchema,
     instructions: z.string().trim().max(8000),
-    welcomeMessage: z.string().trim().max(1000).nullable(),
-    fallbackMessage: z.string().trim().max(1000).nullable(),
+    welcomeMessage: z.string().trim().max(4096).nullable(),
+    fallbackMessage: z.string().trim().max(4096).nullable(),
     temperature: z.number().min(0).max(1),
     maxTokens: z.number().int().min(64).max(4096),
     memoryTurns: z.number().int().min(0).max(30),
     tools: toolsSchema,
+    /** When true, persists step/draft progress quietly without sending in-app notifications. */
+    silent: z.boolean(),
+    /** Set by the wizard's explicit Save Changes action when earlier steps saved quietly. */
+    notifySummary: z.boolean(),
   })
   .partial()
-  .refine((v) => Object.keys(v).length > 0, "At least one field is required.");
+  .refine((v) => Object.keys(v).some((k) => k !== "silent" && k !== "notifySummary"), "At least one field is required.");
 
 export const knowledgeInput = z.object({ title: z.string().trim().min(1).max(120), content: z.string().trim().min(1).max(20000) });
 export const connectInput = z.object({ token: telegramToken });

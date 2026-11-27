@@ -41,11 +41,11 @@
     "consumers": [
       {
         "queue": "relaynest-events",
-        "max_batch_size": 10,
-        "max_batch_timeout": 2,
+        "max_batch_size": 5,
+        "max_batch_timeout": 0,
         "max_retries": 5,
         "retry_delay": 5,
-        "max_concurrency": 5,
+        "max_concurrency": 10,
         "dead_letter_queue": "relaynest-events-dlq"
       }
     ]

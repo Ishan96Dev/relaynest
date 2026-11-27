@@ -1,14 +1,26 @@
 import { describe, it } from "node:test";
 import { expect } from "./expect";
 import { commandTask, imagePrompt, parseCommandText, usageText } from "../src/server/ai/commands";
-import { agentCommandSchema, agentCommandsSchema } from "../src/lib/validation/schemas";
+import { agentCommandSchema, agentCommandsSchema, knowledgeInput } from "../src/lib/validation/schemas";
 import { MODEL_CATALOG, executionMode } from "../src/server/ai/model-catalog";
 import { AGENT_TEMPLATES, parseAgentImport, templateForModel } from "../../frontend/src/lib/agent-templates";
+import {
+  getQuickKnowledgeTemplates,
+  KNOWLEDGE_SOURCE_TEMPLATES,
+} from "../../frontend/src/lib/knowledge-templates";
 import {
   getPromptTemplates,
   PLAYGROUND_PROMPT_TEMPLATES,
   TELEGRAM_AGENT_PROMPT_TEMPLATES,
 } from "../../frontend/src/lib/prompt-templates";
+import {
+  AI_AGENT_RESPONSE_TEMPLATES,
+  getQuickResponseTemplates,
+  getResponseTemplateMatch,
+  getResponseTemplates,
+  resolveResponseText,
+  STANDARD_RESPONSE_TEMPLATES,
+} from "../../frontend/src/lib/response-templates";
 
 describe("command text", () => {
   it("splits the command from its input, including @botname", () => {
@@ -94,5 +106,70 @@ describe("agent templates", () => {
       expect(t.prompt.length <= 8000).toBe(true);
       expect(t.tags.length > 0).toBe(true);
     }
+  });
+
+  it("provides unique, schema-valid knowledge source templates prioritized by category", () => {
+    expect(KNOWLEDGE_SOURCE_TEMPLATES.length >= 10).toBe(true);
+    expect(new Set(KNOWLEDGE_SOURCE_TEMPLATES.map((t) => t.id)).size).toBe(KNOWLEDGE_SOURCE_TEMPLATES.length);
+
+    for (const t of KNOWLEDGE_SOURCE_TEMPLATES) {
+      expect(t.name.trim().length > 0).toBe(true);
+      expect(t.category.trim().length > 0).toBe(true);
+      expect(t.tagline.trim().length > 0).toBe(true);
+      expect(t.tags.length > 0).toBe(true);
+      expect(t.content.trim().length >= 200).toBe(true);
+      expect(knowledgeInput.safeParse({ title: t.title, content: t.content }).success).toBe(true);
+    }
+
+    const supportQuick = getQuickKnowledgeTemplates("Customer Support", 4);
+    expect(supportQuick.length).toBe(4);
+    expect(supportQuick[0]?.category).toBe("Customer Support");
+    expect(new Set(supportQuick.map((t) => t.id)).size).toBe(4);
+
+    const eduQuick = getQuickKnowledgeTemplates("Education", 4);
+    expect(eduQuick.length).toBe(4);
+    expect(eduQuick[0]?.category).toBe("Education");
+  });
+
+  it("provides unique, Telegram-safe automatic response templates for Standard Bots and AI Agents", () => {
+    expect(STANDARD_RESPONSE_TEMPLATES.length >= 10).toBe(true);
+    expect(AI_AGENT_RESPONSE_TEMPLATES.length >= 10).toBe(true);
+    expect(getResponseTemplates("standard")).toEqual(STANDARD_RESPONSE_TEMPLATES);
+    expect(getResponseTemplates("ai-agent")).toEqual(AI_AGENT_RESPONSE_TEMPLATES);
+
+    const all = [...STANDARD_RESPONSE_TEMPLATES, ...AI_AGENT_RESPONSE_TEMPLATES];
+    expect(new Set(all.map((t) => t.id)).size).toBe(all.length);
+    for (const t of all) {
+      expect(t.name.trim().length > 0).toBe(true);
+      expect(t.category.trim().length > 0).toBe(true);
+      expect(t.tagline.trim().length > 0).toBe(true);
+      expect(t.tags.length > 0).toBe(true);
+      expect(t.welcomeMessage.trim().length >= 30).toBe(true);
+      expect(t.welcomeMessage.length <= 1000).toBe(true);
+      expect(t.fallbackMessage.trim().length >= 30).toBe(true);
+      expect(t.fallbackMessage.length <= 1000).toBe(true);
+      // Plain text Telegram messages should not ship raw Markdown bold syntax.
+      expect(t.welcomeMessage.includes("**")).toBe(false);
+      expect(t.fallbackMessage.includes("**")).toBe(false);
+    }
+
+    const first = STANDARD_RESPONSE_TEMPLATES[0]!;
+    const resolvedWelcome = resolveResponseText(first.welcomeMessage, "ISH-BOT");
+    expect(resolvedWelcome.includes("ISH-BOT")).toBe(true);
+    expect(resolvedWelcome.includes("{{BotName}}")).toBe(false);
+    expect(resolveResponseText(first.welcomeMessage, "")).toBe(first.welcomeMessage);
+
+    expect(getResponseTemplateMatch(first, resolvedWelcome, first.fallbackMessage, "ISH-BOT")).toBe("both");
+    expect(getResponseTemplateMatch(first, resolvedWelcome, "Custom fallback", "ISH-BOT")).toBe("welcome");
+    expect(getResponseTemplateMatch(first, "Custom welcome", first.fallbackMessage, "ISH-BOT")).toBe("fallback");
+    expect(getResponseTemplateMatch(first, "Custom welcome", "Custom fallback", "ISH-BOT")).toBe(null);
+
+    const ecomQuick = getQuickResponseTemplates("standard", "E-commerce", 4);
+    expect(ecomQuick.length).toBe(4);
+    expect(ecomQuick[0]?.category).toBe("E-Commerce");
+
+    const aiSupportQuick = getQuickResponseTemplates("ai-agent", "Customer Support", 4);
+    expect(aiSupportQuick.length).toBe(4);
+    expect(aiSupportQuick[0]?.category).toBe("Customer Support");
   });
 });

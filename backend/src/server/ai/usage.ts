@@ -4,7 +4,13 @@ import { nvidiaPricing } from "@backend/lib/env/integrations";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import { logEvent } from "@backend/server/logger";
 export type UsageOrigin = "playground" | "agent" | "knowledge" | "api";
-export interface UsageScope { workspaceId: string; userId?: string; origin: UsageOrigin }
+export interface UsageScope {
+  workspaceId: string;
+  userId?: string;
+  origin: UsageOrigin;
+  botId?: string;
+  executionId?: string;
+}
 /**
  * Who a model call is billed to. Set once at the entry point (Playground request, Telegram update, document indexing);
  * every provider call inside it is then metered without threading the workspace through each function.
@@ -65,6 +71,8 @@ export async function recordUsage(r: UsageRecord): Promise<void> {
     await createAdminClient().from("ai_usage_events").insert({
       workspace_id: scope.workspaceId,
       user_id: scope.userId ?? null,
+      bot_id: scope.botId ?? null,
+      execution_id: scope.executionId ?? null,
       source: r.source,
       model_slug: r.slug,
       api_model_id: r.apiModelId,

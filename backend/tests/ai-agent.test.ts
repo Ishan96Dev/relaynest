@@ -15,6 +15,7 @@ import {
 import {
   base64ToBytes,
   cleanRawImagePrompt,
+  hasImageFilterRisk,
   isFilteredOrBlankImage,
   pickImageDimensions,
   sniffImageMime,
@@ -22,7 +23,8 @@ import {
   ThinkStreamParser,
 } from "../src/server/ai/provider";
 import { resolveModelFromDb } from "../src/server/services/ai-models";
-import { updateAiAgentInput } from "../src/lib/validation/schemas";
+import { diffAiAgentUpdate, type AiAgentDto } from "../src/server/services/ai-agents";
+import { updateAiAgentInput, updateBotInput } from "../src/lib/validation/schemas";
 
 const agent: AgentConfig = {
   id: "a", workspaceId: "w", name: "Aria", description: "Helps with orders.", category: "Customer Support", language: "English",
@@ -101,6 +103,10 @@ describe("model execution", () => {
     expect(pickImageDimensions("Vertical phone wallpaper poster")).toEqual({ width: 896, height: 1152 });
     expect(pickImageDimensions("A studio portrait of a ceramic vase")).toEqual({ width: 896, height: 1152 });
     expect(pickImageDimensions("A red fox in snow")).toEqual({ width: 1024, height: 1024 });
+    expect(hasImageFilterRisk("goku")).toBe(true);
+    expect(hasImageFilterRisk("A cinematic poster of Spider-Man swinging over New York")).toBe(true);
+    expect(hasImageFilterRisk("Generate iPhone 17 studio shot")).toBe(true);
+    expect(hasImageFilterRisk("A red fox sitting in a snowy pine forest at sunrise")).toBe(false);
   });
 
   it("dynamically scales Deep Thinking token budgets and splits chunk-boundary <think> tags safely", () => {
@@ -140,8 +146,111 @@ describe("model execution", () => {
 describe("agent update input", () => {
   it("needs at least one field and validates ranges", () => {
     expect(updateAiAgentInput.safeParse({}).success).toBe(false);
+    expect(updateAiAgentInput.safeParse({ silent: true }).success).toBe(false);
+    expect(updateAiAgentInput.safeParse({ silent: true, notifySummary: true }).success).toBe(false);
     expect(updateAiAgentInput.safeParse({ temperature: 1.5 }).success).toBe(false);
     expect(updateAiAgentInput.safeParse({ maxTokens: 32 }).success).toBe(false);
     expect(updateAiAgentInput.safeParse({ temperature: 0.2, maxTokens: 512, memoryTurns: 10 }).success).toBe(true);
+    expect(updateAiAgentInput.safeParse({ name: "ISH-BOT", silent: true }).success).toBe(true);
+    expect(updateAiAgentInput.safeParse({ welcomeMessage: "a".repeat(2500), fallbackMessage: "b".repeat(2500) }).success).toBe(true);
+    expect(updateAiAgentInput.safeParse({ welcomeMessage: "a".repeat(4097) }).success).toBe(false);
+    expect(updateBotInput.safeParse({ description: "d".repeat(300), category: "c".repeat(60) }).success).toBe(true);
+    expect(updateBotInput.safeParse({ description: "d".repeat(301) }).success).toBe(false);
+  });
+
+  it("diffs agent updates accurately so unchanged step saves do not trigger redundant bot syncs or notifications", () => {
+    const existing: AiAgentDto = {
+      id: "agent-1",
+      name: "ISH-BOT",
+      username: "ish_bot",
+      description: "Test bot",
+      avatarPath: null,
+      language: "English",
+      category: "Entertainment",
+      modelSlug: "nemotron-3-5-lightning-30b-a3b",
+      modelName: "Nemotron 3.5 Lightning 30B",
+      imageModelSlug: null,
+      imageModelName: null,
+      commands: [],
+      instructions: "Be helpful and concise.",
+      welcomeMessage: "Hello!",
+      fallbackMessage: "Try again.",
+      temperature: 0.5,
+      maxTokens: 1024,
+      memoryTurns: 10,
+      tools: DEFAULT_TOOLS,
+      botId: "bot-1",
+      status: "active",
+      createdAt: "2026-11-26T00:00:00Z",
+      updatedAt: "2026-11-27T00:00:00Z",
+    };
+
+    // Re-submitting identical values produces zero changes.
+    expect(
+      diffAiAgentUpdate(existing, {
+        name: "ISH-BOT",
+        description: "Test bot",
+        category: "Entertainment",
+        language: "English",
+        modelSlug: "nemotron-3-5-lightning-30b-a3b",
+        imageModelSlug: null,
+        commands: [],
+        instructions: "Be helpful and concise.",
+        welcomeMessage: "Hello!",
+        fallbackMessage: "Try again.",
+        temperature: 0.5,
+        maxTokens: 1024,
+        memoryTurns: 10,
+        tools: DEFAULT_TOOLS,
+      }),
+    ).toEqual({
+      botFieldsChanged: false,
+      commandsOrToolsChanged: false,
+      commandMirrorChanged: false,
+      anyChanged: false,
+      changedBotFields: { name: false, description: false, avatar: false, responses: false },
+    });
+
+    // Changing only AI model/instructions does not trigger botFieldsChanged.
+    expect(
+      diffAiAgentUpdate(existing, {
+        name: "ISH-BOT",
+        modelSlug: "kimi-k3-1-pro",
+        instructions: "New detailed prompt for users.",
+      }),
+    ).toEqual({
+      botFieldsChanged: false,
+      commandsOrToolsChanged: false,
+      commandMirrorChanged: false,
+      anyChanged: true,
+      changedBotFields: { name: false, description: false, avatar: false, responses: false },
+    });
+
+    // Changing category triggers botFieldsChanged so bots & ai_agents stay aligned.
+    expect(diffAiAgentUpdate(existing, { category: "Customer Support" })).toEqual({
+      botFieldsChanged: true,
+      commandsOrToolsChanged: false,
+      commandMirrorChanged: false,
+      anyChanged: true,
+      changedBotFields: { name: false, description: false, avatar: false, responses: false },
+    });
+
+    // Changing name + welcomeMessage flags Telegram and response sync accurately.
+    expect(diffAiAgentUpdate(existing, { name: "ISH-BOT v2", welcomeMessage: "Welcome!" })).toEqual({
+      botFieldsChanged: true,
+      commandsOrToolsChanged: false,
+      commandMirrorChanged: true,
+      anyChanged: true,
+      changedBotFields: { name: true, description: false, avatar: false, responses: true },
+    });
+
+    // Changing tools triggers command sync without bot profile sync.
+    expect(diffAiAgentUpdate(existing, { tools: { ...DEFAULT_TOOLS, webSearch: false } })).toEqual({
+      botFieldsChanged: false,
+      commandsOrToolsChanged: true,
+      commandMirrorChanged: true,
+      anyChanged: true,
+      changedBotFields: { name: false, description: false, avatar: false, responses: false },
+    });
   });
 });

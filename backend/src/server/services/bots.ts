@@ -9,7 +9,10 @@ import { BUCKETS } from "@backend/lib/supabase/storage";
 import { logEvent } from "@backend/server/logger";
 import { requireWrite, type AuthContext } from "@backend/server/auth/context";
 import { assertBotLimit, assertExecutionLimit } from "@backend/server/billing/entitlements";
+import { parseCommands, parseTools } from "@backend/server/ai/agent";
 import { BOT_COLUMNS, getBot, toBotDto, type BotDto } from "@backend/server/repositories/bots";
+import { syncAgentCommandsToBotCommands } from "@backend/server/repositories/commands";
+import { syncWelcomeDefaultResponses } from "@backend/server/repositories/responses";
 import { recordBotHistory } from "@backend/server/services/bot-history";
 import {
   deleteMyCommands,
@@ -91,6 +94,11 @@ export async function createBot(ctx: AuthContext, input: CreateBotInput, opts?: 
     }
   }
 
+  await syncWelcomeDefaultResponses(ctx.workspaceId, bot.id as string, {
+    welcomeMessage: input.welcomeMessage ?? null,
+    defaultResponse: input.defaultResponse ?? null,
+  }).catch(() => undefined);
+
   await admin.from("activity_logs").insert({ workspace_id: ctx.workspaceId, actor_id: ctx.userId, action: "bot.created", detail: `@${me.username}` });
   await recordBotHistory({
     workspaceId: ctx.workspaceId,
@@ -127,7 +135,7 @@ async function loadToken(botId: string, workspaceId: string) {
 }
 
 /** Registers the Telegram webhook with a fresh secret token and marks the bot active. */
-export async function activateBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean }) {
+export async function activateBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean; skipAgentSync?: boolean }) {
   requireWrite(ctx);
   const bot = await getBot(ctx, botId); // verifies workspace ownership
   const token = await loadToken(bot.id, ctx.workspaceId);
@@ -144,6 +152,9 @@ export async function activateBot(ctx: AuthContext, botId: string, opts?: { skip
         .select("*")
         .single();
       if (polled.error) throw new Error("Failed to activate bot");
+      if (!opts?.skipAgentSync) {
+        await admin.from("ai_agents").update({ status: "active" }).eq("bot_id", bot.id).eq("workspace_id", ctx.workspaceId).not("model_id", "is", null);
+      }
       if (!opts?.skipNotify) {
         await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_activated", title: `Bot activated: ${bot.name}`, body: "It is now online and answering Telegram messages.", actionUrl: `/bots/${bot.id}` });
       }
@@ -161,6 +172,9 @@ export async function activateBot(ctx: AuthContext, botId: string, opts?: { skip
       .select("*")
       .single();
     if (error) throw new Error("Failed to activate bot");
+    if (!opts?.skipAgentSync) {
+      await admin.from("ai_agents").update({ status: "active" }).eq("bot_id", bot.id).eq("workspace_id", ctx.workspaceId).not("model_id", "is", null);
+    }
     if (!opts?.skipNotify) {
       await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_activated", title: `Bot activated: ${bot.name}`, body: "It is now online and answering Telegram messages.", actionUrl: `/bots/${bot.id}` });
     }
@@ -173,7 +187,7 @@ export async function activateBot(ctx: AuthContext, botId: string, opts?: { skip
   }
 }
 
-export async function deactivateBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean }) {
+export async function deactivateBot(ctx: AuthContext, botId: string, opts?: { skipNotify?: boolean; skipAgentSync?: boolean }) {
   requireWrite(ctx);
   const bot = await getBot(ctx, botId);
   const token = await loadToken(bot.id, ctx.workspaceId);
@@ -195,6 +209,9 @@ export async function deactivateBot(ctx: AuthContext, botId: string, opts?: { sk
     .select("*")
     .single();
   if (error) throw new Error("Failed to deactivate bot");
+  if (!opts?.skipAgentSync) {
+    await admin.from("ai_agents").update({ status: "inactive" }).eq("bot_id", bot.id).eq("workspace_id", ctx.workspaceId);
+  }
   if (!opts?.skipNotify) {
     await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_paused", title: `Bot paused: ${bot.name}`, body: "It will not reply to Telegram messages until you activate it again.", emailKey: "botOffline", actionUrl: `/bots/${bot.id}` });
   }
@@ -207,14 +224,18 @@ async function loadBotConfigSnapshot(workspaceId: string, bot: BotDto) {
     admin.from("bot_commands").select("command").eq("bot_id", bot.id).eq("workspace_id", workspaceId),
     admin
       .from("ai_agents")
-      .select("id, category, description, ai_models!ai_agents_model_id_fkey(name)")
+      .select("id, category, description, commands, ai_models!ai_agents_model_id_fkey(name)")
       .eq("bot_id", bot.id)
       .eq("workspace_id", workspaceId)
       .maybeSingle(),
   ]);
-  const commands =
-    cmdsRes.status === "fulfilled" && cmdsRes.value.data ? cmdsRes.value.data.map((c) => `/${c.command as string}`) : [];
   const agentRow = agentRes.status === "fulfilled" ? agentRes.value.data : null;
+  const dbCommands =
+    cmdsRes.status === "fulfilled" && cmdsRes.value.data ? cmdsRes.value.data.map((c) => `/${c.command as string}`) : [];
+  const agentCmds = Array.isArray(agentRow?.commands)
+    ? (agentRow.commands as { command?: string }[]).filter((c) => c.command).map((c) => `/${String(c.command)}`)
+    : [];
+  const commands = [...new Set([...dbCommands, ...agentCmds])];
   const joinedModel = agentRow ? (Array.isArray(agentRow.ai_models) ? agentRow.ai_models[0] : agentRow.ai_models) : null;
   return {
     commands,
@@ -389,7 +410,7 @@ export async function updateBotToken(ctx: AuthContext, botId: string, token: str
   const admin = createAdminClient();
   const { error: credErr } = await admin
     .from("bot_credentials")
-    .update({ encrypted_token: encrypted, key_version: env.ENCRYPTION_KEY_VERSION })
+    .update({ encrypted_token: encrypted, key_version: env.ENCRYPTION_KEY_VERSION, rotated_at: new Date().toISOString() })
     .eq("bot_id", bot.id)
     .eq("workspace_id", ctx.workspaceId);
   if (credErr) throw new Error("Failed to update token");
@@ -405,6 +426,19 @@ export async function updateBotToken(ctx: AuthContext, botId: string, token: str
     .select("*")
     .single();
   if (error || !data) throw new Error("Failed to update bot");
+  const agentSyncPatch: Record<string, unknown> = {
+    ...(me.username ? { username: me.username } : {}),
+    ...(bot.webhookStatus === "telegram_deleted" ? { status: "inactive" } : {}),
+  };
+  if (Object.keys(agentSyncPatch).length > 0) {
+    await admin.from("ai_agents").update(agentSyncPatch).eq("bot_id", bot.id).eq("workspace_id", ctx.workspaceId);
+  }
+  await admin.from("activity_logs").insert({
+    workspace_id: ctx.workspaceId,
+    actor_id: ctx.userId,
+    action: "bot.token_updated",
+    detail: me.username ? `@${me.username}` : bot.name,
+  });
   await notify({
     workspaceId: ctx.workspaceId,
     userId: ctx.userId,
@@ -521,17 +555,35 @@ export async function revalidateBot(ctx: AuthContext, botId: string) {
   return res.bot;
 }
 
-/** Updates bot fields in Supabase and best-effort syncs name/description to Telegram. */
+/** Updates bot fields in Supabase, keeps any linked AI Agent synced, and best-effort syncs changed fields to Telegram. */
 export async function updateBotDetails(
   ctx: AuthContext,
   botId: string,
   input: { name?: string; description?: string; category?: string; welcomeMessage?: string; defaultResponse?: string; avatarPath?: string | null; status?: string },
+  opts?: {
+    skipNotify?: boolean;
+    skipAgentSync?: boolean;
+    skipHistory?: boolean;
+    forceTelegramSync?: { name?: boolean; description?: boolean; photo?: boolean };
+    forceResponsesSync?: boolean;
+  },
 ) {
   requireWrite(ctx);
   const existing = await getBot(ctx, botId);
   if (input.avatarPath && !input.avatarPath.startsWith(`${ctx.userId}/`) && !input.avatarPath.startsWith(`bots/${botId}/`)) {
     throw Errors.forbidden();
   }
+
+  const norm = (v: string | null | undefined) => (v ?? "").trim();
+  const nameChanged = Boolean(opts?.forceTelegramSync?.name) || (input.name !== undefined && input.name !== existing.name);
+  const descChanged = Boolean(opts?.forceTelegramSync?.description) || (input.description !== undefined && norm(input.description) !== norm(existing.description));
+  const catChanged = input.category !== undefined && norm(input.category) !== norm(existing.category);
+  const welcomeChanged = Boolean(opts?.forceResponsesSync) || (input.welcomeMessage !== undefined && norm(input.welcomeMessage) !== norm(existing.welcomeMessage));
+  const fallbackChanged = Boolean(opts?.forceResponsesSync) || (input.defaultResponse !== undefined && norm(input.defaultResponse) !== norm(existing.defaultResponse));
+  const photoChanged = Boolean(opts?.forceTelegramSync?.photo) || (input.avatarPath !== undefined && input.avatarPath !== existing.avatarPath);
+  const statusChanged = input.status !== undefined && input.status !== existing.status;
+  const textChanged = nameChanged || descChanged || catChanged || welcomeChanged || fallbackChanged;
+
   const patch: Record<string, unknown> = {};
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
@@ -553,26 +605,62 @@ export async function updateBotDetails(
     throw Errors.upstream(error?.message ? `Could not update bot: ${error.message}` : "Failed to update bot.");
   }
 
-  // Keep any linked AI Agent in sync with bot name/description/avatar/responses.
-  const agentPatch: Record<string, unknown> = {};
-  if (input.name !== undefined) agentPatch.name = input.name;
-  if (input.description !== undefined) agentPatch.description = input.description;
-  if (input.avatarPath !== undefined) agentPatch.avatar_path = input.avatarPath;
-  if (input.welcomeMessage !== undefined) agentPatch.welcome_message = input.welcomeMessage;
-  if (input.defaultResponse !== undefined) agentPatch.fallback_message = input.defaultResponse;
-  if (Object.keys(agentPatch).length > 0) {
-    await createAdminClient().from("ai_agents").update(agentPatch).eq("bot_id", botId).eq("workspace_id", ctx.workspaceId);
+  if (welcomeChanged || fallbackChanged) {
+    await syncWelcomeDefaultResponses(ctx.workspaceId, botId, {
+      ...(input.welcomeMessage !== undefined ? { welcomeMessage: input.welcomeMessage } : {}),
+      ...(input.defaultResponse !== undefined ? { defaultResponse: input.defaultResponse } : {}),
+    }).catch(() => undefined);
   }
 
-  if (input.name !== undefined || input.description !== undefined || input.avatarPath !== undefined) {
+  // Keep any linked AI Agent (and its mirrored /start bot_commands row) in sync with changed bot fields.
+  if (!opts?.skipAgentSync) {
+    const admin = createAdminClient();
+    const agentPatch: Record<string, unknown> = {};
+    if (nameChanged && input.name) agentPatch.name = input.name;
+    if (descChanged && input.description !== undefined && input.description.trim().length >= 1) {
+      agentPatch.description = input.description.trim().slice(0, 300);
+    }
+    if (catChanged && input.category !== undefined && input.category.trim().length >= 2) {
+      agentPatch.category = input.category.trim().slice(0, 60);
+    }
+    if (photoChanged) agentPatch.avatar_path = input.avatarPath;
+    if (welcomeChanged && input.welcomeMessage !== undefined) {
+      agentPatch.welcome_message = input.welcomeMessage.trim() ? input.welcomeMessage.trim().slice(0, 4096) : null;
+    }
+    if (fallbackChanged && input.defaultResponse !== undefined) {
+      agentPatch.fallback_message = input.defaultResponse.trim() ? input.defaultResponse.trim().slice(0, 4096) : null;
+    }
+    if (statusChanged && input.status) agentPatch.status = input.status;
+    if (Object.keys(agentPatch).length > 0) {
+      const { data: syncedAgent, error: agentErr } = await admin
+        .from("ai_agents")
+        .update(agentPatch)
+        .eq("bot_id", botId)
+        .eq("workspace_id", ctx.workspaceId)
+        .select("name, description, welcome_message, commands, tools")
+        .maybeSingle();
+      if (agentErr) console.error("[bots] linked ai_agent sync failed:", agentErr.message);
+      if (syncedAgent && (nameChanged || descChanged || welcomeChanged)) {
+        await syncAgentCommandsToBotCommands(ctx.workspaceId, botId, {
+          name: syncedAgent.name as string,
+          description: syncedAgent.description as string,
+          welcomeMessage: (syncedAgent.welcome_message as string | null) ?? null,
+          commands: parseCommands(syncedAgent.commands),
+          tools: parseTools(syncedAgent.tools),
+        }).catch(() => undefined);
+      }
+    }
+  }
+
+  if (nameChanged || descChanged || photoChanged) {
     try {
       const token = await loadToken(botId, ctx.workspaceId);
-      if (input.name !== undefined && input.name !== existing.name) await setMyName(token, input.name);
-      if (input.description !== undefined && input.description !== existing.description) await setMyDescription(token, input.description);
-      if (input.avatarPath !== undefined && input.avatarPath !== existing.avatarPath) {
+      if (nameChanged && input.name !== undefined) await setMyName(token, input.name);
+      if (descChanged && input.description !== undefined) await setMyDescription(token, input.description);
+      if (photoChanged) {
         if (input.avatarPath === null) {
           await removeMyProfilePhoto(token);
-        } else {
+        } else if (input.avatarPath) {
           const { data: fileBlob } = await createAdminClient().storage.from(BUCKETS.avatars).download(input.avatarPath);
           if (fileBlob) {
             const bytes = new Uint8Array(await fileBlob.arrayBuffer());
@@ -584,11 +672,64 @@ export async function updateBotDetails(
       console.error("[bots] Telegram sync warning:", e instanceof Error ? e.message : e);
     }
   }
-  const photoChanged = input.avatarPath !== undefined && input.avatarPath !== existing.avatarPath;
-  const textChanged = input.name !== undefined || input.description !== undefined || input.category !== undefined || input.welcomeMessage !== undefined || input.defaultResponse !== undefined;
-  if (photoChanged) await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_photo_updated", title: `Bot photo updated: ${data.name as string}`, body: "The new picture was saved and sent to Telegram.", dedupeHours: 0.01 });
-  if (textChanged) await notify({ workspaceId: ctx.workspaceId, userId: ctx.userId, kind: "bot_updated", title: `Bot updated: ${data.name as string}`, body: "Your changes were saved and synced with Telegram.", dedupeHours: 0.01 });
-  return toBotDto(data);
+
+  const dto = toBotDto(data);
+  if (!opts?.skipHistory && (textChanged || photoChanged)) {
+    const admin = createAdminClient();
+    const snap = await loadBotConfigSnapshot(ctx.workspaceId, dto);
+    await Promise.allSettled([
+      admin.from("activity_logs").insert({
+        workspace_id: ctx.workspaceId,
+        actor_id: ctx.userId,
+        action: "bot.updated",
+        detail: dto.username ? `@${dto.username}` : dto.name,
+      }),
+      recordBotHistory({
+        workspaceId: ctx.workspaceId,
+        botId: dto.id,
+        botName: dto.name,
+        username: dto.username ?? "",
+        event: "updated",
+        category: snap.category,
+        description: snap.description,
+        commands: snap.commands,
+        welcomeMessage: dto.welcomeMessage,
+        defaultResponse: dto.defaultResponse,
+        modelName: snap.modelName,
+        messagesCount: dto.messagesCount,
+        actorId: ctx.userId,
+        actorEmail: ctx.email,
+        botCreatedAt: dto.createdAt,
+      }),
+    ]);
+  }
+
+  if (!opts?.skipNotify) {
+    if (textChanged) {
+      await notify({
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        kind: "bot_updated",
+        title: `Bot updated: ${dto.name}`,
+        body: "Your changes were saved and synced with Telegram.",
+        actionUrl: `/bots/${dto.id}`,
+        dedupeHours: 0.01,
+        dedupeByTitle: true,
+      });
+    } else if (photoChanged) {
+      await notify({
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        kind: "bot_photo_updated",
+        title: `Bot photo updated: ${dto.name}`,
+        body: "The new picture was saved and sent to Telegram.",
+        actionUrl: `/bots/${dto.id}`,
+        dedupeHours: 0.01,
+        dedupeByTitle: true,
+      });
+    }
+  }
+  return dto;
 }
 
 /** Sends a real Telegram message when chatId is provided, or simulates the bot's reply from DB commands/responses. */
@@ -613,15 +754,26 @@ export async function testBot(ctx: AuthContext, botId: string, input: { chatId?:
     const cmd = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
     const { data: cmds } = await ctx.supabase
       .from("bot_commands")
-      .select("command, response_config, enabled")
+      .select("command, description, response_type, response_config, enabled")
       .eq("bot_id", bot.id)
       .eq("workspace_id", ctx.workspaceId)
       .eq("enabled", true);
     const hit = (cmds ?? []).find((c) => (c.command as string).toLowerCase() === cmd);
-    const hitText = (hit?.response_config as { text?: string } | null)?.text;
+    const hitCfg = hit?.response_config as { text?: string; instruction?: string } | null;
+    const hitText = hitCfg?.text?.trim() || hitCfg?.instruction?.trim() || (hit?.description as string | null)?.trim();
     if (hitText) return { sent: false, mode: "simulate" as const, reply: hitText };
     if (cmd === "start" && bot.welcomeMessage) return { sent: false, mode: "simulate" as const, reply: bot.welcomeMessage };
   }
+  const { data: kwRules } = await ctx.supabase
+    .from("bot_responses")
+    .select("match_value, response_text")
+    .eq("bot_id", bot.id)
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("match_type", "keyword")
+    .eq("enabled", true)
+    .order("priority", { ascending: true });
+  const kwHit = (kwRules ?? []).find((r) => r.match_value && text.toLowerCase().includes(String(r.match_value).toLowerCase()));
+  if (kwHit?.response_text) return { sent: false, mode: "simulate" as const, reply: String(kwHit.response_text) };
   return { sent: false, mode: "simulate" as const, reply: bot.defaultResponse || bot.welcomeMessage || "No default response configured yet." };
 }
 

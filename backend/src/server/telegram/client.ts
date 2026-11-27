@@ -219,7 +219,7 @@ export async function sendPhotoGallery(
   token: string,
   chatId: number | string,
   photos: Array<{ url: string; caption?: string }>,
-): Promise<void> {
+): Promise<{ sentCount: number }> {
   const safe = photos
     .filter((p) => {
       try {
@@ -230,10 +230,10 @@ export async function sendPhotoGallery(
       }
     })
     .slice(0, 4);
-  if (!safe.length) return;
+  if (!safe.length) return { sentCount: 0 };
   if (safe.length === 1) {
-    await sendPhotoByUrl(token, chatId, safe[0]!.url, safe[0]!.caption, "HTML");
-    return;
+    const ok = await sendPhotoByUrl(token, chatId, safe[0]!.url, safe[0]!.caption, "HTML");
+    return { sentCount: ok ? 1 : 0 };
   }
   try {
     await call<unknown>(
@@ -249,6 +249,7 @@ export async function sendPhotoGallery(
       },
       15_000,
     );
+    return { sentCount: safe.length };
   } catch (err) {
     if (isTelegramBotDeletedError(err) || isTelegramRateLimitError(err)) throw err;
     // If Telegram rejected any URL in the group (e.g. Wikimedia hotlink), send up to 2 individually with byte fallback.
@@ -258,11 +259,17 @@ export async function sendPhotoGallery(
       const ok = await sendPhotoByUrl(token, chatId, p.url, p.caption, "HTML");
       if (ok) sent += 1;
     }
+    return { sentCount: sent };
   }
 }
 
 export function sendChatAction(token: string, chatId: number | string, action: "typing" | "upload_photo") {
   return call<true>(token, "sendChatAction", { chat_id: chatId, action });
+}
+
+/** Fetches the bot's currently registered slash command menu from Telegram. */
+export function getMyCommands(token: string, timeoutMs = 8_000) {
+  return call<{ command: string; description: string }[]>(token, "getMyCommands", {}, timeoutMs);
 }
 
 /** Sets the command menu shown in the bot's chat. Descriptions must be 1-256 characters. */
@@ -335,7 +342,7 @@ export async function sendPhoto(
   caption?: string,
   filename = "image.jpg",
   mime?: string,
-): Promise<void> {
+): Promise<{ messageId?: number }> {
   const detectedMime =
     mime ??
     (bytes[0] === 0x89 && bytes[1] === 0x50
@@ -353,13 +360,14 @@ export async function sendPhoto(
   } catch {
     throw Errors.upstream("Could not reach Telegram.");
   }
-  const json = (await res.json().catch(() => null)) as TgResponse<unknown> | null;
+  const json = (await res.json().catch(() => null)) as TgResponse<{ message_id?: number }> | null;
   if (!json?.ok) {
     const code = json?.error_code ?? res.status;
     if (code === 401 || code === 404) throw Errors.telegramBotDeleted();
     if (code === 429) throw Errors.telegramRateLimited(parseRetryAfterSec(res, json));
     throw Errors.upstream(json?.description ? `Telegram: ${json.description}` : "Telegram did not accept the picture.");
   }
+  return { messageId: typeof json.result?.message_id === "number" ? json.result.message_id : undefined };
 }
 
 /** Downloads a file a user sent to the bot. Refuses anything larger than maxBytes. */

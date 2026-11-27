@@ -49,24 +49,37 @@ const fromDefinition = (d: WorkflowDefinition): Snap => ({
   edges: d.edges.map((e) => branchEdge({ id: e.id, source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) } as Edge)),
   configs: Object.fromEntries(d.nodes.map((n) => [n.id, n.config as Record<string, unknown>])),
 });
-const seed = (blank = false): Snap => ({
-  nodes: [
-    { id: "trigger_1", type: "rn", position: { x: 300, y: 10 }, data: { type: "trigger.webhook" } },
-    { id: "cond_1", type: "rn", position: { x: 300, y: 160 }, data: { type: "condition.equals" } },
-    { id: "act_1", type: "rn", position: { x: 130, y: 340 }, data: { type: "action.telegram.sendMessage" } },
-  ],
-  edges: [
-    { id: "e1", source: "trigger_1", target: "cond_1" },
-    branchEdge({ id: "e2", source: "cond_1", target: "act_1", sourceHandle: "true" }),
-  ],
-  configs: {
-    trigger_1: {},
-    cond_1: { field: "event.status", value: "success" },
-    act_1: blank
-      ? { botId: "", chatIdSource: "configured", chatId: "", text: "Deployment {{event.status}}." }
-      : { botId: "my-bot", chatIdSource: "configured", chatId: "123456", text: "Deployment {{event.status}}." },
-  },
-});
+const seed = (blank = false, initialBotId?: string): Snap =>
+  initialBotId
+    ? {
+        nodes: [
+          { id: "trigger_1", type: "rn", position: { x: 300, y: 20 }, data: { type: "trigger.telegram.message" } },
+          { id: "act_1", type: "rn", position: { x: 300, y: 210 }, data: { type: "action.telegram.sendMessage" } },
+        ],
+        edges: [{ id: "e1", source: "trigger_1", target: "act_1" }],
+        configs: {
+          trigger_1: { botId: initialBotId, commandFilter: "" },
+          act_1: { botId: initialBotId, chatIdSource: "trigger", chatId: "", text: "Received your message: {{event.text}}" },
+        },
+      }
+    : {
+        nodes: [
+          { id: "trigger_1", type: "rn", position: { x: 300, y: 10 }, data: { type: "trigger.webhook" } },
+          { id: "cond_1", type: "rn", position: { x: 300, y: 160 }, data: { type: "condition.equals" } },
+          { id: "act_1", type: "rn", position: { x: 130, y: 340 }, data: { type: "action.telegram.sendMessage" } },
+        ],
+        edges: [
+          { id: "e1", source: "trigger_1", target: "cond_1" },
+          branchEdge({ id: "e2", source: "cond_1", target: "act_1", sourceHandle: "true" }),
+        ],
+        configs: {
+          trigger_1: {},
+          cond_1: { field: "event.status", value: "success" },
+          act_1: blank
+            ? { botId: "", chatIdSource: "configured", chatId: "", text: "Deployment {{event.status}}." }
+            : { botId: "my-bot", chatIdSource: "configured", chatId: "123456", text: "Deployment {{event.status}}." },
+        },
+      };
 
 const STORAGE = "rn-workflow-draft:";
 
@@ -103,9 +116,9 @@ function ZoomPanel({
   );
 }
 
-function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; initial?: EditorInitial; persisted: boolean; bots: BotOption[] }) {
+function Editor({ workflowId, initial, persisted, bots, initialBotId }: { workflowId: string; initial?: EditorInitial; persisted: boolean; bots: BotOption[]; initialBotId?: string }) {
   const { prefs } = usePreferences();
-  const init = React.useMemo(() => (initial ? fromDefinition(initial.definition) : seed(persisted)), [initial, persisted]);
+  const init = React.useMemo(() => (initial ? fromDefinition(initial.definition) : seed(persisted, initialBotId)), [initial, persisted, initialBotId]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(init.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(init.edges);
   const [configs, setConfigs] = React.useState<Cfg>(init.configs);
@@ -533,6 +546,6 @@ function Editor({ workflowId, initial, persisted, bots }: { workflowId: string; 
   );
 }
 
-export function WorkflowEditor({ workflowId, initial, persisted = false, bots = [] }: { workflowId: string; initial?: EditorInitial; persisted?: boolean; bots?: BotOption[] }) {
-  return <ReactFlowProvider><Editor workflowId={workflowId} initial={initial} persisted={persisted} bots={bots} /></ReactFlowProvider>;
+export function WorkflowEditor({ workflowId, initial, persisted = false, bots = [], initialBotId }: { workflowId: string; initial?: EditorInitial; persisted?: boolean; bots?: BotOption[]; initialBotId?: string }) {
+  return <ReactFlowProvider><Editor workflowId={workflowId} initial={initial} persisted={persisted} bots={bots} initialBotId={initialBotId} /></ReactFlowProvider>;
 }

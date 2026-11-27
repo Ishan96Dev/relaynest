@@ -261,13 +261,14 @@ export async function dispatchTelegramFormattedMessages(input: {
   linkPreviewUrl?: string;
   preferLargeMedia?: boolean;
   isGroup?: boolean;
-}): Promise<{ deliveredCount: number; queuedCount: number }> {
+}): Promise<{ deliveredCount: number; queuedCount: number; messageIds: number[] }> {
   const count = Math.max(input.htmlChunks.length, 1);
   const cid = String(input.chatId);
   const isGroup = input.isGroup ?? isGroupChatId(cid);
   const stepSec = isGroup ? 4 : 2;
   let deliveredCount = 0;
   let queuedCount = 0;
+  const messageIds: number[] = [];
   let queuedOffsetSec: number | null = null;
 
   for (let i = 0; i < count; i++) {
@@ -299,11 +300,12 @@ export async function dispatchTelegramFormattedMessages(input: {
     const res = await dispatchTelegramMessage({ ...job, token: input.token });
     if (res.delivered) {
       deliveredCount += 1;
+      if (typeof res.messageId === "number") messageIds.push(res.messageId);
     } else if (res.queued) {
       queuedCount += 1;
       queuedOffsetSec = res.retryAfterSec ?? stepSec;
     }
   }
 
-  return { deliveredCount, queuedCount };
+  return { deliveredCount, queuedCount, messageIds };
 }

@@ -3,6 +3,9 @@ import { newRequestId } from "@backend/lib/http/api";
 import { receiveTelegramUpdate } from "@backend/server/services/telegram-webhook";
 import type { TelegramUpdate } from "@backend/server/telegram/client";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
+
 const MAX_BODY = 64 * 1024;
 
 export async function POST(req: Request, { params }: { params: Promise<{ botPublicId: string }> }) {
@@ -22,7 +25,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ botPubl
   try {
     const r = await receiveTelegramUpdate(botPublicId, req.headers.get("x-telegram-bot-api-secret-token"), update);
     if (r.outcome === "unauthorized") return new Response(null, { status: 401 });
-    if (r.outcome === "ok") {
+    if (r.outcome === "ok" && !r.queued && r.process) {
       after(() =>
         r.process().catch((e) => console.error(`[${newRequestId()}] telegram processing failed:`, e instanceof Error ? e.message : "unknown")),
       );

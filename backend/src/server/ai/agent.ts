@@ -12,7 +12,15 @@ export function parseCommands(raw: unknown): AgentCommand[] {
   return r.success ? r.data : [];
 }
 
-export const DEFAULT_TOOLS: AgentTools = { datetime: true, mentionOnly: true, typing: true, matchLanguage: true, webSearch: true };
+export const DEFAULT_TOOLS: AgentTools = {
+  datetime: true,
+  mentionOnly: true,
+  typing: true,
+  matchLanguage: true,
+  webSearch: true,
+  autoSearch: false,
+  marketData: false,
+};
 
 export function parseTools(raw: unknown): AgentTools {
   const r = toolsSchema.safeParse(raw ?? {});

@@ -6,9 +6,10 @@ import { createCommands, listCommands, replaceCommands } from "@backend/server/r
 
 type Ctx = { params: Promise<{ botId: string }> };
 
-export const GET = route<Ctx>(async (_req, { params }, requestId) => {
+export const GET = route<Ctx>(async (req, { params }, requestId) => {
   const ctx = await requireAuth();
-  return ok(await listCommands(ctx, uuid.parse((await params).botId)), {}, 200, requestId);
+  const sync = new URL(req.url).searchParams.get("sync") === "1";
+  return ok(await listCommands(ctx, uuid.parse((await params).botId), { sync }), {}, 200, requestId);
 });
 
 export const POST = route<Ctx>(async (req, { params }, requestId) => {
@@ -19,6 +20,6 @@ export const POST = route<Ctx>(async (req, { params }, requestId) => {
 
 export const PUT = route<Ctx>(async (req, { params }, requestId) => {
   const ctx = await requireAuth();
-  const { commands } = z.object({ commands: z.array(commandInput).max(30) }).parse(await readJson(req));
+  const { commands } = z.object({ commands: z.array(commandInput).max(50) }).parse(await readJson(req));
   return ok(await replaceCommands(ctx, uuid.parse((await params).botId), commands), {}, 200, requestId);
 });

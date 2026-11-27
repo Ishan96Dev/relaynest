@@ -22,6 +22,10 @@ export interface StepResult {
   nodeId: string;
   nodeType: string;
   status: StepStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  inputSummary?: Record<string, unknown>;
   outputSummary?: Record<string, unknown>;
   errorCode?: string;
   errorMessageSafe?: string;
@@ -111,16 +115,46 @@ export async function executeWorkflow(
 
     let branch: "true" | "false" | undefined;
     const cat = category(node.type);
+    const stepStartMs = now();
+    const stepStartedAt = new Date(stepStartMs).toISOString();
 
     if (cat === "trigger") {
-      steps.push({ nodeId: id, nodeType: node.type, status: "succeeded" });
+      const doneMs = now();
+      steps.push({
+        nodeId: id,
+        nodeType: node.type,
+        status: "succeeded",
+        startedAt: stepStartedAt,
+        finishedAt: new Date(doneMs).toISOString(),
+        durationMs: Math.max(0, doneMs - stepStartMs),
+        outputSummary: { source: event.source, type: event.type },
+      });
     } else if (cat === "condition") {
       const result = evalCondition(node, event, lastHttpStatus);
       branch = result ? "true" : "false";
-      steps.push({ nodeId: id, nodeType: node.type, status: "succeeded", outputSummary: { result } });
+      const doneMs = now();
+      steps.push({
+        nodeId: id,
+        nodeType: node.type,
+        status: "succeeded",
+        startedAt: stepStartedAt,
+        finishedAt: new Date(doneMs).toISOString(),
+        durationMs: Math.max(0, doneMs - stepStartMs),
+        outputSummary: { result },
+      });
     } else {
       if (++actions > LIMITS.maxActionsPerExecution) {
-        steps.push({ nodeId: id, nodeType: node.type, status: "failed", errorCode: "ACTION_LIMIT", errorMessageSafe: "Too many actions in one execution." });
+        const doneMs = now();
+        steps.push({
+          nodeId: id,
+          nodeType: node.type,
+          status: "failed",
+          startedAt: stepStartedAt,
+          finishedAt: new Date(doneMs).toISOString(),
+          durationMs: Math.max(0, doneMs - stepStartMs),
+          errorCode: "ACTION_LIMIT",
+          errorMessageSafe: "Too many actions in one execution.",
+        });
         failed = true;
         break;
       }
@@ -129,26 +163,66 @@ export async function executeWorkflow(
         if (node.type === "action.telegram.sendMessage") {
           const chatId = c.chatIdSource === "trigger" ? String(getPath({ event: event.payload }, "event.chatId") ?? "") : String(c.chatId ?? "");
           if (!chatId) throw Object.assign(new Error("No chat ID."), { code: "NO_CHAT_ID" });
+          const rendered = renderTemplate(c.text!, event);
           const r = await adapters.sendTelegramMessage({
             botId: c.botId!,
             chatId,
-            text: renderTemplate(c.text!, event),
+            text: rendered,
             idempotencyKey: `${opts.executionId}:${id}`,
           });
-          steps.push({ nodeId: id, nodeType: node.type, status: "succeeded", outputSummary: { externalMessageId: r.externalMessageId } });
+          const doneMs = now();
+          steps.push({
+            nodeId: id,
+            nodeType: node.type,
+            status: "succeeded",
+            startedAt: stepStartedAt,
+            finishedAt: new Date(doneMs).toISOString(),
+            durationMs: Math.max(0, doneMs - stepStartMs),
+            inputSummary: { botId: c.botId, chatId, preview: rendered.slice(0, 500) },
+            outputSummary: { externalMessageId: r.externalMessageId },
+          });
         } else if (node.type === "action.http.request") {
           const url = assertSafeOutboundUrl(c.url!);
           const r = await adapters.httpRequest({ method: c.method!, url, body: c.body ? renderTemplate(c.body, event) : undefined });
           lastHttpStatus = r.status;
-          steps.push({ nodeId: id, nodeType: node.type, status: "succeeded", outputSummary: { status: r.status } });
+          const doneMs = now();
+          steps.push({
+            nodeId: id,
+            nodeType: node.type,
+            status: "succeeded",
+            startedAt: stepStartedAt,
+            finishedAt: new Date(doneMs).toISOString(),
+            durationMs: Math.max(0, doneMs - stepStartMs),
+            inputSummary: { method: c.method, url: url.origin + url.pathname },
+            outputSummary: { status: r.status },
+          });
         } else if (node.type === "action.database.insert") {
           if (!adapters.insertRecord) throw Object.assign(new Error("Unavailable."), { code: "UNSUPPORTED" });
           await adapters.insertRecord({ collection: c.collection!, record: c.record as unknown as Record<string, string> });
-          steps.push({ nodeId: id, nodeType: node.type, status: "succeeded" });
+          const doneMs = now();
+          steps.push({
+            nodeId: id,
+            nodeType: node.type,
+            status: "succeeded",
+            startedAt: stepStartedAt,
+            finishedAt: new Date(doneMs).toISOString(),
+            durationMs: Math.max(0, doneMs - stepStartMs),
+            inputSummary: { collection: c.collection },
+          });
         }
       } catch (e) {
         const code = (e as { code?: string }).code ?? "ACTION_FAILED";
-        steps.push({ nodeId: id, nodeType: node.type, status: "failed", errorCode: code, errorMessageSafe: e instanceof Error ? e.message.slice(0, 200) : "Action failed." });
+        const doneMs = now();
+        steps.push({
+          nodeId: id,
+          nodeType: node.type,
+          status: "failed",
+          startedAt: stepStartedAt,
+          finishedAt: new Date(doneMs).toISOString(),
+          durationMs: Math.max(0, doneMs - stepStartMs),
+          errorCode: code,
+          errorMessageSafe: e instanceof Error ? e.message.slice(0, 200) : "Action failed.",
+        });
         failed = true;
         break;
       }

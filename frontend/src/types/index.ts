@@ -6,7 +6,7 @@ export interface BotHistoryEntry {
   botId: string | null;
   botName: string;
   username: string;
-  event: "created" | "deleted" | "deleted_on_telegram";
+  event: "created" | "updated" | "deleted" | "deleted_on_telegram";
   usedFor: string;
   category: string;
   description: string;
@@ -32,9 +32,13 @@ export interface Bot {
   webhookStatus: WebhookStatus;
   messages: number;
   activeUsers: number;
+  executionsCount?: number;
   lastActive: string;
   category: string;
   createdAt: string;
+  linkedAgentId?: string | null;
+  linkedAgentModelName?: string | null;
+  linkedAgentStatus?: BotStatus | null;
 }
 
 export type ExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";

@@ -2,13 +2,14 @@
 
 import {
   AlertTriangle, Bot as BotIcon, CheckCircle2, Clock, ExternalLink, History, LayoutGrid,
-  MessageSquare, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2, Wifi, Zap,
+  MessageSquare, Pencil, Plus, RefreshCw, Search, Settings, Sparkles, Trash2, Wifi, Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 import { formatUserDate, type UserPreferences } from "@backend/lib/preferences";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import { EditBotModal } from "@/components/bots/edit-bot-modal";
 import { StatusBadge } from "@/components/bots/status-badge";
 import { usePreferences } from "@/components/providers/preferences-provider";
 import { Badge } from "@/components/ui/badge";
@@ -30,18 +31,29 @@ function relTime(iso: string | null, prefs?: Pick<UserPreferences, "dateFormat" 
   return prefs ? formatUserDate(iso, prefs) : new Date(iso).toLocaleDateString();
 }
 
-export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bot[]; initialHistory?: BotHistoryEntry[]; demo?: boolean }) {
+export function BotsList({
+  bots,
+  initialHistory = [],
+  canWrite = true,
+  demo = false,
+}: {
+  bots: Bot[];
+  initialHistory?: BotHistoryEntry[];
+  canWrite?: boolean;
+  demo?: boolean;
+}) {
   const { prefs } = usePreferences();
   const router = useRouter();
   const [items, setItems] = React.useState(bots);
   const [history, setHistory] = React.useState(initialHistory);
-  const [historyFilter, setHistoryFilter] = React.useState<"all" | "created" | "deleted">("all");
+  const [historyFilter, setHistoryFilter] = React.useState<"all" | "created" | "updated" | "deleted">("all");
   const [q, setQ] = React.useState("");
   const defaultStatus = prefs.botView === "Active Bots" ? "active" : "all";
   const [status, setStatus] = React.useState(defaultStatus);
   const userChangedFilter = React.useRef(false);
   const [sort, setSort] = React.useState("recent");
   const [syncing, setSyncing] = React.useState(false);
+  const [editTarget, setEditTarget] = React.useState<Bot | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<Bot | null>(null);
   const [deleting, setDeleting] = React.useState(false);
 
@@ -100,15 +112,24 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
       const nextBots = (j.data?.bots ?? []) as Array<{
         id: string; publicId: string; name: string; description: string | null; category: string | null;
         username: string | null; avatarPath: string | null; status: Bot["status"]; webhookStatus: Bot["webhookStatus"];
-        welcomeMessage: string | null; defaultResponse: string | null; messagesCount: number; lastUpdateAt: string | null; createdAt: string;
+        welcomeMessage: string | null; defaultResponse: string | null; messagesCount: number; activeUsers?: number; executionsCount?: number; lastUpdateAt: string | null; createdAt: string;
       }>;
-      setItems(nextBots.map((b) => ({
-        id: b.id, publicId: b.publicId, name: b.name, username: b.username ?? "", avatarPath: b.avatarPath,
-        description: b.description ?? "", welcomeMessage: b.welcomeMessage ?? "", defaultResponse: b.defaultResponse ?? "",
-        status: b.status, webhookStatus: b.webhookStatus, messages: b.messagesCount, activeUsers: 0,
-        lastActive: b.lastUpdateAt ? relTime(b.lastUpdateAt) : "No activity yet", category: b.category ?? "",
-        createdAt: new Date(b.createdAt).toLocaleDateString(),
-      })));
+      setItems((prev) => {
+        const prevMap = new Map(prev.map((x) => [x.id, x]));
+        return nextBots.map((b) => {
+          const old = prevMap.get(b.id);
+          return {
+            id: b.id, publicId: b.publicId, name: b.name, username: b.username ?? "", avatarPath: b.avatarPath,
+            description: b.description ?? "", welcomeMessage: b.welcomeMessage ?? "", defaultResponse: b.defaultResponse ?? "",
+            status: b.status, webhookStatus: b.webhookStatus, messages: b.messagesCount, activeUsers: b.activeUsers ?? 0, executionsCount: b.executionsCount,
+            lastActive: b.lastUpdateAt ? relTime(b.lastUpdateAt) : "No activity yet", category: b.category ?? "",
+            createdAt: new Date(b.createdAt).toLocaleDateString(),
+            linkedAgentId: old?.linkedAgentId ?? null,
+            linkedAgentModelName: old?.linkedAgentModelName ?? null,
+            linkedAgentStatus: old?.linkedAgentStatus ?? null,
+          };
+        });
+      });
       await refreshHistory();
       const deletedCount = ((j.data?.syncResults ?? []) as { telegramDeleted: boolean }[]).filter((r) => r.telegramDeleted).length;
       if (deletedCount > 0) {
@@ -258,7 +279,20 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
                       <p className="mt-0.5 text-foreground/75">Delete this entry now and recreate or link a new Telegram bot if needed.</p>
                     </div>
                   ) : (
-                    <p className="mt-3 line-clamp-2 min-h-10 text-sm text-foreground/75">{b.description || "No description yet."}</p>
+                    <>
+                      <p className="mt-3 line-clamp-2 min-h-10 text-sm text-foreground/75">{b.description || "No description yet."}</p>
+                      {(b.category || b.linkedAgentId) && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {b.category && <Badge tone="neutral">{b.category}</Badge>}
+                          {b.linkedAgentId && (
+                            <Badge tone="primary">
+                              <Sparkles className="size-3" aria-hidden />
+                              {b.linkedAgentModelName ? b.linkedAgentModelName : "AI Agent"}
+                            </Badge>
+                          )}
+                        </div>
+                      )}
+                    </>
                   )}
 
                   <dl className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
@@ -274,7 +308,7 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
                     <div className="panel p-2"><dt className="text-muted">Last active</dt><dd className="mt-0.5 truncate text-sm font-bold">{b.lastActive}</dd></div>
                   </dl>
 
-                  <div className="mt-auto flex gap-2 pt-4">
+                  <div className="mt-auto flex flex-wrap gap-2 pt-4">
                     {tgDeleted ? (
                       <>
                         <Button variant="danger" size="sm" className="flex-1" onClick={() => setDeleteTarget(b)}>
@@ -286,7 +320,19 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
                       </>
                     ) : (
                       <>
-                        <ButtonLink href={`/bots/${b.id}`} variant="subtle" size="sm" className="flex-1"><Pencil className="size-3.5" />Manage</ButtonLink>
+                        {canWrite && (
+                          <Button variant="subtle" size="sm" className="flex-1" onClick={() => setEditTarget(b)}>
+                            <Pencil className="size-3.5" aria-hidden />Edit
+                          </Button>
+                        )}
+                        <ButtonLink href={`/bots/${b.id}`} variant="outline" size="sm" className={canWrite ? undefined : "flex-1"}>
+                          <Settings className="size-3.5" aria-hidden />Manage
+                        </ButtonLink>
+                        {b.linkedAgentId && (
+                          <ButtonLink href={`/ai/agents/${b.linkedAgentId}`} variant="outline" size="sm" title="Edit linked AI Agent">
+                            <Sparkles className="size-3.5 text-lavender" aria-hidden />AI
+                          </ButtonLink>
+                        )}
                         {b.username && (
                           <a href={`https://t.me/${b.username}`} target="_blank" rel="noopener noreferrer" aria-label={`Open ${b.name} in Telegram`} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-semibold hover:border-lavender/60">
                             <ExternalLink className="size-3.5" aria-hidden />Open
@@ -324,6 +370,7 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
                 [
                   ["all", "All"],
                   ["created", "Created"],
+                  ["updated", "Updated"],
                   ["deleted", "Deleted"],
                 ] as const
               ).map(([id, label]) => (
@@ -352,13 +399,13 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
           ) : (
             <ul className="space-y-3">
               {visibleHistory.map((h) => {
-                const badgeTone = h.event === "created" ? "success" : h.event === "deleted_on_telegram" ? "danger" : "warning";
-                const eventLabel = h.event === "created" ? "Created" : h.event === "deleted_on_telegram" ? "Telegram Deleted" : "Deleted in RelayNest";
-                const EvIcon = h.event === "created" ? CheckCircle2 : h.event === "deleted_on_telegram" ? AlertTriangle : Trash2;
+                const badgeTone = h.event === "created" ? "success" : h.event === "updated" ? "info" : h.event === "deleted_on_telegram" ? "danger" : "warning";
+                const eventLabel = h.event === "created" ? "Created" : h.event === "updated" ? "Updated" : h.event === "deleted_on_telegram" ? "Telegram Deleted" : "Deleted in RelayNest";
+                const EvIcon = h.event === "created" ? CheckCircle2 : h.event === "updated" ? Pencil : h.event === "deleted_on_telegram" ? AlertTriangle : Trash2;
                 return (
                   <li key={h.id} className="panel flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex items-start gap-3">
-                      <IconTile tone={badgeTone === "success" ? "success" : badgeTone === "danger" ? "danger" : "warning"} size="md">
+                      <IconTile tone={badgeTone === "success" ? "success" : badgeTone === "info" ? "info" : badgeTone === "danger" ? "danger" : "warning"} size="md">
                         <EvIcon />
                       </IconTile>
                       <div className="min-w-0 space-y-1">
@@ -404,6 +451,17 @@ export function BotsList({ bots, initialHistory = [], demo = false }: { bots: Bo
           )}
         </div>
       </Card>
+
+      <EditBotModal
+        bot={editTarget}
+        demo={demo}
+        onClose={() => setEditTarget(null)}
+        onSaved={(updated) => {
+          setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+          void refreshHistory();
+          router.refresh();
+        }}
+      />
 
       <Modal
         open={Boolean(deleteTarget)}

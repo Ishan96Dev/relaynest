@@ -45,6 +45,10 @@ export interface CloudflareRuntimeBindings {
   RELAYNEST_QUEUE?: CloudflareQueueBinding;
 }
 
+interface CloudflareExecutionCtx {
+  waitUntil?: (promise: Promise<unknown>) => void;
+}
+
 const CLOUDFLARE_CONTEXT_SYMBOL = Symbol.for("__cloudflare-context__");
 let testOverride: CloudflareRuntimeBindings | null | undefined = undefined;
 
@@ -64,6 +68,21 @@ export function getCloudflareBindings(): CloudflareRuntimeBindings | null {
   if (!env || typeof env !== "object") return null;
   if (!env.RELAYNEST_STATE && !env.RELAYNEST_QUEUE) return null;
   return env;
+}
+
+/**
+ * Registers a short fire-and-forget background task (e.g. usage metering) with Cloudflare's `ctx.waitUntil`
+ * so the Worker isolate does not drop the promise as soon as the HTTP response finishes.
+ */
+export function runInCloudflareWaitUntil(promise: Promise<unknown>): boolean {
+  const execCtx = (globalThis as Record<symbol, { ctx?: CloudflareExecutionCtx } | undefined>)[CLOUDFLARE_CONTEXT_SYMBOL]?.ctx;
+  if (!execCtx || typeof execCtx.waitUntil !== "function") return false;
+  try {
+    execCtx.waitUntil(promise);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getCloudflareStateStub(shardKey: string): RelayNestStateStub | null {

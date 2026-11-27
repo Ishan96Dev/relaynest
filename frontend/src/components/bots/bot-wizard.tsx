@@ -1,12 +1,17 @@
 "use client";
 
 import {
-  AlertCircle, AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronRight, Code2, FileText, Layers, Pencil,
+  AlertCircle, AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronRight, Code2, FileText, Layers, LayoutTemplate, Pencil,
   Plus, Rocket, Sparkles, Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "@/components/ui/toast";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import {
+  ResponseTemplateModal,
+  ResponseTemplateQuickBar,
+  type ResponseTemplatePatch,
+} from "@/components/bots/response-template-picker";
 import { TelegramConnectCard } from "@/components/bots/telegram-connect-card";
 import { Badge } from "@/components/ui/badge";
 import { Button, ButtonLink } from "@/components/ui/button";
@@ -17,6 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { ImportPicker } from "@/components/bots/import-picker";
 import { parseBotImport, type BotImport } from "@/lib/agent-templates";
 import { demoTemplates, templateMessages } from "@/lib/demo-data";
+import { STANDARD_RESPONSE_TEMPLATES } from "@/lib/response-templates";
 import { cn } from "@/lib/utils";
 import { useSearchParams } from "next/navigation";
 
@@ -54,10 +60,12 @@ export function BotWizard() {
   const [name, setName] = React.useState(tpl?.name.replace(/\s/g, "") ?? "");
   const [displayName, setDisplayName] = React.useState(tpl?.name ?? "");
   const [description, setDescription] = React.useState(tpl?.description ?? "");
+  const [category, setCategory] = React.useState(tpl?.category ?? "");
   const [welcome, setWelcome] = React.useState(tpl?.welcomeMessage ?? (tpl && templateMessages[tpl.id]?.welcomeMessage) ?? "Hello! I'm here to help. How can I help you today?");
   const [fallback, setFallback] = React.useState(tpl?.defaultResponse ?? (tpl && templateMessages[tpl.id]?.defaultResponse) ?? "Sorry, I didn't understand that. Type /help to see available commands.");
   const [errs, setErrs] = React.useState<Record<string, string>>({});
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [respTplOpen, setRespTplOpen] = React.useState(false);
   const [filled, setFilled] = React.useState<string>();
   const [commandsOn, setCommandsOn] = React.useState(true);
   const [commands, setCommands] = React.useState<Cmd[]>(() => {
@@ -93,7 +101,7 @@ export function BotWizard() {
     setSubmitting(true); setSubmitError(undefined);
     const bot = await api<{ id: string; username: string | null }>("/api/v1/bots", {
       method: "POST",
-      body: JSON.stringify({ name: displayName.trim() || name.trim(), description, token: token.trim(), welcomeMessage: welcome, defaultResponse: fallback, category: tpl?.category }),
+      body: JSON.stringify({ name: displayName.trim() || name.trim(), description, token: token.trim(), welcomeMessage: welcome, defaultResponse: fallback, category: category || tpl?.category }),
     });
     if (!bot.ok) { setSubmitting(false); setSubmitError(bot.message); return; }
 
@@ -175,8 +183,19 @@ export function BotWizard() {
   function applyTemplate(id: string) {
     const t = demoTemplates.find((x) => x.id === id);
     if (!t) return;
+    setCategory(t.category);
     const m = templateMessages[t.id];
     applyBot({ name: t.name, description: t.description, welcomeMessage: t.welcomeMessage ?? m?.welcomeMessage, defaultResponse: t.defaultResponse ?? m?.defaultResponse, commands: t.commands }, `the "${t.name}" template`);
+  }
+  function applyResponseTemplate(patch: ResponseTemplatePatch) {
+    if (patch.welcomeMessage !== undefined) {
+      setWelcome(patch.welcomeMessage);
+      clearErr("welcome");
+    }
+    if (patch.fallbackMessage !== undefined) {
+      setFallback(patch.fallbackMessage);
+      clearErr("fallback");
+    }
   }
   const errorCount = Object.keys(errs).length;
 
@@ -276,8 +295,31 @@ export function BotWizard() {
             <div className="grid-cols-1 mt-5 grid gap-4 md:grid-cols-2">
               <Field label="Bot Display Name" htmlFor="name" required error={errs.displayName}><Input id="name" maxLength={50} value={displayName} onChange={(e) => { setDisplayName(e.target.value); clearErr("displayName"); }} /></Field>
               <Field label="Description (optional)" htmlFor="desc" counter={`${description.length} / 200`}><Textarea id="desc" maxLength={200} value={description} onChange={(e) => setDescription(e.target.value)} className="min-h-20" /></Field>
-              <Field label="Welcome Message" htmlFor="welcome" required error={errs.welcome} hint="Sent when someone starts the bot."><Textarea id="welcome" maxLength={4096} value={welcome} onChange={(e) => { setWelcome(e.target.value); clearErr("welcome"); }} /></Field>
-              <Field label="Default Response" htmlFor="fallback" required error={errs.fallback} hint="Sent when the bot does not understand a message."><Textarea id="fallback" maxLength={4096} value={fallback} onChange={(e) => { setFallback(e.target.value); clearErr("fallback"); }} /></Field>
+            </div>
+            <div className="mt-5 space-y-3 border-t border-border/70 pt-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold">Automatic Responses</h3>
+                  <p className="text-xs text-muted">Messages sent when a user starts the bot or sends an unknown message.</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => setRespTplOpen(true)}>
+                  <LayoutTemplate className="size-3.5 text-lavender" aria-hidden />
+                  Browse {STANDARD_RESPONSE_TEMPLATES.length} response templates
+                </Button>
+              </div>
+              <div className="grid-cols-1 grid gap-4 md:grid-cols-2">
+                <Field label="Welcome Message" htmlFor="welcome" required error={errs.welcome} counter={`${welcome.length} / 4096`} hint="Sent when someone starts the bot."><Textarea id="welcome" rows={5} maxLength={4096} value={welcome} onChange={(e) => { setWelcome(e.target.value); clearErr("welcome"); }} /></Field>
+                <Field label="Default Response" htmlFor="fallback" required error={errs.fallback} counter={`${fallback.length} / 4096`} hint="Sent when the bot does not understand a message."><Textarea id="fallback" rows={5} maxLength={4096} value={fallback} onChange={(e) => { setFallback(e.target.value); clearErr("fallback"); }} /></Field>
+              </div>
+              <ResponseTemplateQuickBar
+                scope="standard"
+                botName={displayName || name}
+                activeWelcome={welcome}
+                activeFallback={fallback}
+                preferredCategory={category || tpl?.category}
+                onApply={applyResponseTemplate}
+                onOpenModal={() => setRespTplOpen(true)}
+              />
             </div>
             <div className="panel mt-4 flex items-center justify-between gap-4 p-4">
               <div><p className="font-semibold">Enable Commands</p><p className="text-xs text-foreground/75">Allow users to use bot commands (e.g. /start, /help).</p></div>
@@ -361,6 +403,16 @@ export function BotWizard() {
         templates={demoTemplates.map((t) => ({ id: t.id, name: t.name, tagline: t.description, category: t.category }))}
         example={JSON.stringify({ name: "Acme Helper", description: "Answers questions about Acme.", welcomeMessage: "Hi! How can I help?", defaultResponse: "Sorry, try /help.", commands: [{ command: "/pricing", description: "Show pricing" }] }, null, 2)}
         onPickTemplate={applyTemplate} parse={parseBotImport} onImport={(b) => applyBot(b, "your imported file")} />
+      <ResponseTemplateModal
+        open={respTplOpen}
+        onClose={() => setRespTplOpen(false)}
+        scope="standard"
+        botName={displayName || name}
+        activeWelcome={welcome}
+        activeFallback={fallback}
+        preferredCategory={category || tpl?.category}
+        onApply={applyResponseTemplate}
+      />
     </div>
   );
 }

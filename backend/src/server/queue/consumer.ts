@@ -2,6 +2,7 @@ import "server-only";
 import { logEvent } from "@backend/server/logger";
 import type { QueueEventEnvelope } from "@backend/server/queue/kafka";
 import { loadToken, markBotDeletedOnTelegram } from "@backend/server/services/bots";
+import { processTelegramUpdate, type TelegramBotRow } from "@backend/server/services/telegram-webhook";
 import { runWorkflow, type TriggerKind } from "@backend/server/services/workflow-runner";
 import {
   getTelegramRetryAfterSec,
@@ -9,6 +10,7 @@ import {
   isTelegramRateLimitError,
   sendFormattedMessage,
   sendMessage,
+  type TelegramUpdate,
 } from "@backend/server/telegram/client";
 import {
   recordTelegramCooldown,
@@ -127,6 +129,37 @@ export async function processQueueEnvelope(
       idempotencyKey: p.idempotencyKey,
     });
     return { action: "ack", reason: "workflow_ran" };
+  }
+
+  if (envelope.topic === "telegram.updates") {
+    const p = envelope.payload as {
+      execute?: boolean;
+      bot?: TelegramBotRow;
+      update?: TelegramUpdate;
+    };
+    if (p?.execute && p.bot?.id && p.bot?.workspace_id && p.update) {
+      try {
+        await processTelegramUpdate(p.bot, p.update);
+        return { action: "ack", reason: "telegram_update_processed" };
+      } catch (err) {
+        logEvent(
+          "queue",
+          "error",
+          `Queue consumer telegram.updates failed (attempt ${attempts}): ${err instanceof Error ? err.message : "unknown"}`,
+          { botId: p.bot.id, updateId: p.update.update_id },
+        );
+        if (attempts >= 3) {
+          return { action: "ack", reason: "telegram_update_failed_exhausted" };
+        }
+        return {
+          action: "retry",
+          delaySeconds: Math.min(30, 2 ** Math.min(Math.max(attempts, 1), 4)),
+          reason: "transient_error",
+        };
+      }
+    }
+    logEvent("queue", "info", `Queue consumer processed ${envelope.topic}`, envelope.key ? { key: envelope.key } : undefined);
+    return { action: "ack", reason: "event_processed" };
   }
 
   // Telemetry / audit / update events are acknowledged cleanly.

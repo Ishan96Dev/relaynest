@@ -27,4 +27,8 @@ export const usageText = (c: Pick<AgentCommand, "command" | "kind">) =>
       ? `Send a photo with the caption /${c.command}`
       : c.kind === "search"
         ? `Usage: /${c.command} <what to search on the web>`
-        : `Usage: /${c.command} <your text>`;
+        : c.kind === "market"
+          ? `Usage: /${c.command} <stock or index, e.g. RELIANCE NSE or TCS detailed>`
+          : c.kind === "brief"
+            ? `Usage: /${c.command} [optional topic or watchlist]`
+            : `Usage: /${c.command} <your text>`;

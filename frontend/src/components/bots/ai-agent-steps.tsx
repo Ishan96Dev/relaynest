@@ -1,13 +1,19 @@
 "use client";
-import { AlertCircle, Bot, Check, CheckCircle2, ExternalLink, LayoutTemplate, Plus, Trash2, XCircle } from "lucide-react";
+import { AlertCircle, Bot, Check, CheckCircle2, ExternalLink, LayoutTemplate, Plus, Save, Trash2, XCircle } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 import type { AgentTools } from "@backend/server/ai/agent";
 import { RESERVED_COMMANDS, type AgentCommand } from "@backend/lib/validation/schemas";
 import type { ModelDto } from "@backend/server/ai/model-catalog";
 import type { AiAgentDto, KnowledgeDto } from "@backend/server/services/ai-agents";
+import { KnowledgeTemplateModal } from "@/components/ai/knowledge-template-picker";
 import { PromptTemplateModal } from "@/components/ai/prompt-template-picker";
 import { ProviderMark } from "@/components/ai/provider-mark";
+import {
+  ResponseTemplateModal,
+  ResponseTemplateQuickBar,
+  type ResponseTemplatePatch,
+} from "@/components/bots/response-template-picker";
 import { TelegramConnectCard } from "@/components/bots/telegram-connect-card";
 import { TelegramUsernameChecker } from "@/components/bots/telegram-username-check";
 import { BotKnowledge } from "@/components/knowledge/bot-knowledge";
@@ -18,7 +24,9 @@ import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api-client";
 import { formatTokens } from "@/lib/model-format";
+import { getQuickKnowledgeTemplates, KNOWLEDGE_SOURCE_TEMPLATES, type KnowledgeSourceTemplate } from "@/lib/knowledge-templates";
 import { TELEGRAM_AGENT_PROMPT_TEMPLATES, type SystemPromptTemplate } from "@/lib/prompt-templates";
+import { AI_AGENT_RESPONSE_TEMPLATES } from "@/lib/response-templates";
 import { cn } from "@/lib/utils";
 
 export interface AgentForm {
@@ -148,6 +156,10 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
   const [error, setError] = React.useState<string>();
   const [srcErrors, setSrcErrors] = React.useState<{ title?: string; content?: string }>({});
   const [tplOpen, setTplOpen] = React.useState(false);
+  const [respTplOpen, setRespTplOpen] = React.useState(false);
+  const [knowledgeTplOpen, setKnowledgeTplOpen] = React.useState(false);
+  const [loadedKnowledgeTpl, setLoadedKnowledgeTpl] = React.useState<string | null>(null);
+  const sourceTitleRef = React.useRef<HTMLInputElement>(null);
   const used = knowledge.reduce((n, k) => n + k.content.length, 0);
 
   // Surface templates matching the agent's selected category first, then top general Telegram personas.
@@ -157,11 +169,36 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
     return [...matched, ...others].slice(0, 4);
   }, [form.category]);
 
+  const quickKnowledgeTemplates = React.useMemo(
+    () => getQuickKnowledgeTemplates(form.category, 4),
+    [form.category],
+  );
+  const existingKnowledgeTitles = React.useMemo(
+    () => new Set(knowledge.map((k) => k.title.trim().toLowerCase())),
+    [knowledge],
+  );
+
   function applyTemplate(tpl: SystemPromptTemplate) {
     patch({
       instructions: tpl.prompt,
       ...(tpl.recommendedTemperature !== undefined ? { temperature: tpl.recommendedTemperature } : {}),
     });
+  }
+
+  function applyResponseTemplate(p: ResponseTemplatePatch) {
+    patch({
+      ...(p.welcomeMessage !== undefined ? { welcomeMessage: p.welcomeMessage } : {}),
+      ...(p.fallbackMessage !== undefined ? { fallbackMessage: p.fallbackMessage } : {}),
+    });
+  }
+
+  function applyKnowledgeTemplate(tpl: KnowledgeSourceTemplate) {
+    setTitle(tpl.title);
+    setContent(tpl.content);
+    setSrcErrors({});
+    setError(undefined);
+    setLoadedKnowledgeTpl(tpl.name);
+    requestAnimationFrame(() => sourceTitleRef.current?.focus({ preventScroll: false }));
   }
 
   async function add(e: React.FormEvent) {
@@ -174,7 +211,7 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
     const r = await api<KnowledgeDto>(`/api/v1/ai-agents/${agentId}/knowledge`, { body: { title, content } });
     setBusy(false);
     if (!r.ok) return setError(r.message);
-    onKnowledge([...knowledge, r.data]); setTitle(""); setContent("");
+    onKnowledge([...knowledge, r.data]); setTitle(""); setContent(""); setLoadedKnowledgeTpl(null);
   }
   async function remove(id: string) {
     if (!agentId) return;
@@ -219,19 +256,53 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
         preferredCategory={form.category}
         onApply={applyTemplate}
       />
-      <div className="grid items-start gap-4 sm:grid-cols-2">
-        <Field label="Welcome message" htmlFor="agent-welcome" hint="Optional. Sent when someone starts the bot with /start.">
-          <Textarea id="agent-welcome" rows={3} maxLength={1000} value={form.welcomeMessage} onChange={(e) => patch({ welcomeMessage: e.target.value })} placeholder="Hi! I'm here to help. Ask me anything." />
-        </Field>
-        <Field label="Fallback message" htmlFor="agent-fallback" hint="Optional. Sent when the model cannot answer, for example during an outage.">
-          <Textarea id="agent-fallback" rows={3} maxLength={1000} value={form.fallbackMessage} onChange={(e) => patch({ fallbackMessage: e.target.value })} placeholder="Sorry, I couldn't answer that right now." />
-        </Field>
+      <div className="space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-muted">Automatic welcome &amp; fallback messages</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => setRespTplOpen(true)}>
+            <LayoutTemplate className="size-3.5 text-lavender" aria-hidden />
+            Browse {AI_AGENT_RESPONSE_TEMPLATES.length} response templates
+          </Button>
+        </div>
+        <div className="grid items-start gap-4 sm:grid-cols-2">
+          <Field label="Welcome message" htmlFor="agent-welcome" counter={`${form.welcomeMessage.length} / 4096`} hint="Optional. Sent when someone starts the bot with /start.">
+            <Textarea id="agent-welcome" rows={4} maxLength={4096} value={form.welcomeMessage} onChange={(e) => patch({ welcomeMessage: e.target.value })} placeholder="Hi! I'm here to help. Ask me anything." />
+          </Field>
+          <Field label="Fallback message" htmlFor="agent-fallback" counter={`${form.fallbackMessage.length} / 4096`} hint="Optional. Sent when the model cannot answer, for example during an outage.">
+            <Textarea id="agent-fallback" rows={4} maxLength={4096} value={form.fallbackMessage} onChange={(e) => patch({ fallbackMessage: e.target.value })} placeholder="Sorry, I couldn't answer that right now." />
+          </Field>
+        </div>
+        <ResponseTemplateQuickBar
+          scope="ai-agent"
+          botName={form.name}
+          activeWelcome={form.welcomeMessage}
+          activeFallback={form.fallbackMessage}
+          preferredCategory={form.category}
+          onApply={applyResponseTemplate}
+          onOpenModal={() => setRespTplOpen(true)}
+        />
       </div>
+      <ResponseTemplateModal
+        open={respTplOpen}
+        onClose={() => setRespTplOpen(false)}
+        scope="ai-agent"
+        botName={form.name}
+        activeWelcome={form.welcomeMessage}
+        activeFallback={form.fallbackMessage}
+        preferredCategory={form.category}
+        onApply={applyResponseTemplate}
+      />
 
       <section aria-labelledby="knowledge-title" className="rounded-2xl border border-border bg-surface-2/50 p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h3 id="knowledge-title" className="text-base font-bold">Knowledge sources <span className="text-xs font-normal text-muted">(optional)</span></h3>
-          <span className="text-xs text-muted">{used.toLocaleString("en-US")} characters (the first 24,000 are used)</span>
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 id="knowledge-title" className="text-base font-bold">Knowledge sources <span className="text-xs font-normal text-muted">(optional)</span></h3>
+            <p className="text-xs text-muted">{used.toLocaleString("en-US")} characters (the first 24,000 are used)</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={() => setKnowledgeTplOpen(true)}>
+            <LayoutTemplate className="size-3.5 text-lavender" aria-hidden />
+            Browse {KNOWLEDGE_SOURCE_TEMPLATES.length} knowledge templates
+          </Button>
         </div>
         {!agentId ? (
           <p className="text-sm text-muted">Save your agent first (Continue on step 1) to add knowledge.</p>
@@ -247,19 +318,76 @@ export function StepKnowledge({ form, patch, errors, agentId, botId = null, demo
                 ))}
               </ul>
             )}
+            <div className="mb-3 space-y-1.5">
+              <p className="text-xs font-medium text-muted">Quick-start templates</p>
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Knowledge source templates">
+                {quickKnowledgeTemplates.map((t) => {
+                  const isLoaded = title.trim() === t.title.trim() && content.trim() === t.content.trim();
+                  const alreadyAdded = existingKnowledgeTitles.has(t.title.trim().toLowerCase());
+                  return (
+                    <Button
+                      key={t.id}
+                      type="button"
+                      variant={isLoaded ? "subtle" : "outline"}
+                      size="sm"
+                      title={t.tagline}
+                      onClick={() => applyKnowledgeTemplate(t)}
+                    >
+                      {alreadyAdded && <Check className="size-3 text-ok" aria-hidden />}
+                      Use: {t.name}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+            {loadedKnowledgeTpl && (
+              <p className="mb-3 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-foreground/85">
+                Loaded <span className="font-semibold">{loadedKnowledgeTpl}</span> into the editor. Replace {"{{Placeholders}}"} with your details, then click <span className="font-semibold">Add source</span>.
+              </p>
+            )}
             <form onSubmit={add} className="space-y-3" noValidate>
-              <Field label="Source title" htmlFor="source-title" required error={srcErrors.title}>
-                <Input id="source-title" value={title} maxLength={120} onChange={(e) => { setTitle(e.target.value); setSrcErrors((s) => ({ ...s, title: undefined })); }} placeholder="Title, for example Refund policy" />
+              <Field label="Source title" htmlFor="source-title" required counter={`${title.length} / 120`} error={srcErrors.title}>
+                <Input ref={sourceTitleRef} id="source-title" value={title} maxLength={120} onChange={(e) => { setTitle(e.target.value); setSrcErrors((s) => ({ ...s, title: undefined })); }} placeholder="Title, for example Refund policy" />
               </Field>
-              <Field label="Source text" htmlFor="source-text" required error={srcErrors.content}>
-                <Textarea id="source-text" rows={4} maxLength={20000} value={content} onChange={(e) => { setContent(e.target.value); setSrcErrors((s) => ({ ...s, content: undefined })); }} placeholder="Paste FAQs, policies or product details the agent should use." />
+              <Field label="Source text" htmlFor="source-text" required counter={`${content.length.toLocaleString("en-US")} / 20,000`} error={srcErrors.content}>
+                <Textarea id="source-text" rows={content.length > 260 ? 8 : 4} maxLength={20000} value={content} onChange={(e) => { setContent(e.target.value); setSrcErrors((s) => ({ ...s, content: undefined })); }} placeholder="Paste FAQs, policies or product details the agent should use." />
               </Field>
               {error && <p role="alert" className="text-xs font-medium text-bad">{error}</p>}
-              <Button type="submit" variant="subtle" size="sm" disabled={busy}><Plus className="size-4" aria-hidden />{busy ? "Adding..." : "Add source"}</Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" variant="subtle" size="sm" disabled={busy}><Plus className="size-4" aria-hidden />{busy ? "Adding..." : "Add source"}</Button>
+                {(title || content) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setTitle("");
+                      setContent("");
+                      setSrcErrors({});
+                      setError(undefined);
+                      setLoadedKnowledgeTpl(null);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
             </form>
           </>
         )}
       </section>
+      <KnowledgeTemplateModal
+        open={knowledgeTplOpen}
+        onClose={() => setKnowledgeTplOpen(false)}
+        preferredCategory={form.category}
+        activeTitle={title}
+        activeContent={content}
+        existingTitles={knowledge.map((k) => k.title)}
+        usedChars={used}
+        canApply={Boolean(agentId)}
+        onApply={applyKnowledgeTemplate}
+      />
 
       {botId && <BotKnowledge botId={botId} demo={demo} />}
     </div>
@@ -427,8 +555,28 @@ export function StepTelegram({ agent, demo = false, onConnected, blockedMessage 
   );
 }
 
-export function StepReview({ form, agent, model, knowledgeCount, onActivate, activating, error }: {
-  form: AgentForm; agent: AiAgentDto | null; model: ModelDto | undefined; knowledgeCount: number; onActivate: () => void; activating: boolean; error?: string;
+export function StepReview({
+  form,
+  agent,
+  model,
+  knowledgeCount,
+  onActivate,
+  activating,
+  onSaveChanges,
+  saving = false,
+  hasChanges = false,
+  error,
+}: {
+  form: AgentForm;
+  agent: AiAgentDto | null;
+  model: ModelDto | undefined;
+  knowledgeCount: number;
+  onActivate: () => void;
+  activating: boolean;
+  onSaveChanges?: () => void;
+  saving?: boolean;
+  hasChanges?: boolean;
+  error?: string;
 }) {
   const checks: { ok: boolean; label: string }[] = [
     { ok: Boolean(agent), label: "Agent saved" },
@@ -448,16 +596,44 @@ export function StepReview({ form, agent, model, knowledgeCount, onActivate, act
         ))}
       </ul>
       <dl className="grid grid-cols-2 gap-2.5 text-sm">
-        {[["Category", form.category], ["Language", form.language], ["Memory", form.memoryTurns ? `${form.memoryTurns} exchanges` : "Off"], ["Knowledge sources", String(knowledgeCount)], ["Commands", form.commands.length ? form.commands.map((c) => `/${c.command}`).join(" ") : "None"], ["Image model", form.imageModelSlug ?? "None"]].map(([k, v]) => (
+        {[["Category", form.category], ["Language", form.language], ["Memory", form.memoryTurns ? `${form.memoryTurns} exchanges` : "Off"], ["Knowledge sources", String(knowledgeCount)], ["Commands", form.commands.length ? form.commands.map((c) => `/${c.command}`).join(" ") : "None"], ["Image model", form.imageModelSlug ?? "Auto (FLUX.1 Schnell)"]].map(([k, v]) => (
           <div key={k} className="rounded-xl border border-border bg-surface-2/60 p-3"><dt className="text-xs text-muted">{k}</dt><dd className="font-semibold">{v}</dd></div>
         ))}
       </dl>
       <p className="text-xs text-muted">Try the agent in the Telegram preview on the right. It uses your last saved settings.</p>
       {error && <p role="alert" className="rounded-lg border border-danger/40 bg-danger/10 p-2.5 text-sm text-bad">{error}</p>}
       {active ? (
-        <p className="flex items-center gap-2 rounded-xl border border-success/40 bg-success/10 p-3 text-sm"><Badge tone="success" dot>Active</Badge>Your agent is answering messages on Telegram.</p>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-success/40 bg-success/10 p-3 text-sm">
+            <span className="flex items-center gap-2"><Badge tone="success" dot>Active</Badge>Your agent is live and answering messages on Telegram.</span>
+            {agent?.botId && (
+              <Link href={`/bots/${agent.botId}`} className="text-xs font-semibold text-lavender hover:underline">
+                Manage Telegram Bot &rarr;
+              </Link>
+            )}
+          </div>
+          {onSaveChanges && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={onSaveChanges} disabled={!ready || saving || !hasChanges}>
+                <Save className="size-4" aria-hidden />{saving ? "Saving..." : hasChanges ? "Save Changes" : "All Changes Saved"}
+              </Button>
+              {agent?.username && (
+                <a href={`https://t.me/${agent.username}`} target="_blank" rel="noopener noreferrer" className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-border px-4 text-sm font-semibold hover:border-lavender/60">
+                  <ExternalLink className="size-4" aria-hidden />Open in Telegram
+                </a>
+              )}
+            </div>
+          )}
+        </div>
       ) : (
-        <Button onClick={onActivate} disabled={!ready || activating} title={ready ? undefined : "Finish the items marked in red first."}>{activating ? "Activating..." : "Create & Activate Agent"}</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={onActivate} disabled={!ready || activating} title={ready ? undefined : "Finish the items marked in red first."}>{activating ? "Activating..." : "Create & Activate Agent"}</Button>
+          {onSaveChanges && hasChanges && (
+            <Button variant="outline" onClick={onSaveChanges} disabled={saving}>
+              <Save className="size-4" aria-hidden />{saving ? "Saving..." : "Save Changes"}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );

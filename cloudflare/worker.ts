@@ -85,44 +85,46 @@ const worker = {
     }
 
     const origin = resolveOrigin(env);
-    for (const msg of batch.messages) {
-      try {
-        const req = new Request(`${origin}/api/queues/cloudflare`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${secret}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            id: msg.id,
-            attempts: msg.attempts,
-            timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : String(msg.timestamp),
-            body: msg.body,
-          }),
-        });
-        const res: Response = await openNextHandler.fetch(req, env, ctx);
-        const parsed = (await res.json().catch(() => null)) as {
-          data?: { action?: "ack" | "retry"; delaySeconds?: number };
-          action?: "ack" | "retry";
-          delaySeconds?: number;
-        } | null;
-        const outcome = parsed?.data ?? parsed;
+    await Promise.all(
+      batch.messages.map(async (msg) => {
+        try {
+          const req = new Request(`${origin}/api/queues/cloudflare`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${secret}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              id: msg.id,
+              attempts: msg.attempts,
+              timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : String(msg.timestamp),
+              body: msg.body,
+            }),
+          });
+          const res: Response = await openNextHandler.fetch(req, env, ctx);
+          const parsed = (await res.json().catch(() => null)) as {
+            data?: { action?: "ack" | "retry"; delaySeconds?: number };
+            action?: "ack" | "retry";
+            delaySeconds?: number;
+          } | null;
+          const outcome = parsed?.data ?? parsed;
 
-        if (res.ok && outcome?.action !== "retry") {
-          msg.ack();
-          continue;
+          if (res.ok && outcome?.action !== "retry") {
+            msg.ack();
+            return;
+          }
+
+          const retryDelay =
+            typeof outcome?.delaySeconds === "number" && Number.isFinite(outcome.delaySeconds)
+              ? Math.min(Math.max(1, Math.ceil(outcome.delaySeconds)), 3600)
+              : Math.min(60, 2 ** Math.min(msg.attempts, 5));
+          msg.retry({ delaySeconds: retryDelay });
+        } catch (err) {
+          console.error("[queue] consumer dispatch error:", err instanceof Error ? err.message : "unknown");
+          msg.retry({ delaySeconds: Math.min(60, 2 ** Math.min(msg.attempts, 5)) });
         }
-
-        const retryDelay =
-          typeof outcome?.delaySeconds === "number" && Number.isFinite(outcome.delaySeconds)
-            ? Math.min(Math.max(1, Math.ceil(outcome.delaySeconds)), 3600)
-            : Math.min(60, 2 ** Math.min(msg.attempts, 5));
-        msg.retry({ delaySeconds: retryDelay });
-      } catch (err) {
-        console.error("[queue] consumer dispatch error:", err instanceof Error ? err.message : "unknown");
-        msg.retry({ delaySeconds: Math.min(60, 2 ** Math.min(msg.attempts, 5)) });
-      }
-    }
+      }),
+    );
   },
 };
 

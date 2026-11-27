@@ -43,12 +43,22 @@ export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<Sessio
     }, 1050);
   }
   const segments = pathname.split("/").filter(Boolean);
+  const normalizedPath = "/" + segments.join("/");
   /** Dynamic ids (bot, workflow) are not human readable, so show a generic label instead. */
   const labelFor = (s: string, i: number) => {
     if (s === "ai") return segments[i + 1] === "models" || segments[i + 1] === "playground" ? "AI Models" : "AI Agents";
     if (s === "agents" && segments[i - 1] === "ai") return "Agents";
     if (segments[i - 1] === "agents" && segments[i - 2] === "ai") return "Configure";
     return labels[s] ?? (segments[i - 1] === "bots" ? "Configuration" : segments[i - 1] === "workflows" ? "Editor" : s);
+  };
+  /** Map intermediate breadcrumb segments to real routes (some prefixes have no index page). */
+  const hrefFor = (i: number): string => {
+    const raw = "/" + segments.slice(0, i + 1).join("/");
+    if (raw === "/settings") return "/settings/profile";
+    if (raw === "/workflows") return "/agents";
+    if (raw === "/ai/agents") return "/ai";
+    if (raw === "/ai" && (segments[i + 1] === "models" || segments[i + 1] === "playground")) return "/ai/models";
+    return raw;
   };
   const [menu, setMenu] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
@@ -69,12 +79,23 @@ export function Header({ onMenu, user }: { onMenu: () => void; user: Pick<Sessio
       <button aria-label="Open menu" onClick={onMenu} className="grid-cols-1 grid size-10 place-items-center rounded-lg text-muted transition hover:bg-foreground/5 hover:text-foreground lg:hidden"><Menu className="size-5" /></button>
       <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-2 text-sm text-muted xl:flex">
         <Link href={homeHref} prefetch={false} aria-label="Home" className="transition hover:text-foreground"><Home className="size-[18px]" /></Link>
-        {segments.map((s, i) => (
-          <React.Fragment key={s + i}>
-            <ChevronRight className="size-3.5 shrink-0 opacity-60" aria-hidden />
-            <span className={i === segments.length - 1 ? "truncate font-semibold text-lavender" : "truncate"}>{labelFor(s, i)}</span>
-          </React.Fragment>
-        ))}
+        {segments.map((s, i) => {
+          const isLast = i === segments.length - 1;
+          const label = labelFor(s, i);
+          const href = isLast ? null : hrefFor(i);
+          return (
+            <React.Fragment key={s + i}>
+              <ChevronRight className="size-3.5 shrink-0 opacity-60" aria-hidden />
+              {isLast ? (
+                <span aria-current="page" className="truncate font-semibold text-lavender">{label}</span>
+              ) : href && href !== normalizedPath ? (
+                <Link href={href} prefetch={false} className="truncate transition hover:text-foreground hover:underline underline-offset-4">{label}</Link>
+              ) : (
+                <span className="truncate">{label}</span>
+              )}
+            </React.Fragment>
+          );
+        })}
       </nav>
 
       <HeaderSearch />

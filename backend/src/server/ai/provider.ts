@@ -1,5 +1,6 @@
 import "server-only";
 import { ApiError, Errors } from "@backend/lib/http/api";
+import { runInCloudflareWaitUntil } from "@backend/server/cloudflare/bindings";
 import { logEvent } from "@backend/server/logger";
 import { rateLimit } from "@backend/server/security/rate-limit";
 import {
@@ -49,9 +50,10 @@ const THINKING_CONNECT_TIMEOUT_MS = 35_000;
 const THINKING_TIMEOUT_MS = 105_000;
 /** Maximum silent gap between SSE chunks before treating an upstream stream as stalled. */
 const STREAM_CHUNK_IDLE_MS = 45_000;
-/** Image generation normally finishes in 2.5–8 s, though NVIDIA's free tier occasionally stalls a socket and succeeds immediately on retry. */
-const IMAGE_ATTEMPT_MS = 15_000;
+/** Image generation normally finishes in 2.5–6 s, though NVIDIA's free tier occasionally stalls a socket and succeeds immediately on retry. */
+const IMAGE_ATTEMPT_MS = 12_000;
 const IMAGE_ATTEMPTS = 3;
+const IMAGE_DEFAULT_BUDGET_MS = 45_000;
 
 /** Strips complete `<think>...</think>` blocks and any unclosed trailing `<think>...` block from a model reply. */
 export function stripThinkTags(text: string): string {
@@ -260,13 +262,14 @@ const usageOf = (u: unknown): Usage => {
   return { promptTokens: prompt, completionTokens: completion, totalTokens: o.total_tokens ?? prompt + completion, ...(typeof o.cost === "number" ? { costUsd: o.cost } : {}) };
 };
 
-/** Meters one successful call without blocking the caller's response latency. */
+/** Meters one successful call without blocking the caller's response latency (kept alive via Cloudflare waitUntil when available). */
 function meterNonBlocking(model: RunnableModel, kind: UsageKind, usage: Usage, startedAt: number, json?: Record<string, unknown>) {
-  void recordUsage({
+  const p = recordUsage({
     slug: model.slug, source: model.source, apiModelId: model.apiModelId, kind,
     promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens,
     reportedCostUsd: usage.costUsd, latencyMs: Date.now() - startedAt, requestId: typeof json?.id === "string" ? json.id : undefined,
   }).catch(() => undefined);
+  runInCloudflareWaitUntil(p);
 }
 
 export interface ChatOptions {
@@ -356,7 +359,7 @@ async function chatOnce(
   provider: ProviderRecord,
   messages: ChatMessage[],
   opts: ChatOptions,
-): Promise<{ text: string; thinking?: string; usage: Usage; modelUsed: string }> {
+): Promise<{ text: string; thinking?: string; usage: Usage; modelUsed: string; modelSlug: string; source: "nvidia" | "vercel" }> {
   const startedAt = Date.now();
   const { url, body, totalTimeoutMs } = buildChatRequest(model, provider, messages, opts, false);
   const json = await post(url, provider, body, totalTimeoutMs, opts.signal);
@@ -402,11 +405,22 @@ async function chatOnce(
     throw Errors.upstream("The model returned an empty answer. Try again.");
   }
   meterNonBlocking(model, hasImagePart(messages) ? "vision" : "chat", usage, startedAt, json);
-  return { text, ...(reasoning.trim() ? { thinking: reasoning.trim() } : {}), usage, modelUsed: model.apiModelId };
+  return {
+    text,
+    ...(reasoning.trim() ? { thinking: reasoning.trim() } : {}),
+    usage,
+    modelUsed: model.apiModelId,
+    modelSlug: model.slug,
+    source: model.source,
+  };
 }
 
 /** OpenAI-compatible chat completion driven by Supabase `ai_providers` + `ai_models`, with fast mode and DB fallback. */
-export async function chat(model: RunnableModel, messages: ChatMessage[], opts: ChatOptions = {}): Promise<{ text: string; thinking?: string; usage: Usage; modelUsed?: string }> {
+export async function chat(
+  model: RunnableModel,
+  messages: ChatMessage[],
+  opts: ChatOptions = {},
+): Promise<{ text: string; thinking?: string; usage: Usage; modelUsed?: string; modelSlug?: string; source?: "nvidia" | "vercel"; usedFallback?: boolean }> {
   const resolved = await resolveModelFromDb(model);
   const allowFallback = opts.allowFallback ?? resolved.provider.supportsThinkingToggle;
   try {
@@ -424,7 +438,8 @@ export async function chat(model: RunnableModel, messages: ChatMessage[], opts: 
       try {
         const fbResolved = await resolveModelFromDb(fb);
         logEvent("llm", "warn", `Falling back from ${resolved.model.apiModelId} to ${fbResolved.model.apiModelId}: ${err instanceof Error ? err.message : "upstream error"}`);
-        return await chatOnce(fbResolved.model, fbResolved.provider, messages, { ...opts, thinking: false, timeoutMs: Math.min(opts.timeoutMs ?? 18_000, 18_000) });
+        const fbRes = await chatOnce(fbResolved.model, fbResolved.provider, messages, { ...opts, thinking: false, timeoutMs: Math.min(opts.timeoutMs ?? 18_000, 18_000) });
+        return { ...fbRes, usedFallback: true };
       } catch (e) {
         lastErr = e;
       }
@@ -894,35 +909,48 @@ function fallbackEnhancedPrompt(subject: string): string {
   return `${subject}, intricate fine textures, balanced studio and natural lighting, crisp sharp focus, rich realistic color depth, thoughtful composition, ultra-detailed high-resolution photography`;
 }
 
+/** Detects consumer trademarks and copyrighted fictional characters that frequently trip NVIDIA FLUX's CONTENT_FILTERED guard. */
+export function hasImageFilterRisk(prompt: string): boolean {
+  return /\b(iphone|ipad|macbook|apple|airpods|samsung|galaxy|nike|adidas|gucci|rolex|ferrari|lamborghini|porsche|tesla|mercedes|bmw|coca[\s-]?cola|pepsi|starbucks|disney|marvel|pokemon|pikachu|charizard|mario|luigi|lego|playstation|xbox|nintendo|goku|vegeta|gohan|piccolo|frieza|dragon\s*ball|naruto|sasuke|luffy|zoro|one\s*piece|ichigo|saitama|tanjiro|gojo|sukuna|batman|superman|spider[\s-]?man|iron[\s-]?man|thor|hulk|deadpool|wolverine|joker|avengers|darth\s*vader|yoda|star\s*wars|harry\s*potter|hermione|spongebob|mickey\s*mouse|elsa|shrek|sonic|zelda|kratos|master\s*chief|barbie|hello\s*kitty|minecraft|fortnite|roblox)\b/i.test(
+    prompt,
+  );
+}
+
 /**
- * Expands short or brand-named prompts into vivid, richly detailed visual prompts via the active fast DB chat model.
- * Describing visual geometry/materials instead of trademarked brand names prevents NVIDIA FLUX CONTENT_FILTERED black frames
- * while dramatically improving visual sharpness, lighting, and detail.
+ * Expands short or brand/character-named prompts into vivid, richly detailed visual prompts via the active fast DB chat model.
+ * Describing visual geometry/materials/appearance instead of trademarked brands or copyrighted characters prevents NVIDIA FLUX
+ * CONTENT_FILTERED black frames while dramatically improving visual sharpness, lighting, and detail.
  */
-async function enhanceImagePrompt(rawPrompt: string, strictVisualRewrite = false): Promise<string> {
+async function enhanceImagePrompt(
+  rawPrompt: string,
+  mode: "expand" | "strict" | "editorial" = "expand",
+  timeoutMs = 5_000,
+): Promise<string> {
   const cleaned = cleanRawImagePrompt(rawPrompt);
   const words = cleaned.split(/\s+/).filter(Boolean).length;
   const looksShortOrGeneric = words < 20;
-  // Common consumer trademarks that frequently trip NVIDIA FLUX's CONTENT_FILTERED black-frame guard.
-  const hasBrandRisk = /\b(iphone|ipad|macbook|apple|airpods|samsung|galaxy|nike|adidas|gucci|rolex|ferrari|lamborghini|porsche|tesla|mercedes|bmw|coca[\s-]?cola|pepsi|starbucks|disney|marvel|pokemon|mario|lego|playstation|xbox|nintendo)\b/i.test(cleaned);
+  const hasFilterRisk = hasImageFilterRisk(cleaned);
 
-  if (!strictVisualRewrite && !looksShortOrGeneric && !hasBrandRisk) {
+  if (mode === "expand" && !looksShortOrGeneric && !hasFilterRisk) {
     return cleaned;
   }
 
   try {
     const fastModel = await getDbFastChatModel();
     if (!fastModel) return fallbackEnhancedPrompt(cleaned);
-    const system = strictVisualRewrite
-      ? "You are a professional photography art director. Rewrite the user's image request into one rich, vivid, 55–85 word visual scene description for a text-to-image model. CRITICAL: Do NOT include any brand names, trademarks, logos, or copyrighted character names — instead describe the exact physical design, materials, silhouette, colors, textures, studio/natural lighting, camera lens, depth of field, and atmosphere so the image looks breathtaking and unmistakable. Output ONLY the final prompt text, no quotes or commentary."
-      : "You are a master visual prompt engineer for FLUX.1 image generation. Expand the user's request into one richly detailed, 45–80 word visual prompt with specific subject details, surface textures, lighting direction, environment/background, composition, color harmony, and sharp photographic or artistic quality. If the request mentions a trademarked consumer product or brand (like iPhone, Nike, Tesla, etc.), describe its signature physical design, materials, and form visually WITHOUT writing the trademarked word itself so the image safety filter never blocks it. Output ONLY the final prompt text, no quotes, labels, or markdown.";
+    const system =
+      mode === "editorial"
+        ? "You are a fine-art illustrator. Reimagine the user's request as a calm, peaceful, family-friendly stylized studio portrait or scenic illustration in 45–65 words. CRITICAL: Use ZERO brand names, trademarks, copyrighted character names, or violent/combat words. Focus on recognizable colors, hair, clothing, serene expression, soft golden lighting, and crisp artistic detail. Output ONLY the final prompt text."
+        : mode === "strict"
+          ? "You are a professional visual art director. Rewrite the user's image request into one complete, vivid 50–75 word visual scene description for a text-to-image model. CRITICAL: Do NOT include any brand names, trademarks, logos, copyrighted character/franchise names, or violent/combat words — instead describe the unmistakable physical appearance, hair, outfit, colors, materials, pose, lighting, background, and artistic quality cleanly. Output ONLY the complete prompt text with no quotes or commentary."
+          : "You are a master visual prompt engineer for FLUX.1 image generation. Expand the user's request into one complete, richly detailed 45–75 word visual prompt with specific subject details, surface textures, lighting direction, environment/background, composition, color harmony, and sharp photographic or artistic quality. If the request mentions a trademarked product, brand, or copyrighted fictional/anime/superhero/game character (like iPhone, Nike, Goku, Spider-Man, Pikachu), describe its iconic physical appearance, outfit, hair, materials, and form visually WITHOUT writing the trademarked or copyrighted name itself so the image safety filter never blocks it. Output ONLY the final prompt text, no quotes, labels, or markdown.";
     const r = await chat(
       fastModel,
       [
         { role: "system", content: system },
         { role: "user", content: `User image request: ${cleaned}` },
       ],
-      { temperature: 0.45, maxTokens: 180, thinking: false, timeoutMs: 4_500, allowFallback: false },
+      { temperature: mode === "editorial" ? 0.35 : 0.45, maxTokens: 260, thinking: false, timeoutMs, allowFallback: false },
     );
     const expanded = r.text.replace(/^["'`]+|["'`]+$/g, "").replace(/\s+/g, " ").trim();
     if (expanded.length >= 25 && expanded.length <= 1600) return expanded;
@@ -937,24 +965,47 @@ async function postFluxOnce(
   provider: ProviderRecord,
   prompt: string,
   dims: { width: number; height: number },
-): Promise<{ json: Record<string, unknown>; base64: string | null; blocked: boolean; reason?: string }> {
+  deadlineMs: number,
+  attemptMs: number,
+  maxAttempts = IMAGE_ATTEMPTS,
+): Promise<{ json: Record<string, unknown>; base64: string | null; blocked: boolean; reason?: string; width: number; height: number }> {
   let lastErr: unknown;
-  for (let i = 0; i < IMAGE_ATTEMPTS; i++) {
-    // Keep full resolution on first two tries; only drop slightly to 896x896 on final retry after timeouts.
+  for (let i = 0; i < maxAttempts; i++) {
+    const remaining = deadlineMs - Date.now();
+    if (remaining < 3_500) {
+      lastErr = lastErr ?? new ApiError(502, "PROVIDER_TIMEOUT", "Image generation ran out of time. Try again in a moment.");
+      break;
+    }
+    // Keep full resolution on first two tries; drop slightly to 896x896 on final retry after timeouts.
     const width = i < 2 ? dims.width : 896;
     const height = i < 2 ? dims.height : 896;
+    const thisTimeout = Math.min(attemptMs, Math.max(3_500, remaining));
+    const attemptStart = Date.now();
     try {
-      const json = await post(url, provider, { prompt, width, height, steps: 4 }, IMAGE_ATTEMPT_MS);
+      const json = await post(url, provider, { prompt, width, height, steps: 4 }, thisTimeout);
       const { base64 } = extractImageArtifact(json);
       const check = isFilteredOrBlankImage(json, base64);
-      return { json, base64, blocked: check.blocked, reason: check.reason };
+      return { json, base64, blocked: check.blocked, reason: check.reason, width, height };
     } catch (e) {
       lastErr = e;
       const retryable = e instanceof ApiError && (e.code === "PROVIDER_TIMEOUT" || e.code === "PROVIDER_BUSY" || e.code === "UPSTREAM_ERROR");
+      logEvent(
+        "llm",
+        "warn",
+        `FLUX image attempt ${i + 1}/${maxAttempts} failed (${e instanceof ApiError ? e.code : "error"}) after ${Date.now() - attemptStart} ms`,
+        { width, height, retryable },
+      );
       if (!retryable) throw e;
     }
   }
-  throw lastErr;
+  throw lastErr ?? new ApiError(502, "PROVIDER_TIMEOUT", "Image generation did not finish in time. Try again in a moment.");
+}
+
+export interface GenerateImageOptions {
+  /** Total wall-clock budget across prompt expansion, retries, and safety rewrites. Defaults to 45 s. */
+  maxBudgetMs?: number;
+  /** Per-attempt HTTP timeout against the image endpoint. Defaults to 12 s. */
+  attemptTimeoutMs?: number;
 }
 
 async function callImageEndpoint(
@@ -962,25 +1013,39 @@ async function callImageEndpoint(
   provider: ProviderRecord,
   rawPrompt: string,
   startedAt: number,
-): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed: string }> {
+  opts: GenerateImageOptions = {},
+): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed: string; modelSlug: string; source: "nvidia" | "vercel"; width?: number; height?: number }> {
   const base = provider.mediaBaseUrl || provider.chatBaseUrl;
   const noTokens: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const isFlux = model.apiModelId.includes("flux") || (model.endpointPath ?? "").includes("/genai/");
   const path = model.endpointPath || (isFlux ? `/genai/${model.apiModelId}` : `/cosmos/${model.apiModelId}`);
   const url = `${base}${path}`;
+  const budgetMs = Math.max(12_000, opts.maxBudgetMs ?? IMAGE_DEFAULT_BUDGET_MS);
+  const attemptMs = Math.max(6_000, opts.attemptTimeoutMs ?? IMAGE_ATTEMPT_MS);
+  const deadlineMs = startedAt + budgetMs;
 
   if (isFlux) {
     const dims = pickImageDimensions(rawPrompt);
-    let activePrompt = await enhanceImagePrompt(rawPrompt, false);
-    let attempt = await postFluxOnce(url, provider, activePrompt, dims);
+    let activePrompt = await enhanceImagePrompt(rawPrompt, "expand", Math.min(5_000, Math.max(2_500, deadlineMs - Date.now() - 8_000)));
+    let attempt = await postFluxOnce(url, provider, activePrompt, dims, deadlineMs, attemptMs, IMAGE_ATTEMPTS);
 
-    // If NVIDIA's safety/trademark filter still produced a CONTENT_FILTERED black frame, rewrite cleanly once and retry.
-    if (attempt.blocked) {
+    // If NVIDIA's safety/trademark filter still produced a CONTENT_FILTERED black frame, rewrite strictly and retry.
+    if (attempt.blocked && deadlineMs - Date.now() > 7_000) {
       logEvent("llm", "warn", `Image generation blocked (${attempt.reason ?? "FILTERED"}) on ${model.apiModelId}; rewriting prompt for visual retry`);
-      const rewritten = await enhanceImagePrompt(rawPrompt, true);
-      if (rewritten !== activePrompt) {
+      const rewritten = await enhanceImagePrompt(rawPrompt, "strict", Math.min(4_500, Math.max(2_500, deadlineMs - Date.now() - 5_000)));
+      if (rewritten !== activePrompt && deadlineMs - Date.now() > 4_000) {
         activePrompt = rewritten;
-        attempt = await postFluxOnce(url, provider, activePrompt, dims);
+        attempt = await postFluxOnce(url, provider, activePrompt, dims, deadlineMs, attemptMs, 2);
+      }
+    }
+
+    // Final safety-classifier false-positive recovery: soften into an editorial illustration at 896x896 if budget allows.
+    if (attempt.blocked && deadlineMs - Date.now() > 7_000) {
+      logEvent("llm", "warn", `Image generation blocked again (${attempt.reason ?? "FILTERED"}) on ${model.apiModelId}; retrying with calm editorial framing`);
+      const editorial = await enhanceImagePrompt(rawPrompt, "editorial", Math.min(4_000, Math.max(2_500, deadlineMs - Date.now() - 5_000)));
+      if (editorial && deadlineMs - Date.now() > 4_000) {
+        activePrompt = editorial;
+        attempt = await postFluxOnce(url, provider, activePrompt, { width: 896, height: 896 }, deadlineMs, attemptMs, 1);
       }
     }
 
@@ -988,7 +1053,7 @@ async function callImageEndpoint(
       throw new ApiError(
         422,
         "IMAGE_CONTENT_FILTERED",
-        "The image model's safety filter blocked this prompt (trademarked brand names or restricted terms can trigger it). Try describing the object visually instead.",
+        "The image model's safety filter blocked this prompt (trademarked brand names or copyrighted character names can trigger it). Try describing the subject visually instead.",
       );
     }
 
@@ -997,17 +1062,22 @@ async function callImageEndpoint(
       imageBase64: attempt.base64,
       revisedPrompt: activePrompt !== rawPrompt.trim() ? activePrompt : undefined,
       modelUsed: model.apiModelId,
+      modelSlug: model.slug,
+      source: model.source,
+      width: attempt.width,
+      height: attempt.height,
     };
   }
 
-  const json = await postWithRetry(url, provider, { model_mode: "text2image", prompt: rawPrompt, resolution: "480_1_1", num_frames: 1 }, 1, IMAGE_ATTEMPT_MS);
+  const remaining = Math.max(5_000, deadlineMs - Date.now());
+  const json = await postWithRetry(url, provider, { model_mode: "text2image", prompt: rawPrompt, resolution: "480_1_1", num_frames: 1 }, 1, Math.min(attemptMs, remaining));
   const { base64 } = extractImageArtifact(json);
   const check = isFilteredOrBlankImage(json, base64);
   if (check.blocked || !base64) {
     throw new ApiError(422, "IMAGE_CONTENT_FILTERED", "The image model could not generate this prompt. Try describing the scene in visual detail.");
   }
   meterNonBlocking(model, "image", noTokens, startedAt);
-  return { imageBase64: base64, modelUsed: model.apiModelId };
+  return { imageBase64: base64, modelUsed: model.apiModelId, modelSlug: model.slug, source: model.source };
 }
 
 /**
@@ -1018,7 +1088,8 @@ async function callImageEndpoint(
 export async function generateImage(
   model: RunnableModel,
   prompt: string,
-): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed?: string }> {
+  opts: GenerateImageOptions = {},
+): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed?: string; modelSlug?: string; source?: "nvidia" | "vercel"; width?: number; height?: number; usedFallback?: boolean }> {
   const startedAt = Date.now();
   const cleanPrompt = prompt.trim().slice(0, 2000);
   if (!cleanPrompt) throw Errors.invalid("Describe the image you want to generate.");
@@ -1029,14 +1100,15 @@ export async function generateImage(
   }
 
   try {
-    return await callImageEndpoint(resolved, provider, cleanPrompt, startedAt);
+    return await callImageEndpoint(resolved, provider, cleanPrompt, startedAt, opts);
   } catch (e) {
     if (!isFallbackableError(e)) throw e;
     const dbFallback = (await getDbConfiguredFallback(resolved.slug)) ?? (await getDbDefaultImageModel(resolved.slug));
     if (!dbFallback || dbFallback.slug === resolved.slug) throw e;
     const fb = await resolveModelFromDb(dbFallback);
     logEvent("llm", "warn", `${resolved.apiModelId} unavailable for image gen (${e instanceof ApiError ? e.code : "error"}), routing via DB fallback ${fb.model.apiModelId}`);
-    return callImageEndpoint(fb.model, fb.provider, cleanPrompt, startedAt);
+    const fbRes = await callImageEndpoint(fb.model, fb.provider, cleanPrompt, startedAt, opts);
+    return { ...fbRes, usedFallback: true };
   }
 }
 
@@ -1065,7 +1137,7 @@ export async function analyzeImage(
   prompt: string,
   imageDataUrl: string,
   opts: { system?: string; maxTokens?: number; temperature?: number; timeoutMs?: number } = {},
-): Promise<{ text: string; usage: Usage; modelUsed?: string }> {
+): Promise<{ text: string; usage: Usage; modelUsed?: string; modelSlug?: string; source?: "nvidia" | "vercel"; usedFallback?: boolean }> {
   if (!imageDataUrl) throw Errors.invalid("Attach an image first and try again.");
   const visionModels = await getDbVisionModels();
   if (!visionModels.length) throw Errors.upstream("No active vision model is configured in the model catalog.");

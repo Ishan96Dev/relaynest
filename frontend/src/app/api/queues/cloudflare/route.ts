@@ -5,7 +5,7 @@ import { processQueueEnvelope } from "@backend/server/queue/consumer";
 import type { QueueEventEnvelope } from "@backend/server/queue/kafka";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 /**
  * Internal Cloudflare Queue consumer endpoint invoked by `cloudflare/worker.ts`'s `queue()` handler.

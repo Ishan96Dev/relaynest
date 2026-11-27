@@ -3,6 +3,7 @@ import { isSupabaseConfigured } from "@backend/lib/env/public";
 import { demoActivity, demoBots, demoTrend } from "@/lib/demo-data";
 import { requireAuth } from "@backend/server/auth/context";
 import { listBots } from "@backend/server/repositories/bots";
+import { getBotUsageStats } from "@backend/server/services/execution-trace";
 import type { Bot } from "@/types";
 
 export interface DashboardData {
@@ -37,13 +38,20 @@ export async function getDashboardData(): Promise<DashboardData> {
   const since = new Date(Date.now() - 6 * 86_400_000);
   since.setUTCHours(0, 0, 0, 0);
 
-  const [{ bots }, execRes, logsRes, recentExecRes, aiRes] = await Promise.all([
+  const [{ bots }, execRes, logsRes, recentExecRes, aiRes, perBotExecRes] = await Promise.all([
     listBots(ctx, { limit: 50 }),
     ctx.supabase.from("executions").select("id", { count: "exact", head: true }).eq("workspace_id", ctx.workspaceId),
     ctx.supabase.from("activity_logs").select("id, action, detail, created_at").eq("workspace_id", ctx.workspaceId).order("created_at", { ascending: false }).limit(5),
     ctx.supabase.from("executions").select("status, started_at").eq("workspace_id", ctx.workspaceId).gte("started_at", since.toISOString()).limit(5000),
     ctx.supabase.from("ai_usage_events").select("total_tokens, cost_usd").eq("workspace_id", ctx.workspaceId).gte("created_at", since.toISOString()).limit(5000),
+    ctx.supabase.from("executions").select("bot_id").eq("workspace_id", ctx.workspaceId).not("bot_id", "is", null).limit(5000),
   ]);
+
+  const execCountByBot = new Map<string, number>();
+  for (const r of perBotExecRes.data ?? []) {
+    const id = r.bot_id as string | null;
+    if (id) execCountByBot.set(id, (execCountByBot.get(id) ?? 0) + 1);
+  }
 
   const perDay = new Map<string, number>();
   for (let i = 0; i < 7; i++) perDay.set(new Date(since.getTime() + i * 86_400_000).toISOString().slice(0, 10), 0);
@@ -57,18 +65,25 @@ export async function getDashboardData(): Promise<DashboardData> {
   const aiRows = aiRes.data ?? [];
   const aiTokens7d = aiRows.reduce((s, r) => s + Number(r.total_tokens ?? 0), 0);
   const aiCostUsd7d = aiRows.reduce((s, r) => s + Number(r.cost_usd ?? 0), 0);
+  const botUsage = await getBotUsageStats(ctx, bots.map((b) => b.id));
 
   return {
     demo: false,
-    bots: bots.map((b) => ({
-      id: b.id, publicId: b.publicId, name: b.name, username: b.username ?? "", avatarPath: b.avatarPath, description: b.description ?? "", status: b.status,
-      webhookStatus: b.webhookStatus as Bot["webhookStatus"], messages: b.messagesCount, activeUsers: 0,
-      lastActive: rel(b.lastUpdateAt), category: b.category ?? "", createdAt: new Date(b.createdAt).toLocaleDateString(),
-    })),
+    bots: bots.map((b) => {
+      const usage = botUsage.get(b.id) ?? { executionsCount: execCountByBot.get(b.id) ?? 0, activeUsers: 0 };
+      const execCount = Math.max(execCountByBot.get(b.id) ?? 0, usage.executionsCount);
+      const msgs = Math.max(b.messagesCount, execCount);
+      return {
+        id: b.id, publicId: b.publicId, name: b.name, username: b.username ?? "", avatarPath: b.avatarPath, description: b.description ?? "",
+        welcomeMessage: b.welcomeMessage ?? "", defaultResponse: b.defaultResponse ?? "", status: b.status,
+        webhookStatus: b.webhookStatus as Bot["webhookStatus"], messages: msgs, activeUsers: usage.activeUsers, executionsCount: execCount,
+        lastActive: rel(b.lastUpdateAt), category: b.category ?? "", createdAt: new Date(b.createdAt).toLocaleDateString(),
+      };
+    }),
     totals: {
       bots: bots.length,
       activeBots: bots.filter((b) => b.status === "active").length,
-      messages: bots.reduce((n, b) => n + b.messagesCount, 0),
+      messages: bots.reduce((n, b) => n + Math.max(b.messagesCount, execCountByBot.get(b.id) ?? 0), 0),
       executions: execRes.count ?? 0,
     },
     quickStats: {

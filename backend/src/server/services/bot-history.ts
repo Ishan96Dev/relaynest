@@ -2,7 +2,7 @@ import "server-only";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import type { AuthContext } from "@backend/server/auth/context";
 
-export type BotHistoryEvent = "created" | "deleted" | "deleted_on_telegram";
+export type BotHistoryEvent = "created" | "updated" | "deleted" | "deleted_on_telegram";
 
 export interface BotHistoryEntry {
   id: string;
@@ -141,7 +141,7 @@ export async function listBotHistory(ctx: AuthContext): Promise<BotHistoryEntry[
       .limit(50),
     admin
       .from("ai_agents")
-      .select("bot_id, category, description, ai_models!ai_agents_model_id_fkey(name)")
+      .select("bot_id, category, description, commands, ai_models!ai_agents_model_id_fkey(name)")
       .eq("workspace_id", ctx.workspaceId)
       .not("bot_id", "is", null),
   ]);
@@ -176,7 +176,7 @@ export async function listBotHistory(ctx: AuthContext): Promise<BotHistoryEntry[
       const snap = parseJsonSnapshot(r.detail);
       if (!snap) continue;
       const ev = String(r.event).replace("bot.history.", "") as BotHistoryEvent;
-      if (!["created", "deleted", "deleted_on_telegram"].includes(ev)) continue;
+      if (!["created", "updated", "deleted", "deleted_on_telegram"].includes(ev)) continue;
       const botId = typeof snap.botId === "string" ? snap.botId : null;
       const botName = String(snap.botName ?? "Telegram Bot");
       const occurredAt = r.created_at as string;
@@ -202,17 +202,22 @@ export async function listBotHistory(ctx: AuthContext): Promise<BotHistoryEntry[
     }
   }
 
-  // Ensure existing bots created before history logging still show their creation + configuration record.
+  // Ensure existing bots created before history logging still show their creation + configuration record
+  // and persist the missing `created` row into `public.bot_history` so Supabase stays complete.
   const recordedCreatedIds = new Set([...entries.values()].filter((e) => e.event === "created" && e.botId).map((e) => e.botId!));
-  const agentMap = new Map<string, { category: string; description: string; modelName: string | null }>();
+  const agentMap = new Map<string, { category: string; description: string; modelName: string | null; commands: string[] }>();
   if (liveAgentsRes.status === "fulfilled" && liveAgentsRes.value.data) {
     for (const a of liveAgentsRes.value.data) {
       const m = Array.isArray(a.ai_models) ? a.ai_models[0] : a.ai_models;
+      const agentCmds = Array.isArray(a.commands)
+        ? (a.commands as { command?: string }[]).filter((c) => c.command).map((c) => `/${String(c.command)}`)
+        : [];
       if (a.bot_id) {
         agentMap.set(a.bot_id as string, {
           category: (a.category as string | null) ?? "",
           description: (a.description as string | null) ?? "",
           modelName: (m as { name?: string } | null)?.name ?? null,
+          commands: agentCmds,
         });
       }
     }
@@ -223,16 +228,37 @@ export async function listBotHistory(ctx: AuthContext): Promise<BotHistoryEntry[
       const id = b.id as string;
       if (recordedCreatedIds.has(id)) continue;
       const agent = agentMap.get(id);
-      const cmds = ((b.bot_commands ?? []) as { command: string }[]).map((c) => `/${c.command}`);
+      const dbCmds = ((b.bot_commands ?? []) as { command: string }[]).map((c) => `/${c.command}`);
+      const cmds = [...new Set([...dbCmds, ...(agent?.commands ?? [])])];
       const category = (b.category as string | null) ?? agent?.category ?? "";
       const description = (b.description as string | null) ?? agent?.description ?? "";
+      const usedFor = summarizeUsedFor({ category, description, modelName: agent?.modelName, commands: cmds });
+      const createdAt = b.created_at as string;
+      void recordBotHistory({
+        workspaceId: ctx.workspaceId,
+        botId: id,
+        botName: b.name as string,
+        username: (b.telegram_username as string | null) ?? "",
+        event: "created",
+        usedFor,
+        category: category || null,
+        description: description || null,
+        commands: cmds,
+        welcomeMessage: (b.welcome_message as string | null) ?? null,
+        defaultResponse: (b.default_response as string | null) ?? null,
+        modelName: agent?.modelName ?? null,
+        messagesCount: Number(b.messages_count ?? 0),
+        actorId: ctx.userId,
+        actorEmail: ctx.email,
+        botCreatedAt: createdAt,
+      }).catch(() => undefined);
       entries.set(`created:${id}:seed`, {
         id: `seed-${id}`,
         botId: id,
         botName: b.name as string,
         username: (b.telegram_username as string | null) ?? "",
         event: "created",
-        usedFor: summarizeUsedFor({ category, description, modelName: agent?.modelName, commands: cmds }),
+        usedFor,
         category,
         description,
         commands: cmds,
@@ -240,8 +266,8 @@ export async function listBotHistory(ctx: AuthContext): Promise<BotHistoryEntry[
         defaultResponse: (b.default_response as string | null) ?? "",
         modelName: agent?.modelName ?? null,
         messagesCount: Number(b.messages_count ?? 0),
-        botCreatedAt: b.created_at as string,
-        occurredAt: b.created_at as string,
+        botCreatedAt: createdAt,
+        occurredAt: createdAt,
       });
     }
   }

@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { Errors } from "@backend/lib/http/api";
+import { createAdminClient } from "@backend/lib/supabase/admin";
 import type { createAiAgentInput, knowledgeInput, testInput, updateAiAgentInput } from "@backend/lib/validation/schemas";
 import { requireWrite, type AuthContext } from "@backend/server/auth/context";
 import { buildCitationSources, buildSystemPrompt, parseCommands, parseTools, type AgentCommand, type AgentConfig, type AgentTools, type KnowledgeItem } from "@backend/server/ai/agent";
@@ -12,8 +13,10 @@ import { withUsageScope } from "@backend/server/ai/usage";
 import { buildWebSearchSystemContext, webSearchToCitations, type WebMediaPayload } from "@backend/server/ai/web-search-types";
 import { parseSearchProviderPrefix, searchOpenWeb } from "@backend/server/search/web-search";
 import { getDbDefaultImageModel } from "@backend/server/services/ai-models";
+import { recordBotHistory } from "@backend/server/services/bot-history";
 import { retrieveForBot } from "@backend/server/services/knowledge-retrieval";
 import { activateBot, createBot, deactivateBot, deleteBot, loadToken, updateBotDetails } from "@backend/server/services/bots";
+import { syncAgentCommandsToBotCommands } from "@backend/server/repositories/commands";
 import { assertBotLimit, assertExecutionLimit } from "@backend/server/billing/entitlements";
 import { notify } from "@backend/server/notifications";
 import { getMe, setMyCommands } from "@backend/server/telegram/client";
@@ -151,6 +154,18 @@ export async function getAiAgent(ctx: AuthContext, id: string): Promise<AiAgentD
   return toAgentDto(await loadRow(ctx, id));
 }
 
+/** Loads the AI Agent linked to a Telegram bot (if any). */
+export async function getAiAgentByBotId(ctx: AuthContext, botId: string): Promise<AiAgentDto | null> {
+  const { data, error } = await ctx.supabase
+    .from("ai_agents")
+    .select(COLUMNS)
+    .eq("bot_id", botId)
+    .eq("workspace_id", ctx.workspaceId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return toAgentDto(data);
+}
+
 export async function listKnowledge(ctx: AuthContext, agentId: string): Promise<KnowledgeDto[]> {
   const { data, error } = await ctx.supabase.from("ai_agent_knowledge").select("id, title, content, created_at").eq("agent_id", agentId).eq("workspace_id", ctx.workspaceId).order("created_at");
   if (error) throw new Error("Failed to load knowledge");
@@ -215,85 +230,215 @@ export async function createAiAgent(
   return dto;
 }
 
-export async function updateAiAgent(ctx: AuthContext, id: string, patch: UpdateAiAgentInput): Promise<AiAgentDto> {
+/** Computes which field groups genuinely changed relative to the persisted agent row. */
+export function diffAiAgentUpdate(
+  existing: AiAgentDto,
+  patch: Omit<UpdateAiAgentInput, "silent" | "notifySummary">,
+): {
+  botFieldsChanged: boolean;
+  commandsOrToolsChanged: boolean;
+  commandMirrorChanged: boolean;
+  anyChanged: boolean;
+  changedBotFields: { name: boolean; description: boolean; avatar: boolean; responses: boolean };
+} {
+  const norm = (v: string | null | undefined) => (v ?? "").trim();
+  const nameChanged = patch.name !== undefined && patch.name !== existing.name;
+  const usernameChanged = patch.username !== undefined && patch.username !== existing.username;
+  const descChanged = patch.description !== undefined && patch.description !== existing.description;
+  const avatarChanged = patch.avatarPath !== undefined && patch.avatarPath !== existing.avatarPath;
+  const langChanged = patch.language !== undefined && patch.language !== existing.language;
+  const catChanged = patch.category !== undefined && patch.category !== existing.category;
+  const welcomeChanged = patch.welcomeMessage !== undefined && norm(patch.welcomeMessage) !== norm(existing.welcomeMessage);
+  const fallbackChanged = patch.fallbackMessage !== undefined && norm(patch.fallbackMessage) !== norm(existing.fallbackMessage);
+  const modelChanged = patch.modelSlug !== undefined && (patch.modelSlug ?? null) !== existing.modelSlug;
+  const imageModelChanged = patch.imageModelSlug !== undefined && (patch.imageModelSlug ?? null) !== existing.imageModelSlug;
+  const instructionsChanged = patch.instructions !== undefined && patch.instructions !== existing.instructions;
+  const tempChanged = patch.temperature !== undefined && Number(patch.temperature) !== Number(existing.temperature);
+  const maxTokensChanged = patch.maxTokens !== undefined && patch.maxTokens !== existing.maxTokens;
+  const memoryChanged = patch.memoryTurns !== undefined && patch.memoryTurns !== existing.memoryTurns;
+  const toolsChanged = patch.tools !== undefined && JSON.stringify(patch.tools) !== JSON.stringify(existing.tools);
+  const commandsChanged = patch.commands !== undefined && JSON.stringify(patch.commands) !== JSON.stringify(existing.commands);
+
+  const botFieldsChanged = nameChanged || descChanged || catChanged || avatarChanged || welcomeChanged || fallbackChanged;
+  const commandsOrToolsChanged = commandsChanged || toolsChanged;
+  const commandMirrorChanged = commandsOrToolsChanged || welcomeChanged || descChanged || nameChanged;
+  const anyChanged =
+    botFieldsChanged ||
+    usernameChanged ||
+    langChanged ||
+    modelChanged ||
+    imageModelChanged ||
+    instructionsChanged ||
+    tempChanged ||
+    maxTokensChanged ||
+    memoryChanged ||
+    commandsOrToolsChanged;
+
+  return {
+    botFieldsChanged,
+    commandsOrToolsChanged,
+    commandMirrorChanged,
+    anyChanged,
+    changedBotFields: {
+      name: nameChanged,
+      description: descChanged,
+      avatar: avatarChanged,
+      responses: welcomeChanged || fallbackChanged,
+    },
+  };
+}
+
+export async function updateAiAgent(
+  ctx: AuthContext,
+  id: string,
+  patch: UpdateAiAgentInput,
+  opts?: { skipNotify?: boolean },
+): Promise<AiAgentDto> {
   requireWrite(ctx);
-  await loadRow(ctx, id);
-  checkAvatar(ctx, patch.avatarPath);
+  const existing = toAgentDto(await loadRow(ctx, id));
+  const { silent, notifySummary, ...fields } = patch;
+  const skipNotify = Boolean(silent || opts?.skipNotify);
+  checkAvatar(ctx, fields.avatarPath);
+
+  const diff = diffAiAgentUpdate(existing, fields);
   const update: Record<string, unknown> = {};
-  if (patch.name !== undefined) update.name = patch.name;
-  if (patch.username !== undefined) update.username = patch.username;
-  if (patch.description !== undefined) update.description = patch.description;
-  if (patch.avatarPath !== undefined) update.avatar_path = patch.avatarPath;
-  if (patch.language !== undefined) update.language = patch.language;
-  if (patch.category !== undefined) update.category = patch.category;
-  if (patch.modelSlug !== undefined) update.model_id = patch.modelSlug ? await resolveModelId(ctx, patch.modelSlug) : null;
-  if (patch.imageModelSlug !== undefined) update.image_model_id = patch.imageModelSlug ? await resolveImageModelId(ctx, patch.imageModelSlug) : null;
-  if (patch.commands !== undefined) update.commands = patch.commands;
-  if (patch.instructions !== undefined) update.instructions = patch.instructions;
-  if (patch.welcomeMessage !== undefined) update.welcome_message = patch.welcomeMessage || null;
-  if (patch.fallbackMessage !== undefined) update.fallback_message = patch.fallbackMessage || null;
-  if (patch.temperature !== undefined) update.temperature = patch.temperature;
-  if (patch.maxTokens !== undefined) update.max_tokens = patch.maxTokens;
-  if (patch.memoryTurns !== undefined) update.memory_turns = patch.memoryTurns;
-  if (patch.tools !== undefined) update.tools = patch.tools;
+  if (fields.name !== undefined) update.name = fields.name;
+  if (fields.username !== undefined) update.username = fields.username;
+  if (fields.description !== undefined) update.description = fields.description;
+  if (fields.avatarPath !== undefined) update.avatar_path = fields.avatarPath;
+  if (fields.language !== undefined) update.language = fields.language;
+  if (fields.category !== undefined) update.category = fields.category;
+  if (fields.modelSlug !== undefined) update.model_id = fields.modelSlug ? await resolveModelId(ctx, fields.modelSlug) : null;
+  if (fields.imageModelSlug !== undefined) update.image_model_id = fields.imageModelSlug ? await resolveImageModelId(ctx, fields.imageModelSlug) : null;
+  if (fields.commands !== undefined) update.commands = fields.commands;
+  if (fields.instructions !== undefined) update.instructions = fields.instructions;
+  if (fields.welcomeMessage !== undefined) update.welcome_message = fields.welcomeMessage || null;
+  if (fields.fallbackMessage !== undefined) update.fallback_message = fields.fallbackMessage || null;
+  if (fields.temperature !== undefined) update.temperature = fields.temperature;
+  if (fields.maxTokens !== undefined) update.max_tokens = fields.maxTokens;
+  if (fields.memoryTurns !== undefined) update.memory_turns = fields.memoryTurns;
+  if (fields.tools !== undefined) update.tools = fields.tools;
+
   const { data, error } = await ctx.supabase.from("ai_agents").update(update).eq("id", id).eq("workspace_id", ctx.workspaceId).select(COLUMNS).single();
   if (error) {
     if (error.code === "23505") throw Errors.conflict("An AI agent with this username already exists in the workspace.");
     throw new Error("Failed to update the AI agent");
   }
-  // Keep the linked bot (Supabase row and Telegram profile: name, about text, photo) in sync with the agent.
-  if (data.bot_id && (patch.name !== undefined || patch.description !== undefined || patch.avatarPath !== undefined || patch.welcomeMessage !== undefined || patch.fallbackMessage !== undefined)) {
-    await updateBotDetails(ctx, data.bot_id as string, {
-      ...(patch.name !== undefined && { name: patch.name }),
-      ...(patch.description !== undefined && { description: patch.description }),
-      ...(patch.avatarPath !== undefined && { avatarPath: patch.avatarPath }),
-      ...(patch.welcomeMessage !== undefined && { welcomeMessage: patch.welcomeMessage ?? "" }),
-      ...(patch.fallbackMessage !== undefined && { defaultResponse: patch.fallbackMessage ?? "" }),
-    }).catch((e) => console.error("[ai-agents] bot sync failed:", e instanceof Error ? e.message : e));
+  // Keep the linked bot (Supabase row, bot_responses, and Telegram profile) silently in sync when shared fields changed.
+  if (data.bot_id && diff.botFieldsChanged) {
+    await updateBotDetails(
+      ctx,
+      data.bot_id as string,
+      {
+        ...(fields.name !== undefined && { name: fields.name }),
+        ...(fields.description !== undefined && { description: fields.description }),
+        ...(fields.category !== undefined && { category: fields.category }),
+        ...(fields.avatarPath !== undefined && { avatarPath: fields.avatarPath }),
+        ...(fields.welcomeMessage !== undefined && { welcomeMessage: fields.welcomeMessage ?? "" }),
+        ...(fields.fallbackMessage !== undefined && { defaultResponse: fields.fallbackMessage ?? "" }),
+      },
+      {
+        skipNotify: true,
+        skipAgentSync: true,
+        skipHistory: true,
+        forceTelegramSync: {
+          name: diff.changedBotFields.name,
+          description: diff.changedBotFields.description,
+          photo: diff.changedBotFields.avatar,
+        },
+        forceResponsesSync: diff.changedBotFields.responses,
+      },
+    ).catch((e) => console.error("[ai-agents] bot sync failed:", e instanceof Error ? e.message : e));
+  }
+  // Mirror AI agent commands into `public.bot_commands` so Bot Configuration -> Commands always stays in sync.
+  if (data.bot_id && diff.commandMirrorChanged) {
+    await syncAgentCommandsToBotCommands(ctx.workspaceId, data.bot_id as string, {
+      name: data.name as string,
+      description: data.description as string,
+      welcomeMessage: (data.welcome_message as string | null) ?? null,
+      commands: parseCommands(data.commands),
+      tools: parseTools(data.tools),
+    }).catch((e) => console.error("[ai-agents] bot_commands sync failed:", e instanceof Error ? e.message : e));
   }
   // The command menu in Telegram follows the saved commands while the agent is live (best effort).
-  if ((patch.commands !== undefined || patch.tools !== undefined) && data.status === "active" && data.bot_id) {
+  if (diff.commandsOrToolsChanged && data.status === "active" && data.bot_id) {
     await syncTelegramCommands(ctx.workspaceId, data.bot_id as string, parseCommands(data.commands), parseTools(data.tools)).catch(() => undefined);
   }
   const dto = toAgentDto(data);
-  const agentConfigChanged =
-    patch.modelSlug !== undefined ||
-    patch.imageModelSlug !== undefined ||
-    patch.instructions !== undefined ||
-    patch.commands !== undefined ||
-    patch.tools !== undefined ||
-    patch.temperature !== undefined ||
-    patch.maxTokens !== undefined ||
-    patch.memoryTurns !== undefined;
-  if (agentConfigChanged) {
-    await notify({
-      workspaceId: ctx.workspaceId,
-      userId: ctx.userId,
-      kind: "agent_updated",
-      title: `AI Agent updated: ${dto.name}`,
-      body: "Model, prompt, commands, or capability settings were saved.",
-      actionUrl: `/ai/agents/${dto.id}`,
-      dedupeHours: 0.02,
-      dedupeByTitle: true,
-    });
+  if (!skipNotify && (diff.anyChanged || notifySummary)) {
+    const admin = createAdminClient();
+    await Promise.allSettled([
+      admin.from("activity_logs").insert({
+        workspace_id: ctx.workspaceId,
+        actor_id: ctx.userId,
+        action: "agent.updated",
+        detail: `@${dto.username}`,
+      }),
+      ...(dto.botId
+        ? [
+            recordBotHistory({
+              workspaceId: ctx.workspaceId,
+              botId: dto.botId,
+              botName: dto.name,
+              username: dto.username,
+              event: "updated",
+              category: dto.category,
+              description: dto.description,
+              commands: dto.commands.map((c) => `/${c.command}`),
+              welcomeMessage: dto.welcomeMessage,
+              defaultResponse: dto.fallbackMessage,
+              modelName: dto.modelName,
+              actorId: ctx.userId,
+              actorEmail: ctx.email,
+              botCreatedAt: dto.createdAt,
+            }),
+          ]
+        : []),
+      notify({
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        kind: "agent_updated",
+        title: `AI Agent updated: ${dto.name}`,
+        body: "Model, prompt, commands, or profile settings were saved.",
+        actionUrl: `/ai/agents/${dto.id}`,
+        dedupeHours: 0.02,
+        dedupeByTitle: true,
+      }),
+    ]);
   }
   return dto;
 }
 
-/** Publishes the built-in and custom commands as the bot's menu in Telegram. */
+/** Publishes the built-in, AI agent, and any custom static bot_commands as the bot's menu in Telegram. */
 export async function syncTelegramCommands(workspaceId: string, botId: string, commands: AgentCommand[], tools?: AgentTools): Promise<void> {
   const token = await loadToken(botId, workspaceId);
   const hasSearch = commands.some((c) => c.command === "search");
   const extras = !hasSearch && tools?.webSearch !== false
     ? [{ command: "search", description: "Search the web with details, images & videos" }]
     : [];
-  await setMyCommands(token, [
+  const base = [
     { command: "start", description: "Start the conversation" },
     { command: "help", description: "How to use this bot" },
     { command: "reset", description: "Clear our conversation" },
     ...extras,
     ...commands.map((c) => ({ command: c.command, description: c.description.slice(0, 256) })),
-  ]);
+  ];
+  const seen = new Set(base.map((c) => c.command));
+  const { data: customRows } = await createAdminClient()
+    .from("bot_commands")
+    .select("command, description, response_config")
+    .eq("bot_id", botId)
+    .eq("workspace_id", workspaceId)
+    .eq("response_type", "text")
+    .eq("enabled", true);
+  for (const r of customRows ?? []) {
+    const cmd = String(r.command).toLowerCase();
+    if (seen.has(cmd)) continue;
+    seen.add(cmd);
+    const text = ((r.response_config as { text?: string } | null)?.text ?? "").trim();
+    base.push({ command: cmd, description: ((r.description as string | null)?.trim() || text || "Run command").slice(0, 256) });
+  }
+  await setMyCommands(token, base.slice(0, 100));
 }
 
 export async function deleteAiAgent(ctx: AuthContext, id: string): Promise<void> {
@@ -358,6 +503,13 @@ export async function connectTelegram(ctx: AuthContext, id: string, token: strin
     throw new Error("Failed to link the Telegram bot");
   }
   const dto = toAgentDto(data);
+  await syncAgentCommandsToBotCommands(ctx.workspaceId, bot.id, {
+    name: dto.name,
+    description: dto.description,
+    welcomeMessage: dto.welcomeMessage,
+    commands: dto.commands,
+    tools: dto.tools,
+  }).catch(() => undefined);
   await notify({
     workspaceId: ctx.workspaceId,
     userId: ctx.userId,
@@ -402,7 +554,14 @@ export async function activateAiAgent(ctx: AuthContext, id: string): Promise<AiA
   const a = toAgentDto(row);
   if (!a.botId) throw Errors.invalid("Connect a Telegram bot first.");
   if (!a.modelSlug) throw Errors.invalid("Choose a model for this agent first.");
-  await activateBot(ctx, a.botId, { skipNotify: true });
+  await activateBot(ctx, a.botId, { skipNotify: true, skipAgentSync: true });
+  await syncAgentCommandsToBotCommands(ctx.workspaceId, a.botId, {
+    name: a.name,
+    description: a.description,
+    welcomeMessage: a.welcomeMessage,
+    commands: a.commands,
+    tools: a.tools,
+  }).catch(() => undefined);
   await syncTelegramCommands(ctx.workspaceId, a.botId, a.commands, a.tools).catch(() => undefined);
   const { data, error } = await ctx.supabase.from("ai_agents").update({ status: "active" }).eq("id", id).eq("workspace_id", ctx.workspaceId).select(COLUMNS).single();
   if (error) throw new Error("Failed to activate the AI agent");
@@ -421,7 +580,7 @@ export async function activateAiAgent(ctx: AuthContext, id: string): Promise<AiA
 export async function deactivateAiAgent(ctx: AuthContext, id: string): Promise<AiAgentDto> {
   requireWrite(ctx);
   const a = toAgentDto(await loadRow(ctx, id));
-  if (a.botId) await deactivateBot(ctx, a.botId, { skipNotify: true });
+  if (a.botId) await deactivateBot(ctx, a.botId, { skipNotify: true, skipAgentSync: true });
   const { data, error } = await ctx.supabase.from("ai_agents").update({ status: a.botId ? "inactive" : "draft" }).eq("id", id).eq("workspace_id", ctx.workspaceId).select(COLUMNS).single();
   if (error) throw new Error("Failed to deactivate the AI agent");
   const dto = toAgentDto(data);

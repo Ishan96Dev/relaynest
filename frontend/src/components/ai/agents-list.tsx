@@ -1,28 +1,43 @@
 "use client";
 /* Agent avatars are small Supabase Storage images, so next/image optimisation adds nothing. */
 /* eslint-disable @next/next/no-img-element */
-import { BrainCircuit, ExternalLink, Pencil, Play, Plus, Power, Trash2 } from "lucide-react";
+import { BrainCircuit, ExternalLink, Pencil, Play, Plus, Power, SlidersHorizontal, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
-import { toast } from "@/components/ui/toast";
+import type { ModelDto } from "@backend/server/ai/model-catalog";
 import type { AiAgentDto } from "@backend/server/services/ai-agents";
 import { publicStorageUrl, BUCKETS } from "@backend/lib/supabase/storage";
+import { EditAgentModal } from "@/components/ai/edit-agent-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/page-header";
 import { Modal } from "@/components/ui/modal";
+import { toast } from "@/components/ui/toast";
 import { api } from "@/lib/api-client";
 
 const tone = (s: string) => (s === "active" ? "success" : s === "error" ? "danger" : s === "draft" ? "warning" : "neutral") as "success" | "danger" | "warning" | "neutral";
 
-export function AgentsList({ agents: initial, canWrite }: { agents: AiAgentDto[]; canWrite: boolean }) {
+export function AgentsList({
+  agents: initial,
+  models = [],
+  canWrite,
+}: {
+  agents: AiAgentDto[];
+  models?: ModelDto[];
+  canWrite: boolean;
+}) {
   const router = useRouter();
   const [agents, setAgents] = React.useState(initial);
   const [busy, setBusy] = React.useState<string | null>(null);
   const setError = (m?: string) => { if (m) toast.error(m); };
+  const [editing, setEditing] = React.useState<AiAgentDto | null>(null);
   const [removing, setRemoving] = React.useState<AiAgentDto | null>(null);
+
+  React.useEffect(() => {
+    setAgents(initial);
+  }, [initial]);
 
   async function toggle(a: AiAgentDto) {
     setBusy(a.id); setError(undefined);
@@ -79,7 +94,14 @@ export function AgentsList({ agents: initial, canWrite }: { agents: AiAgentDto[]
                   {!a.botId && <Badge tone="warning">Telegram not connected</Badge>}
                 </div>
                 <div className="mt-auto flex flex-wrap gap-2 pt-1">
-                  <ButtonLink href={`/ai/agents/${a.id}`} variant="subtle" size="sm" className="flex-1"><Pencil className="size-3.5" aria-hidden />Configure</ButtonLink>
+                  {canWrite && (
+                    <Button variant="subtle" size="sm" onClick={() => setEditing(a)}>
+                      <Pencil className="size-3.5" aria-hidden />Edit
+                    </Button>
+                  )}
+                  <ButtonLink href={`/ai/agents/${a.id}`} variant="outline" size="sm" className="flex-1">
+                    <SlidersHorizontal className="size-3.5" aria-hidden />Configure
+                  </ButtonLink>
                   {canWrite && a.botId && a.modelSlug && (
                     <Button variant="outline" size="sm" disabled={busy === a.id} onClick={() => toggle(a)}>
                       {a.status === "active" ? <Power className="size-3.5" aria-hidden /> : <Play className="size-3.5" aria-hidden />}{a.status === "active" ? "Pause" : "Activate"}
@@ -93,6 +115,17 @@ export function AgentsList({ agents: initial, canWrite }: { agents: AiAgentDto[]
           );
         })}
       </ul>
+
+      <EditAgentModal
+        agent={editing}
+        models={models}
+        onClose={() => setEditing(null)}
+        onSaved={(updated) => {
+          setAgents((all) => all.map((x) => (x.id === updated.id ? updated : x)));
+          router.refresh();
+        }}
+      />
+
       <Modal open={Boolean(removing)} onClose={() => setRemoving(null)} title={`Delete ${removing?.name ?? "agent"}?`}
         footer={<><Button variant="outline" onClick={() => setRemoving(null)}>Cancel</Button><Button variant="danger" disabled={busy !== null} onClick={() => removing && remove(removing)}>Delete</Button></>}>
         This removes the agent, its knowledge and chat memory, and disconnects its Telegram bot. This cannot be undone.

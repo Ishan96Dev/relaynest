@@ -258,4 +258,48 @@ describe("Cloudflare Durable Object cache, rate limit, and Queue adapters", () =
     expect(outcome.action).toBe("retry");
     expect((outcome.delaySeconds ?? 0) >= 14).toBe(true);
   });
+
+  it("acknowledges telemetry-only telegram.updates envelopes and retries transient consumer errors up to 3 attempts", async () => {
+    const fake = createFakeCloudflarePlatform();
+    __setTestCloudflareBindings(fake.bindings);
+
+    const { processQueueEnvelope } = await import("../src/server/queue/consumer");
+
+    // Telemetry-only telegram.updates envelope (no execute flag) acks cleanly.
+    const telemetry = await processQueueEnvelope(
+      {
+        topic: "telegram.updates",
+        payload: { botId: "bot_1", workspaceId: "ws_1", updateId: 123 },
+        key: "bot_1",
+        ts: new Date().toISOString(),
+      },
+      1,
+    );
+    expect(telemetry.action).toBe("ack");
+    expect(telemetry.reason).toBe("event_processed");
+
+    // Executable telegram.updates throwing a pre-handler error triggers retry on attempt 1, and acks after exhaustion on attempt 3.
+    const prevKey = process.env.SUPABASE_SECRET_KEY;
+    process.env.SUPABASE_SECRET_KEY = "";
+    try {
+      const envPayload = {
+        topic: "telegram.updates" as const,
+        payload: {
+          execute: true,
+          bot: { id: "bot_1", workspace_id: "ws_1", welcome_message: null, default_response: null, telegram_username: "test_bot" },
+          update: { update_id: 456, message: { message_id: 1, text: "/imagine goku", chat: { id: 9, type: "private" } } },
+        },
+        key: "bot_1",
+        ts: new Date().toISOString(),
+      };
+      const first = await processQueueEnvelope(envPayload, 1);
+      expect(first.action).toBe("retry");
+      const exhausted = await processQueueEnvelope(envPayload, 3);
+      expect(exhausted.action).toBe("ack");
+      expect(exhausted.reason).toBe("telegram_update_failed_exhausted");
+    } finally {
+      if (prevKey === undefined) delete process.env.SUPABASE_SECRET_KEY;
+      else process.env.SUPABASE_SECRET_KEY = prevKey;
+    }
+  });
 });

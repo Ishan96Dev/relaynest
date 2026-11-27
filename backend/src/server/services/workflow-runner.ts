@@ -59,6 +59,7 @@ export async function runWorkflow(req: RunRequest): Promise<RunOutcome> {
   const started = Date.now();
   const { data: exec, error } = await db.from("executions").insert({
     workspace_id: workspaceId, workflow_id: wf.id, workflow_version: wf.version, trigger_type: req.trigger, status: "running",
+    started_at: new Date(started).toISOString(),
     idempotency_key: req.idempotencyKey ?? null, trigger_payload: req.payload,
   }).select("id").single();
   if (error) return { outcome: "skipped", reason: error.code === "23505" ? "duplicate" : "invalid" };
@@ -80,9 +81,20 @@ export async function runWorkflow(req: RunRequest): Promise<RunOutcome> {
       error_code: failedStep?.errorCode ?? null, error_message_safe: failedStep?.errorMessageSafe ?? null,
     }).eq("id", exec.id),
     result.steps.length
-      ? db.from("execution_steps").insert(result.steps.map((s) => ({
-        workspace_id: workspaceId, execution_id: exec.id, node_id: s.nodeId, node_type: s.nodeType, status: s.status,
-        output_summary: s.outputSummary ?? null, error_code: s.errorCode ?? null, error_message_safe: s.errorMessageSafe ?? null,
+      ? db.from("execution_steps").insert(result.steps.map((s, idx) => ({
+        workspace_id: workspaceId,
+        execution_id: exec.id,
+        step_order: idx + 1,
+        node_id: s.nodeId,
+        node_type: s.nodeType,
+        status: s.status,
+        started_at: s.startedAt ?? null,
+        finished_at: s.finishedAt ?? null,
+        duration_ms: s.durationMs ?? null,
+        input_summary: s.inputSummary ?? null,
+        output_summary: s.outputSummary ?? null,
+        error_code: s.errorCode ?? null,
+        error_message_safe: s.errorMessageSafe ?? null,
       })))
       : Promise.resolve(),
   ]);

@@ -1,5 +1,5 @@
 "use client";
-import { ArrowLeft, ArrowRight, BrainCircuit, Check, ChevronRight, Eye, FolderOpen, Globe, Layers, Sparkles, Users, X, XCircle, Bot, AlertCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, BrainCircuit, Check, ChevronRight, Eye, FolderOpen, Globe, Layers, Save, Sparkles, Users, X, XCircle, Bot, AlertCircle } from "lucide-react";
 /* The avatar preview can be a local blob URL, which next/image cannot optimise. */
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
@@ -23,6 +23,7 @@ import { Button, ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { NO_PENDING, type PendingImage } from "@/components/ui/file-upload";
 import { IconTile } from "@/components/ui/icon-tile";
+import { toast } from "@/components/ui/toast";
 import { api } from "@/lib/api-client";
 import { AGENT_TEMPLATES, parseAgentImport, type AgentPreset } from "@/lib/agent-templates";
 import { cn } from "@/lib/utils";
@@ -79,8 +80,34 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
   const [errors, setErrors] = React.useState<FieldErrors>({});
   const [saving, setSaving] = React.useState(false);
   const [activating, setActivating] = React.useState(false);
+  const [justActivated, setJustActivated] = React.useState(false);
+  const [editedInSession, setEditedInSession] = React.useState(false);
   const [formError, setFormError] = React.useState<string>();
   const [notice, setNotice] = React.useState<string>();
+  const isEditing = Boolean(initial);
+
+  const isDirty = React.useMemo(() => {
+    if (!agent) return true;
+    if (pending.kind !== "none") return true;
+    const base = fromAgent(agent);
+    return (
+      form.name !== base.name ||
+      form.username !== base.username ||
+      form.description !== base.description ||
+      form.language !== base.language ||
+      form.category !== base.category ||
+      form.modelSlug !== base.modelSlug ||
+      form.imageModelSlug !== base.imageModelSlug ||
+      form.temperature !== base.temperature ||
+      form.maxTokens !== base.maxTokens ||
+      form.instructions !== base.instructions ||
+      form.welcomeMessage !== base.welcomeMessage ||
+      form.fallbackMessage !== base.fallbackMessage ||
+      form.memoryTurns !== base.memoryTurns ||
+      JSON.stringify(form.tools) !== JSON.stringify(base.tools) ||
+      JSON.stringify(form.commands) !== JSON.stringify(base.commands)
+    );
+  }, [agent, form, pending.kind]);
 
   const patch = React.useCallback((p: Partial<AgentForm>) => {
     setForm((f) => ({ ...f, ...p }));
@@ -166,11 +193,15 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
   }
 
   /** Saves the whole form: creates the agent the first time, then patches it. Returns the saved agent or null on failure. */
-  async function persist(redirectStep = step): Promise<AiAgentDto | null> {
+  async function persist(
+    redirectStep = step,
+    opts?: { silent?: boolean; notifySummary?: boolean },
+  ): Promise<AiAgentDto | null> {
     setFormError(undefined);
     if (demo) { setFormError("Demo mode: connect Supabase to save AI agents."); return null; }
     const found = validateStep(1);
     if (Object.keys(found).length) { setStep(1); showErrors(found); return null; }
+    const hadLocalChanges = isDirty;
     setSaving(true);
     let avatarPath: string | null | undefined; // undefined = unchanged
     const sb = await createClient();
@@ -190,6 +221,8 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
             ...basics, ...(agentUsernameLocked(agent) ? { username: undefined } : {}), ...(avatarPath !== undefined && { avatarPath }),
             modelSlug: form.modelSlug, imageModelSlug: form.imageModelSlug, commands: form.commands, temperature: form.temperature, maxTokens: form.maxTokens, instructions: form.instructions,
             welcomeMessage: form.welcomeMessage || null, fallbackMessage: form.fallbackMessage || null, memoryTurns: form.memoryTurns, tools: form.tools,
+            ...(opts?.silent ? { silent: true } : {}),
+            ...(opts?.notifySummary ? { notifySummary: true } : {}),
           },
         })
       : await api<AiAgentDto>("/api/v1/ai-agents", { body: { ...basics, avatarPath: avatarPath ?? null, modelSlug: form.modelSlug } });
@@ -208,6 +241,8 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
     if (avatarPath !== undefined && agent?.avatarPath && agent.avatarPath !== avatarPath) void sb.storage.from(BUCKETS.avatars).remove([agent.avatarPath]);
     setAgent(r.data);
     setPending(NO_PENDING);
+    if (opts?.silent && hadLocalChanges) setEditedInSession(true);
+    if (!opts?.silent) setEditedInSession(false);
     if (!agent) router.replace(`/ai/agents/${r.data.id}?step=${redirectStep}`, { scroll: false });
     return r.data;
   }
@@ -217,25 +252,49 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
     if (Object.keys(found).length) return showErrors(found);
     if (step === 0) { setStep(1); setNotice(undefined); return; }
     const nextStep = step < STEPS.length - 1 ? step + 1 : step;
-    const saved = await persist(nextStep);
+    // Skip redundant network saves when stepping through an already-saved agent with no edits, and keep step saves quiet.
+    if (agent && !isDirty) {
+      if (step < STEPS.length - 1) { setStep(nextStep); setNotice(undefined); }
+      return;
+    }
+    const saved = await persist(nextStep, { silent: true });
     if (saved && step < STEPS.length - 1) { setStep(nextStep); setNotice(undefined); }
   }
 
   async function saveDraft() {
     if (!agent) { showErrors({ telegram: "Connect your Telegram bot first. Your agent is created from it." }); return; }
-    const saved = await persist();
-    if (saved) setNotice("Saved. You can come back to this agent from AI Agents.");
+    const saved = await persist(step, { silent: true });
+    if (saved) setNotice("Draft saved. You can come back to this agent from AI Agents.");
+  }
+
+  async function saveChanges() {
+    if (!agent) { showErrors({ telegram: "Connect your Telegram bot first. Your agent is created from it." }); return; }
+    const found = validateStep(step);
+    if (Object.keys(found).length) return showErrors(found);
+    if (!isDirty && !editedInSession) {
+      toast.info("No changes to save");
+      return;
+    }
+    const saved = await persist(step, { silent: false, notifySummary: editedInSession });
+    if (saved) {
+      toast.success("AI Agent changes saved");
+      setNotice("All changes saved and synced.");
+      router.refresh();
+    }
   }
 
   async function activate() {
     if (!agent) return;
     setActivating(true); setFormError(undefined);
-    const saved = await persist();
+    const saved = await persist(step, { silent: true });
     if (!saved) { setActivating(false); return; }
     const r = await api<AiAgentDto>(`/api/v1/ai-agents/${agent.id}/activate`, { method: "POST", body: {} });
     setActivating(false);
     if (!r.ok) return setFormError(r.message);
     setAgent(r.data);
+    setEditedInSession(false);
+    setJustActivated(true);
+    router.refresh();
   }
 
   const onAsk = React.useMemo(() => {
@@ -248,7 +307,7 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
     };
   }, [agent, form.modelSlug, demo]);
 
-  if (agent?.status === "active" && step === STEPS.length - 1) {
+  if (justActivated && agent?.status === "active" && step === STEPS.length - 1) {
     return (
       <Card glow className="mx-auto max-w-md p-8 text-center">
         <span className="pop-in rn-icon-float mx-auto grid size-20 place-items-center rounded-full border-4 border-success/80 text-ok shadow-[0_0_40px_-6px_rgb(var(--rn-success))]" aria-hidden><Check className="size-10" strokeWidth={3} /></span>
@@ -260,28 +319,36 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
     );
   }
 
-  const meta = STEPS[step]!;
+  const baseMeta = STEPS[step]!;
+  const meta =
+    step === STEPS.length - 1 && isEditing && agent?.status === "active"
+      ? { label: "Review & Save", title: "Review & Save Changes", sub: "Review your settings, test in the live preview, and save updates." }
+      : baseMeta;
   const shownName = form.name.trim() || "Your AI Agent";
   const shownUser = (agent?.botId ? agent.username : form.username.trim()) || "your_agent_bot";
   const shownDesc = form.description.trim() || "Describe what your AI agent does. This text appears on its Telegram profile.";
   const reachable = (i: number) => i <= step || Boolean(agent);
   const errorCount = Object.keys(errors).length;
+  const hasAnyChanges = isDirty || editedInSession;
 
   return (
     <div className="space-y-6">
       <ol aria-label="Steps" className="card grid grid-cols-3 gap-x-2 gap-y-3 p-4 sm:grid-cols-6 sm:p-5">
-        {STEPS.map((s, i) => (
+        {STEPS.map((s, i) => {
+          const stepLabel = i === STEPS.length - 1 && isEditing && agent?.status === "active" ? "Review & Save" : s.label;
+          return (
           <li key={s.label} aria-current={i === step ? "step" : undefined} className="relative flex flex-col items-center gap-1.5 text-center">
             {i < STEPS.length - 1 && (
               <ChevronRight className="pointer-events-none absolute -right-2 top-2 hidden size-4 text-muted/60 sm:block" aria-hidden />
             )}
-            <button type="button" disabled={!reachable(i)} onClick={() => goTo(i)} aria-label={`Step ${i + 1}: ${s.label}`}
+            <button type="button" disabled={!reachable(i)} onClick={() => goTo(i)} aria-label={`Step ${i + 1}: ${stepLabel}`}
               className={cn("grid size-8 place-items-center rounded-full border text-sm font-bold transition", i === step ? "btn-primary-bg border-transparent text-white shadow-[0_0_18px_-2px_rgb(var(--rn-primary))]" : i < step ? "border-success/60 bg-success/15 text-ok" : "border-border text-muted", !reachable(i) && "cursor-not-allowed opacity-60")}>
               {i < step ? <Check className="size-4" aria-hidden /> : i + 1}
             </button>
-            <span className={cn("text-xs font-semibold sm:text-sm", i === step ? "text-lavender" : "text-muted")}>{s.label}</span>
+            <span className={cn("text-xs font-semibold sm:text-sm", i === step ? "text-lavender" : "text-muted")}>{stepLabel}</span>
           </li>
-        ))}
+          );
+        })}
       </ol>
 
       <div className={cn("grid items-start gap-4", step !== 0 && "xl:grid-cols-[minmax(0,1.5fr)_minmax(340px,1fr)]")}>
@@ -309,7 +376,20 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
               {step === 2 && <StepModel form={form} patch={patch} models={models} imageModels={imageModels} error={errors.modelSlug} errors={errors} />}
               {step === 3 && <StepKnowledge form={form} patch={patch} errors={errors} agentId={agent?.id ?? null} botId={agent?.botId ?? null} demo={demo} knowledge={knowledge} onKnowledge={setKnowledge} />}
               {step === 4 && <StepTools form={form} patch={patch} imageModels={imageModels} />}
-              {step === 5 && <StepReview form={form} agent={agent} model={model} knowledgeCount={knowledge.length} onActivate={activate} activating={activating} error={formError} />}
+              {step === 5 && (
+                <StepReview
+                  form={form}
+                  agent={agent}
+                  model={model}
+                  knowledgeCount={knowledge.length}
+                  onActivate={activate}
+                  activating={activating}
+                  onSaveChanges={isEditing ? saveChanges : undefined}
+                  saving={saving}
+                  hasChanges={hasAnyChanges}
+                  error={formError}
+                />
+              )}
             </div>
 
             {step === 1 && (
@@ -347,9 +427,16 @@ export function AiAgentWizard({ demo, models, imageModels = [], preselectModel, 
       {notice && <p role="status" className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-ok">{notice}</p>}
 
       <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
-        <div className="flex flex-wrap gap-2">
-          <ButtonLink href="/ai" variant="outline"><X className="size-4" aria-hidden />Cancel</ButtonLink>
-          <Button variant="outline" onClick={saveDraft} disabled={saving}><FolderOpen className="size-4" aria-hidden />{saving ? "Saving..." : "Save as Draft"}</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <ButtonLink href="/ai" variant="outline"><X className="size-4" aria-hidden />{isEditing ? "Back" : "Cancel"}</ButtonLink>
+          {isEditing ? (
+            <Button variant={step === STEPS.length - 1 ? "primary" : "subtle"} onClick={saveChanges} disabled={saving || !hasAnyChanges}>
+              <Save className="size-4" aria-hidden />{saving ? "Saving..." : "Save Changes"}
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={saveDraft} disabled={saving}><FolderOpen className="size-4" aria-hidden />{saving ? "Saving..." : "Save as Draft"}</Button>
+          )}
+          {isEditing && hasAnyChanges && <span className="text-xs font-medium text-warn">Unsaved changes</span>}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => { setStep(step - 1); setNotice(undefined); setErrors({}); }} disabled={step === 0}><ArrowLeft className="size-4" aria-hidden />Previous</Button>

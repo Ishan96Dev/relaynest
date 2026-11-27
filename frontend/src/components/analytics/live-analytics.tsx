@@ -1,8 +1,10 @@
 "use client";
 
-import { Bot, CheckCircle2, Gauge, Layers, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, Gauge, Layers, Users, XCircle } from "lucide-react";
 import Link from "next/link";
+import { formatDuration, triggerCategoryLabel } from "@backend/lib/execution-format";
 import type { AnalyticsData } from "@backend/server/services/workspace-data";
+import { ExecutionsTable } from "@/components/analytics/executions-table";
 import { StatusBars, SuccessDonut, TrendChart } from "@/components/charts/lazy-charts";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge } from "@/components/ui/badge";
@@ -15,11 +17,47 @@ export function LiveAnalytics({ a }: { a: AnalyticsData }) {
 
   return (
     <div className="space-y-6">
-      <section aria-label="Key metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Executions" value={a.total.toLocaleString()} icon={<Layers />} tone="primary" hint={`Bot and automation runs in the last ${a.days} days`} />
-        <StatCard label="Success Rate" value={`${rate}%`} icon={<CheckCircle2 />} tone="success" hint="Share of runs that finished without an error" />
-        <StatCard label="Failed Runs" value={a.failed.toLocaleString()} icon={<XCircle />} tone="danger" hint="Runs that ended with an error" />
-        <StatCard label="Avg / P95 Latency" value={`${a.avgDurationMs.toLocaleString()} ms`} note={`P95: ${a.p95DurationMs.toLocaleString()} ms`} icon={<Gauge />} tone="info" hint="Average and 95th percentile run duration" />
+      <section aria-label="Key metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <StatCard
+          label="Executions"
+          value={a.total.toLocaleString()}
+          note={`${a.commandRuns.toLocaleString()} bot · ${a.workflowRuns.toLocaleString()} workflow`}
+          icon={<Layers />}
+          tone="primary"
+          hint={`Bot and automation runs in the last ${a.days} days`}
+        />
+        <StatCard
+          label="Active Users"
+          value={a.activeUsers.toLocaleString()}
+          note="Unique Telegram chats & users"
+          icon={<Users />}
+          tone="cyan"
+          hint="Distinct Telegram users interacting with your workspace bots"
+        />
+        <StatCard
+          label="Success Rate"
+          value={`${rate}%`}
+          note={`${a.succeeded.toLocaleString()} succeeded`}
+          icon={<CheckCircle2 />}
+          tone="success"
+          hint="Share of runs that finished without an error"
+        />
+        <StatCard
+          label="Failed Runs"
+          value={a.failed.toLocaleString()}
+          note={a.failed === 0 ? "Healthy · 0 errors" : "Click failed runs below to inspect"}
+          icon={<XCircle />}
+          tone="danger"
+          hint="Runs that ended with an error"
+        />
+        <StatCard
+          label="Avg / P95 Latency"
+          value={formatDuration(a.avgDurationMs)}
+          note={`P50: ${formatDuration(a.p50DurationMs)} · P95: ${formatDuration(a.p95DurationMs)}`}
+          icon={<Gauge />}
+          tone="info"
+          hint={`Min: ${formatDuration(a.minDurationMs)} · Max: ${formatDuration(a.maxDurationMs)}`}
+        />
       </section>
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
@@ -40,48 +78,73 @@ export function LiveAnalytics({ a }: { a: AnalyticsData }) {
         </Card>
 
         <Card>
-          <CardHeader title="Top Triggers & Commands" description="Most active triggers" />
-          <ul className="space-y-2.5 px-5 pb-5">
+          <CardHeader title="Top Triggers & Commands" description="Volume, reliability & avg latency" />
+          <ul className="space-y-3 px-5 pb-5">
             {a.byTrigger.length === 0 ? <li className="text-sm text-muted">No triggers recorded yet.</li> : a.byTrigger.map((t) => (
-              <li key={t.trigger} className="grid grid-cols-[120px_1fr_48px] items-center gap-2 text-xs">
-                <code className="truncate text-foreground/90">{t.trigger}</code>
-                <div className="h-2 rounded-full bg-foreground/10"><div className="h-full rounded-full bg-gradient-to-r from-primary to-secondary" style={{ width: `${Math.round((t.count / maxTrig) * 100)}%` }} /></div>
-                <span className="text-right font-semibold tabular-nums">{t.count}</span>
+              <li key={t.trigger} className="space-y-1 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <code className="truncate rounded border border-primary/35 bg-primary/12 px-1.5 py-0.5 font-bold text-lavender">{t.label}</code>
+                    <span className="truncate text-[10px] text-muted">{triggerCategoryLabel(t.category)}</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2 tabular-nums">
+                    <span className="text-muted">{formatDuration(t.avgDurationMs)}</span>
+                    <Badge tone={t.successRate >= 95 ? "success" : t.successRate >= 80 ? "warning" : "danger"}>{t.successRate}%</Badge>
+                    <span className="font-bold text-foreground">{t.count}</span>
+                  </div>
+                </div>
+                <div className="h-1.5 rounded-full bg-foreground/10">
+                  <div className="h-full rounded-full bg-gradient-to-r from-primary to-accent" style={{ width: `${Math.round((t.count / maxTrig) * 100)}%` }} />
+                </div>
               </li>
             ))}
           </ul>
         </Card>
 
         <Card>
-          <CardHeader title="By Bot" description="Volume & reliability per bot" />
+          <CardHeader title="By Bot" description="Volume, latency, users & reliability" />
           <ul className="space-y-2.5 px-5 pb-5">
-            {a.byBot.length === 0 ? <li className="text-sm text-muted">No bot activity yet.</li> : a.byBot.map((b) => (
-              <li key={b.botName} className="panel flex items-center justify-between gap-2 p-2.5 text-xs">
-                <span className="flex min-w-0 items-center gap-2 font-semibold"><Bot className="size-3.5 shrink-0 text-lavender" /> <span className="truncate">{b.botName}</span></span>
-                <span className="shrink-0 tabular-nums text-muted">{b.succeeded} ok / {b.failed} err</span>
-              </li>
-            ))}
+            {a.byBot.length === 0 ? <li className="text-sm text-muted">No bot activity yet.</li> : a.byBot.map((b) => {
+              const inner = (
+                <>
+                  <div className="min-w-0">
+                    <span className="flex items-center gap-2 font-semibold text-foreground">
+                      <Bot className="size-3.5 shrink-0 text-lavender" />
+                      <span className="truncate">{b.botName}</span>
+                    </span>
+                    <span className="block text-[10px] text-muted">
+                      Avg {formatDuration(b.avgDurationMs)} · {b.activeUsers} user{b.activeUsers === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <span className="shrink-0 tabular-nums text-muted">
+                    <strong className="text-ok">{b.succeeded}</strong> ok / <strong className={b.failed ? "text-bad" : ""}>{b.failed}</strong> err
+                  </span>
+                </>
+              );
+              return (
+                <li key={b.botId ?? b.botName}>
+                  {b.botId ? (
+                    <Link href={`/bots/${b.botId}`} className="panel flex items-center justify-between gap-2 p-2.5 text-xs transition hover:border-lavender/60">
+                      {inner}
+                    </Link>
+                  ) : (
+                    <div className="panel flex items-center justify-between gap-2 p-2.5 text-xs">{inner}</div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </Card>
       </div>
 
       <Card>
-        <CardHeader title="Recent Executions" action={<Link href="/executions" className="text-sm font-semibold text-lavender hover:underline">View All &rarr;</Link>} />
-        <div className="overflow-x-auto px-5 pb-5">
-          <table className="rn-table min-w-[640px]">
-            <thead><tr><th>Bot</th><th>Trigger</th><th>Status</th><th>Duration</th><th>Started</th></tr></thead>
-            <tbody>
-              {a.recent.map((e) => (
-                <tr key={e.id}>
-                  <td className="font-semibold">{e.botName}</td>
-                  <td><code className="text-xs">{e.trigger}</code></td>
-                  <td><Badge tone={e.status === "succeeded" ? "success" : e.status === "failed" ? "danger" : "neutral"} className="capitalize">{e.status}</Badge></td>
-                  <td className="tabular-nums">{e.durationMs !== null ? `${e.durationMs} ms` : "-"}</td>
-                  <td className="text-xs text-muted">{new Date(e.startedAt).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <CardHeader
+          title="Recent Command & Workflow Executions"
+          description="Click any row to inspect its complete step-by-step journey modal (Command → Model → Telegram Output)."
+          action={<Link href="/executions" className="text-sm font-semibold text-lavender hover:underline">View All &rarr;</Link>}
+        />
+        <div className="px-5 pb-5">
+          <ExecutionsTable items={a.recent} compact />
         </div>
       </Card>
     </div>
