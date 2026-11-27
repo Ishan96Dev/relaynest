@@ -61,6 +61,8 @@ const CMD_RESPONSE_PLACEHOLDER: Record<BotCommandResponseType, string> = {
 };
 
 const AGENT_TOOL_LABELS: { key: keyof AgentTools; title: string; body: string }[] = [
+  { key: "autoSearch", title: "Autonomous Live Web Search", body: "Automatically search the live web on normal messages without requiring /search." },
+  { key: "marketData", title: "Live Market Data (NSE / BSE / MSE)", body: "Fetch live NSE/BSE stock quotes, NIFTY/SENSEX, Gold, Forex, Crypto & MSE context." },
   { key: "webSearch", title: "Open Web Search (/search)", body: "Allow users to run /search <topic> with live sources, images & videos." },
   { key: "datetime", title: "Date & Time Awareness", body: "Inject current UTC timestamp so the bot knows today and tomorrow." },
   { key: "matchLanguage", title: "Match User Language", body: "Reply in the user's language automatically." },

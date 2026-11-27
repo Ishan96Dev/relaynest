@@ -212,8 +212,7 @@ export async function upsertAgentBriefing(ctx: AuthContext, agentId: string, inp
   };
 
   const name = `${cfg.name} — Daily Briefing`.slice(0, 80);
-  const agentUsername = (agentRow.username as string | null) ?? cfg.name;
-  const description = `Automated ${input.cron} (${input.timezone}) Telegram briefing for @${agentUsername}.`.slice(0, 200);
+  const description = `Automated ${input.cron} (${input.timezone}) Telegram briefing for @${cfg.username}.`.slice(0, 200);
 
   const existing = await findLinkedBriefingWorkflow(ctx, agentId);
   let workflowId: string;
@@ -314,3 +313,4 @@ export async function sendAgentBriefingNow(
     };
   });
 }
+
