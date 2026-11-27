@@ -55,13 +55,13 @@ Open **GitHub Repo -> Settings -> Secrets and variables -> Actions**:
 
 | Secret | Where to get it | Needed for |
 | --- | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare Profile -> API Tokens -> **Edit Cloudflare Workers** + **Cloudflare Pages Edit** | Cloudflare CI deploy |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard -> Workers & Pages -> Overview right sidebar | Cloudflare CI deploy |
-| `CLOUDFLARE_DEPLOY_HOOK_URL` | Cloudflare Workers -> Builds -> Deploy Hooks *(simpler alternative to API token)* | Optional CF Hook CD |
-| `VERCEL_TOKEN` | Vercel -> Account Settings -> Tokens | Synced Vercel CLI deploy |
-| `VERCEL_ORG_ID` | Vercel -> Team/Account Settings -> General (or `.vercel/project.json` `orgId`) | Synced Vercel CLI deploy |
-| `VERCEL_PROJECT_ID` | Vercel -> Project Settings -> General (or `.vercel/project.json` `projectId`) | Synced Vercel CLI deploy |
-| `VERCEL_DEPLOY_HOOK_URL` | Vercel -> Project Settings -> Git -> Deploy Hooks *(simpler alternative if not setting the 3 CLI secrets above)* | Optional Vercel Hook CD |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare Profile -> API Tokens -> **Edit Cloudflare Workers** + **Account Settings:Read** *(auto-discovers `CLOUDFLARE_ACCOUNT_ID`)* | Cloudflare CI deploy (`wrangler deploy --keep-vars`) |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard -> Workers & Pages -> Overview right sidebar *(optional when `CLOUDFLARE_API_TOKEN` can list accounts)* | Optional Cloudflare account override |
+| `CLOUDFLARE_DEPLOY_HOOK_URL` | Cloudflare Workers -> Builds -> Deploy Hooks *(simpler 1-secret alternative to API token)* | Optional CF Hook CD |
+| `VERCEL_TOKEN` | Vercel -> Account Settings -> Tokens *(auto-discovers `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`)* | Synced Vercel CLI deploy |
+| `VERCEL_ORG_ID` | Vercel -> Team/Account Settings -> General *(optional — auto-discovered from `VERCEL_TOKEN`)* | Optional Vercel org override |
+| `VERCEL_PROJECT_ID` | Vercel -> Project Settings -> General *(optional — auto-discovered from `VERCEL_TOKEN`)* | Optional Vercel project override |
+| `VERCEL_DEPLOY_HOOK_URL` | Vercel -> Project Settings -> Git -> Deploy Hooks *(simpler 1-secret alternative to `VERCEL_TOKEN`)* | Optional Vercel Hook CD |
 | `RENDER_DEPLOY_HOOK_URL` | Render Service -> Settings -> Deploy Hook *(if wiring custom Render CD)* | Optional Render CD |
 
 > **Manual Git Push Check:** Before running `git push`, verify `git status` shows no `.env`, `.dev.vars`, `.next*`, `.editorconfig`, `.playwright-mcp/`, or `.agents/` files. See [`.gitignore`](../.gitignore).

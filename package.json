@@ -27,7 +27,7 @@
     "deploy:cloudflare": "node scripts/build.mjs --cloudflare && opennextjs-cloudflare deploy",
     "start": "next start frontend",
     "lint": "eslint frontend/src backend/src backend/tests",
-    "typecheck": "tsc --noEmit -p frontend/tsconfig.json",
+    "typecheck": "tsc --noEmit --incremental false -p frontend/tsconfig.json",
     "audit:compliance": "node scripts/security-a11y-audit.mjs",
     "test": "tsx --tsconfig frontend/tsconfig.json --conditions react-server --test backend/tests/*.test.ts"
   },
