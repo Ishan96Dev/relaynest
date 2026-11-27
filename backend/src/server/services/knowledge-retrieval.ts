@@ -92,12 +92,38 @@ async function keywordSearchIds(workspaceId: string, collectionIds: string[], qu
   return ((data ?? []) as { id: string; score: number }[]).map((r) => ({ id: r.id, score: Number(r.score) }));
 }
 
-async function loadOverviewChunks(workspaceId: string, collectionIds: string[], query: string, limit: number): Promise<Passage[]> {
+async function resolveDocumentIdsForCollections(workspaceId: string, collectionIds: string[]): Promise<string[]> {
+  if (!collectionIds.length) return [];
+  const admin = createAdminClient();
+  const [linksRes, directRes] = await Promise.all([
+    admin
+      .from("kb_collection_documents")
+      .select("document_id")
+      .eq("workspace_id", workspaceId)
+      .in("collection_id", collectionIds),
+    admin
+      .from("kb_documents")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .in("collection_id", collectionIds),
+  ]);
+  const ids = new Set<string>();
+  for (const r of linksRes.data ?? []) {
+    if (typeof r.document_id === "string") ids.add(r.document_id);
+  }
+  for (const r of directRes.data ?? []) {
+    if (typeof r.id === "string") ids.add(r.id);
+  }
+  return [...ids];
+}
+
+async function loadOverviewChunks(workspaceId: string, documentIds: string[], query: string, limit: number): Promise<Passage[]> {
+  if (!documentIds.length) return [];
   const { data } = await createAdminClient()
     .from("kb_chunks")
     .select("id, content, position, document_id, collection_id, source_url, page_title, kb_documents(name, source_url), kb_collections(name)")
     .eq("workspace_id", workspaceId)
-    .in("collection_id", collectionIds)
+    .in("document_id", documentIds)
     .order("position", { ascending: true })
     .limit(Math.max(limit * 3, 12));
   const rows = (data ?? []) as unknown as HydrateRow[];
@@ -125,11 +151,14 @@ async function loadOverviewChunks(workspaceId: string, collectionIds: string[], 
 
 /**
  * Hybrid retrieval (Milvus dense vectors + Postgres full-text keywords + lexical/title reranking + overview fallback).
- * Runs vector and keyword lookups in parallel so total retrieval stays ~250ms while maximizing recall and precision.
+ * Resolves document assignments from `kb_collection_documents` so both moved and multi-collection documents retrieve accurately.
  */
 export async function retrieve(workspaceId: string, collectionIds: string[], query: string, limit = 5): Promise<RetrievalResult> {
   const q = query.trim().slice(0, 2000);
   if (!collectionIds.length || !q) return { passages: [], mode: "none" };
+
+  const docIds = await resolveDocumentIdsForCollections(workspaceId, collectionIds);
+  if (!docIds.length) return { passages: [], mode: "none" };
 
   const fetchLimit = Math.min(20, Math.max(limit * 2, 8));
   const terms = extractTerms(q);
@@ -140,7 +169,7 @@ export async function retrieve(workspaceId: string, collectionIds: string[], que
         try {
           const embedModel = await kbEmbedModel();
           const { vectors } = await embedMany(embedModel, [q], "query");
-          return await searchVectors(vectors[0]!, workspaceId, collectionIds, fetchLimit);
+          return await searchVectors(vectors[0]!, workspaceId, collectionIds, fetchLimit, docIds);
         } catch (e) {
           logEvent("vector", "error", `Vector search failed, using keywords: ${e instanceof Error ? e.message : "unknown"}`, { workspaceId });
           return [];
@@ -217,7 +246,7 @@ export async function retrieve(workspaceId: string, collectionIds: string[], que
   }
 
   // Fallback for broad/overview queries or stem/filename misses against linked collections.
-  const fallback = await loadOverviewChunks(workspaceId, collectionIds, q, limit);
+  const fallback = await loadOverviewChunks(workspaceId, docIds, q, limit);
   if (fallback.length > 0) {
     const anyLex = fallback.some((p) => p.retrieval === "keyword");
     if (overview || anyLex) {

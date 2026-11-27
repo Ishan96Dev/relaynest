@@ -168,12 +168,18 @@ export const collectionInput = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().max(300).default(""),
   tone: z.enum(["primary", "info", "success", "amber"]).default("primary"),
+  documentIds: z.array(uuid).max(200).optional(),
 });
 export const updateCollectionInput = collectionInput.partial().refine((v) => Object.keys(v).length > 0, "At least one field is required.");
 export const collectionBotsInput = z.object({ botIds: z.array(uuid).max(200) });
+export const collectionDocumentsInput = z.object({ documentIds: z.array(uuid).max(200) });
+export const documentCollectionsInput = z.object({
+  collectionIds: z.array(uuid).min(1, "Assign this document to at least one collection.").max(50),
+});
 export const urlScrapeMode = z.enum(["single", "sitemap", "subpages"]);
 export const urlDocumentInput = z.object({
   collectionId: uuid,
+  collectionIds: z.array(uuid).min(1).max(50).optional(),
   url: z.string().trim().min(3, "Enter a valid website URL.").max(2000),
   mode: urlScrapeMode.default("single"),
   maxPages: z.coerce.number().int().min(1).max(50).optional(),

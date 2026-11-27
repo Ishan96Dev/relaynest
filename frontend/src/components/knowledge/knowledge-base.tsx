@@ -8,6 +8,8 @@ import {
   Eye,
   FileText,
   Folder,
+  FolderInput,
+  FolderKanban,
   Globe,
   LayoutGrid,
   Link2,
@@ -38,7 +40,14 @@ import { Tabs } from "@/components/ui/tabs";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { CollectionModal, LinkBotsModal, PreviewModal, UrlModal } from "./collection-modals";
+import {
+  AssignDocCollectionsModal,
+  CollectionModal,
+  LinkBotsModal,
+  ManageCollectionDocsModal,
+  PreviewModal,
+  UrlModal,
+} from "./collection-modals";
 import { formatBytes, formatDate, SCRAPE_MODE_LABEL, STAGE_LABEL, TYPE_LABEL } from "./format";
 import { KnowledgeLogsPanel } from "./knowledge-logs-panel";
 import { SearchCard } from "./search-card";
@@ -92,6 +101,18 @@ function Status({ doc }: { doc: DocumentDto }) {
   return <Badge tone="neutral"><CheckCircle2 className="size-3" aria-hidden />Uploaded</Badge>;
 }
 
+function StatusDot({ status }: { status: DocumentDto["status"] }) {
+  const cls =
+    status === "indexed"
+      ? "bg-ok"
+      : status === "processing"
+        ? "bg-sky animate-pulse"
+        : status === "failed"
+          ? "bg-bad"
+          : "bg-muted";
+  return <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", cls)} />;
+}
+
 interface Props { collections: CollectionDto[]; documents: DocumentDto[]; bots: LinkableBotDto[]; status: KnowledgeStatusDto; canWrite: boolean }
 
 export function KnowledgeBase(props: Props) {
@@ -99,6 +120,7 @@ export function KnowledgeBase(props: Props) {
   const [collections, setCollections] = React.useState(props.collections);
   const [docs, setDocs] = React.useState(props.documents);
   const [activeId, setActiveId] = React.useState<string | null>(null);
+  const [uploadColIds, setUploadColIds] = React.useState<string[]>(() => (props.collections[0] ? [props.collections[0].id] : []));
   const [view, setView] = React.useState("collections");
   const [lower, setLower] = React.useState<"docs" | "bots">("docs");
   const [query, setQuery] = React.useState("");
@@ -108,6 +130,8 @@ export function KnowledgeBase(props: Props) {
   const [layout, setLayout] = React.useState<"grid" | "list">("grid");
   const [editing, setEditing] = React.useState<CollectionDto | null>(null);
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [managingCol, setManagingCol] = React.useState<CollectionDto | null>(null);
+  const [assigningDoc, setAssigningDoc] = React.useState<DocumentDto | null>(null);
   const [sharing, setSharing] = React.useState<CollectionDto | null>(null);
   const [urlOpen, setUrlOpen] = React.useState(false);
   const [previewId, setPreviewId] = React.useState<string | null>(null);
@@ -127,6 +151,15 @@ export function KnowledgeBase(props: Props) {
     if (d.ok) setDocs(d.data);
   }, []);
 
+  // Keep uploadColIds valid whenever collections change or when user clicks a collection card.
+  React.useEffect(() => {
+    setUploadColIds((prev) => {
+      const valid = prev.filter((id) => collections.some((c) => c.id === id));
+      if (valid.length) return valid;
+      return collections[0] ? [collections[0].id] : [];
+    });
+  }, [collections]);
+
   // While anything is being scraped or indexed, poll smoothly every 1.8s and show the live log console automatically.
   const pending = docs.some((d) => d.status === "processing");
   React.useEffect(() => {
@@ -137,12 +170,29 @@ export function KnowledgeBase(props: Props) {
   }, [pending, docs, refresh]);
 
   const active = collections.find((c) => c.id === activeId) ?? null;
-  const target = active ?? collections[0] ?? null;
+  const effectiveUploadColIds = uploadColIds.length ? uploadColIds : collections[0] ? [collections[0].id] : [];
+  const primaryUploadTarget = collections.find((c) => c.id === effectiveUploadColIds[0]) ?? collections[0] ?? null;
   const botName = (id: string) => bots.find((b) => b.id === id);
+
+  function selectCollectionCard(id: string) {
+    const next = activeId === id ? null : id;
+    setActiveId(next);
+    if (next) setUploadColIds([next]);
+  }
+
+  function toggleUploadCollection(id: string) {
+    setUploadColIds((prev) =>
+      prev.includes(id)
+        ? prev.length > 1
+          ? prev.filter((x) => x !== id)
+          : prev
+        : [...prev, id],
+    );
+  }
 
   const sortedCollections = React.useMemo(() => [...collections].sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : b.updatedAt.localeCompare(a.updatedAt))), [collections, sort]);
   const shownDocs = React.useMemo(() => docs.filter((d) => {
-    if (activeId && d.collectionId !== activeId) return false;
+    if (activeId && !d.collectionIds.includes(activeId)) return false;
     if (view === "processing" && d.status === "indexed") return false;
     if (typeFilter !== "all" && d.kind !== typeFilter) return false;
     if (statusFilter !== "all" && d.status !== statusFilter) return false;
@@ -151,7 +201,7 @@ export function KnowledgeBase(props: Props) {
 
   function pick(kind: keyof typeof ACCEPT) {
     if (!canWrite) return setNotice({ tone: "bad", text: "Only owners and admins can add knowledge." });
-    if (!target) { setNotice({ tone: "bad", text: "Create a collection first." }); return setCreateOpen(true); }
+    if (!primaryUploadTarget) { setNotice({ tone: "bad", text: "Create a collection first." }); return setCreateOpen(true); }
     if (fileRef.current) { fileRef.current.accept = ACCEPT[kind]; fileRef.current.click(); }
   }
 
@@ -159,7 +209,7 @@ export function KnowledgeBase(props: Props) {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
     if (!canWrite) return setNotice({ tone: "bad", text: "Only owners and admins can add knowledge." });
-    if (!target) { setNotice({ tone: "bad", text: "Create a collection first." }); return setCreateOpen(true); }
+    if (!primaryUploadTarget) { setNotice({ tone: "bad", text: "Create a collection first." }); return setCreateOpen(true); }
     setNotice(null);
     let failed: string | null = null;
     let lastUploadedId: string | null = null;
@@ -168,7 +218,10 @@ export function KnowledgeBase(props: Props) {
       if (file.size === 0) { failed = `${file.name} is empty.`; continue; }
       setUploading((n) => n + 1);
       const body = new FormData();
-      body.set("collectionId", target.id);
+      body.set("collectionId", effectiveUploadColIds[0]!);
+      if (effectiveUploadColIds.length > 1) {
+        body.set("collectionIds", JSON.stringify(effectiveUploadColIds));
+      }
       body.set("file", file);
       try {
         const res = await fetch("/api/v1/knowledge/documents", { method: "POST", body });
@@ -183,7 +236,11 @@ export function KnowledgeBase(props: Props) {
       setLogDocId(lastUploadedId);
       setLogsOpen(true);
     }
-    setNotice(failed ? { tone: "bad", text: failed } : { tone: "ok", text: `Added to "${target.name}". Processing started.` });
+    const targetLabel = effectiveUploadColIds
+      .map((cid) => collections.find((c) => c.id === cid)?.name)
+      .filter(Boolean)
+      .join(", ");
+    setNotice(failed ? { tone: "bad", text: failed } : { tone: "ok", text: `Added to "${targetLabel || primaryUploadTarget.name}". Processing started.` });
     await refresh();
   }
 
@@ -269,27 +326,97 @@ export function KnowledgeBase(props: Props) {
                   {canWrite && <Button onClick={() => setCreateOpen(true)}><Plus className="size-4" aria-hidden />Create Collection</Button>}
                 </Card>
               ) : (
-                <ul className={cn("grid-cols-1 grid gap-4", layout === "grid" ? "sm:grid-cols-2 xl:grid-cols-4" : "")}>
-                  {sortedCollections.map((c) => (
-                    <li key={c.id}>
-                      <Card glow={c.id === activeId} hover className={cn("h-full p-4", c.id === activeId && "ring-1 ring-lavender/60")}>
-                        <div role="button" tabIndex={0} aria-pressed={c.id === activeId} aria-label={`${c.name}, ${c.documents} documents`} className="cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded-lg"
-                          onClick={() => setActiveId(c.id === activeId ? null : c.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveId(c.id === activeId ? null : c.id); } }}>
-                          <div className="flex items-start justify-between"><IconTile tone={tone(c)} size="lg"><Folder /></IconTile><Badge tone={c.botIds.length ? "success" : "neutral"} dot>{c.botIds.length} {c.botIds.length === 1 ? "Bot" : "Bots"}</Badge></div>
-                          <h3 className="mt-3 truncate text-lg font-bold">{c.name}</h3><p className="text-xs text-muted">{c.documents} {c.documents === 1 ? "document" : "documents"}</p>
-                          <p className="mt-2 flex items-center justify-between text-[11px] text-foreground/75"><span>{c.sizeBytes ? formatBytes(c.sizeBytes) : "-"}</span><span suppressHydrationWarning>Updated {formatDate(c.updatedAt)}</span></p>
-                          <p className="mt-2 line-clamp-2 min-h-8 text-xs text-foreground/75">{c.description || "No description."}</p>
-                        </div>
-                        {canWrite && (
-                          <div className="mt-3 flex items-center gap-1 border-t border-border/60 pt-2">
-                            <Tooltip content="Share with bots" side="top"><button type="button" aria-label={`Share ${c.name} with bots`} onClick={() => setSharing(c)} className="grid size-8 place-items-center rounded-md text-muted transition hover:bg-foreground/10 hover:text-foreground"><Link2 className="size-4" /></button></Tooltip>
-                            <Tooltip content="Edit" side="top"><button type="button" aria-label={`Edit ${c.name}`} onClick={() => setEditing(c)} className="grid size-8 place-items-center rounded-md text-muted transition hover:bg-foreground/10 hover:text-foreground"><Pencil className="size-4" /></button></Tooltip>
-                            <Tooltip content="Delete" side="top"><button type="button" aria-label={`Delete ${c.name}`} onClick={() => setDelCol(c)} className="ml-auto grid size-8 place-items-center rounded-md text-bad/80 transition hover:bg-danger/15 hover:text-bad"><Trash2 className="size-4" /></button></Tooltip>
+                <ul className={cn("grid-cols-1 grid gap-4", layout === "grid" ? "sm:grid-cols-2 xl:grid-cols-3" : "")}>
+                  {sortedCollections.map((c) => {
+                    const maxPreview = layout === "list" ? 5 : 3;
+                    const visibleItems = c.documentItems.slice(0, maxPreview);
+                    const overflowCount = Math.max(0, c.documentItems.length - visibleItems.length);
+                    return (
+                      <li key={c.id}>
+                        <Card glow={c.id === activeId} hover className={cn("flex h-full flex-col p-4", c.id === activeId && "ring-1 ring-lavender/60")}>
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={c.id === activeId}
+                            aria-label={`${c.name}, ${c.documents} documents`}
+                            className="flex-1 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                            onClick={() => selectCollectionCard(c.id)}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectCollectionCard(c.id); } }}
+                          >
+                            <div className="flex items-start justify-between">
+                              <IconTile tone={tone(c)} size="lg"><Folder /></IconTile>
+                              <Badge tone={c.botIds.length ? "success" : "neutral"} dot>{c.botIds.length} {c.botIds.length === 1 ? "Bot" : "Bots"}</Badge>
+                            </div>
+                            <h3 className="mt-3 truncate text-lg font-bold">{c.name}</h3>
+                            <p className="text-xs text-muted">{c.documents} {c.documents === 1 ? "document" : "documents"} &bull; {c.sizeBytes ? formatBytes(c.sizeBytes) : "-"}</p>
+                            <p className="mt-1.5 line-clamp-2 text-xs text-foreground/75">{c.description || "No description."}</p>
+
+                            {/* Assigned Knowledge preview list */}
+                            <div className="mt-3 rounded-lg border border-border/60 bg-surface-2/40 p-2">
+                              <p className="mb-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-muted">
+                                <span>Assigned Knowledge</span>
+                                <span suppressHydrationWarning className="font-normal normal-case">{formatDate(c.updatedAt)}</span>
+                              </p>
+                              {visibleItems.length === 0 ? (
+                                <p className="text-[11px] text-muted">No knowledge assigned yet.</p>
+                              ) : (
+                                <ul className="space-y-1">
+                                  {visibleItems.map((item) => {
+                                    const tag = TYPE_LABEL[item.kind] ?? item.kind.toUpperCase();
+                                    return (
+                                      <li key={item.id} className="flex items-center gap-1.5 text-[11px]">
+                                        <StatusDot status={item.status} />
+                                        <span className={cn("shrink-0 rounded px-1 py-0 text-[8px] font-extrabold", typeCls[tag] ?? "bg-foreground/10 text-foreground/80")}>
+                                          {tag}
+                                        </span>
+                                        <span className="min-w-0 flex-1 truncate text-foreground/90" title={item.name}>
+                                          {item.name}
+                                        </span>
+                                      </li>
+                                    );
+                                  })}
+                                  {overflowCount > 0 && (
+                                    <li className="text-[10px] font-semibold text-lavender">+{overflowCount} more document{overflowCount === 1 ? "" : "s"}</li>
+                                  )}
+                                </ul>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </Card>
-                    </li>
-                  ))}
+
+                          {canWrite && (
+                            <div className="mt-3 flex items-center gap-1 border-t border-border/60 pt-2">
+                              <Tooltip content="Manage assigned knowledge" side="top">
+                                <button
+                                  type="button"
+                                  aria-label={`Manage knowledge in ${c.name}`}
+                                  onClick={() => setManagingCol(c)}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-semibold text-lavender transition hover:bg-primary/15"
+                                >
+                                  <FolderKanban className="size-3.5" aria-hidden />
+                                  Knowledge
+                                </button>
+                              </Tooltip>
+                              <Tooltip content="Share with bots" side="top">
+                                <button type="button" aria-label={`Share ${c.name} with bots`} onClick={() => setSharing(c)} className="grid size-8 place-items-center rounded-md text-muted transition hover:bg-foreground/10 hover:text-foreground">
+                                  <Link2 className="size-4" />
+                                </button>
+                              </Tooltip>
+                              <Tooltip content="Edit collection" side="top">
+                                <button type="button" aria-label={`Edit ${c.name}`} onClick={() => setEditing(c)} className="grid size-8 place-items-center rounded-md text-muted transition hover:bg-foreground/10 hover:text-foreground">
+                                  <Pencil className="size-4" />
+                                </button>
+                              </Tooltip>
+                              <Tooltip content="Delete" side="top">
+                                <button type="button" aria-label={`Delete ${c.name}`} onClick={() => setDelCol(c)} className="ml-auto grid size-8 place-items-center rounded-md text-bad/80 transition hover:bg-danger/15 hover:text-bad">
+                                  <Trash2 className="size-4" />
+                                </button>
+                              </Tooltip>
+                            </div>
+                          )}
+                        </Card>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </>
@@ -349,11 +476,12 @@ export function KnowledgeBase(props: Props) {
                     <p className="max-w-sm text-sm text-muted">{docs.length === 0 ? "Upload PDF, Word, Excel, CSV, PowerPoint, Markdown, TXT, JSON, or crawl a website/sitemap using the panel on the right." : "Change the filters or the search to see more."}</p>
                   </div>
                 ) : (
-                  <table className="rn-table min-w-[860px]">
-                    <thead><tr><th>File Name <ArrowDownUp className="inline size-3" aria-hidden /></th><th>Collection</th><th>Type</th><th>Size</th><th>Processing Status</th><th>Uploaded On</th><th>Actions</th></tr></thead>
+                  <table className="rn-table min-w-[900px]">
+                    <thead><tr><th>File Name <ArrowDownUp className="inline size-3" aria-hidden /></th><th>Assigned Collections</th><th>Type</th><th>Size</th><th>Processing Status</th><th>Uploaded On</th><th>Actions</th></tr></thead>
                     <tbody>
                       {shownDocs.map((d) => {
                         const t = TYPE_LABEL[d.kind] ?? d.kind.toUpperCase();
+                        const assignedNames = d.collectionNames.length ? d.collectionNames : [d.collectionName].filter(Boolean);
                         const progressDetail =
                           d.status === "processing"
                             ? d.pagesTotal > 0
@@ -382,7 +510,27 @@ export function KnowledgeBase(props: Props) {
                               )}
                               {d.error && <span className={cn("mt-0.5 block max-w-[320px] text-[11px]", d.status === "failed" ? "text-bad" : "text-warn")}>{d.error}</span>}
                             </td>
-                            <td className="text-foreground/85">{d.collectionName}</td>
+                            <td>
+                              <div className="flex flex-wrap items-center gap-1">
+                                {assignedNames.map((name) => (
+                                  <Badge key={name} tone="neutral" className="max-w-[140px] truncate">
+                                    {name}
+                                  </Badge>
+                                ))}
+                                {canWrite && collections.length > 0 && (
+                                  <Tooltip content="Change or assign collections" side="top">
+                                    <button
+                                      type="button"
+                                      aria-label={`Change collections for ${d.name}`}
+                                      onClick={() => setAssigningDoc(d)}
+                                      className="grid size-6 place-items-center rounded text-muted transition hover:bg-primary/15 hover:text-lavender"
+                                    >
+                                      <Pencil className="size-3" />
+                                    </button>
+                                  </Tooltip>
+                                )}
+                              </div>
+                            </td>
                             <td>{t}</td><td>{formatBytes(d.sizeBytes)}</td>
                             <td>
                               <span className="flex flex-col items-start gap-1">
@@ -406,6 +554,13 @@ export function KnowledgeBase(props: Props) {
                             <td className="text-foreground/85" suppressHydrationWarning>{formatDate(d.createdAt, true)}</td>
                             <td>
                               <span className="flex items-center gap-1 text-foreground/70">
+                                {canWrite && (
+                                  <Tooltip content="Move / assign collections" side="top">
+                                    <button type="button" aria-label={`Assign collections for ${d.name}`} onClick={() => setAssigningDoc(d)} className="grid size-8 place-items-center rounded-md hover:bg-foreground/10 hover:text-foreground">
+                                      <FolderInput className="size-4" />
+                                    </button>
+                                  </Tooltip>
+                                )}
                                 <Tooltip content="View scraping & processing logs" side="top">
                                   <button type="button" aria-label={`Logs for ${d.name}`} onClick={() => openLogsFor(d)} className="grid size-8 place-items-center rounded-md hover:bg-foreground/10 hover:text-foreground">
                                     <Terminal className="size-4" />
@@ -448,11 +603,40 @@ export function KnowledgeBase(props: Props) {
             ) : (
               <div className="space-y-3 px-4 pb-4">
                 {(active ? [active] : collections).length === 0 ? <p className="py-8 text-center text-sm text-muted">Create a collection to share it with bots.</p> : (active ? [active] : collections).map((c) => (
-                  <div key={c.id} className="panel flex flex-wrap items-center gap-3 p-3">
+                  <div key={c.id} className="panel flex flex-wrap items-start gap-3 p-3.5">
                     <IconTile tone={tone(c)} size="md"><Folder /></IconTile>
-                    <div className="min-w-0 flex-1"><p className="font-bold">{c.name}</p>
-                      <div className="mt-1 flex flex-wrap gap-1.5">{c.botIds.length === 0 ? <span className="text-xs text-muted">Not shared with any bot yet.</span> : c.botIds.map((id) => { const b = botName(id); return b ? <Badge key={id} tone={b.kind === "agent" ? "primary" : "info"} className="rounded-full">{b.kind === "agent" && <Sparkles className="size-3" aria-hidden />}{b.name}</Badge> : null; })}</div></div>
-                    {canWrite && <Button variant="outline" size="sm" onClick={() => setSharing(c)}><Link2 className="size-3.5" aria-hidden />Manage bots</Button>}
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-bold">{c.name}</p>
+                        <span className="text-xs text-muted">({c.documents} {c.documents === 1 ? "doc" : "docs"})</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {c.botIds.length === 0 ? <span className="text-xs text-muted">Not shared with any bot yet.</span> : c.botIds.map((id) => { const b = botName(id); return b ? <Badge key={id} tone={b.kind === "agent" ? "primary" : "info"} className="rounded-full">{b.kind === "agent" && <Sparkles className="size-3" aria-hidden />}{b.name}</Badge> : null; })}
+                      </div>
+                      {c.documentItems.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                          <span className="text-[11px] text-muted">Knowledge:</span>
+                          {c.documentItems.slice(0, 5).map((item) => (
+                            <Badge key={item.id} tone="neutral" className="max-w-[180px] truncate text-[10px]">
+                              {item.name}
+                            </Badge>
+                          ))}
+                          {c.documentItems.length > 5 && <span className="text-[11px] text-lavender">+{c.documentItems.length - 5} more</span>}
+                        </div>
+                      )}
+                    </div>
+                    {canWrite && (
+                      <div className="flex items-center gap-1.5">
+                        <Button variant="outline" size="sm" onClick={() => setManagingCol(c)}>
+                          <FolderKanban className="size-3.5" aria-hidden />
+                          Knowledge
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => setSharing(c)}>
+                          <Link2 className="size-3.5" aria-hidden />
+                          Manage bots
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -463,9 +647,61 @@ export function KnowledgeBase(props: Props) {
         <aside className="space-y-5" aria-label="Knowledge actions">
           <Button onClick={() => (canWrite ? setCreateOpen(true) : setNotice({ tone: "bad", text: "Only owners and admins can create collections." }))} className="h-12 w-full"><Plus className="size-4" aria-hidden />Create Collection</Button>
           <Card>
-            <CardHeader title="Add Knowledge" description={target ? `Adding to "${target.name}".` : "Create a collection to start adding knowledge."} icon={<Cloud />} as="h3" />
+            <CardHeader title="Add Knowledge" description="Select target collection(s) and upload files or crawl URLs." icon={<Cloud />} as="h3" />
             <div className="space-y-3 px-5 pb-5">
               <input ref={fileRef} type="file" multiple hidden onChange={(e) => void upload(e.target.files)} aria-label="Choose files to upload" />
+
+              {/* Explicit Target Collection(s) selector */}
+              {collections.length > 0 ? (
+                <div className="space-y-1.5 rounded-lg border border-border/80 bg-surface-2/40 p-2.5">
+                  <label htmlFor="kb-upload-col" className="block text-[10px] font-bold uppercase tracking-wide text-muted">
+                    Assign To Collection(s)
+                  </label>
+                  <Select
+                    id="kb-upload-col"
+                    aria-label="Primary target collection"
+                    value={effectiveUploadColIds[0] ?? ""}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setUploadColIds((prev) => [nextId, ...prev.filter((id) => id !== nextId && id !== effectiveUploadColIds[0])]);
+                    }}
+                    className="h-9 text-xs"
+                  >
+                    {collections.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.documents} {c.documents === 1 ? "doc" : "docs"})
+                      </option>
+                    ))}
+                  </Select>
+                  {collections.length > 1 && (
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {collections.map((c) => {
+                        const selected = effectiveUploadColIds.includes(c.id);
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => toggleUploadCollection(c.id)}
+                            className={cn(
+                              "inline-flex max-w-[130px] items-center gap-1 truncate rounded-md border px-2 py-0.5 text-[10px] font-semibold transition",
+                              selected
+                                ? "border-lavender/60 bg-primary/20 text-lavender"
+                                : "border-border/70 bg-surface-2/60 text-muted hover:text-foreground",
+                            )}
+                          >
+                            <span className="truncate">{c.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="rounded-lg border border-border/70 bg-surface-2/40 p-2.5 text-xs text-muted">
+                  Create a collection first to upload knowledge.
+                </p>
+              )}
 
               {/* Drag-and-drop multi-format dropzone */}
               <button
@@ -511,7 +747,7 @@ export function KnowledgeBase(props: Props) {
                 type="button"
                 onClick={() => {
                   if (!canWrite) return setNotice({ tone: "bad", text: "Only owners and admins can add knowledge." });
-                  if (!target) { setNotice({ tone: "bad", text: "Create a collection first." }); return setCreateOpen(true); }
+                  if (!primaryUploadTarget) { setNotice({ tone: "bad", text: "Create a collection first." }); return setCreateOpen(true); }
                   setUrlOpen(true);
                 }}
                 className="panel flex w-full items-center gap-3 p-2.5 text-left text-sm font-semibold transition hover:border-lavender/60"
@@ -536,13 +772,53 @@ export function KnowledgeBase(props: Props) {
         </aside>
       </div>
 
-      <CollectionModal open={createOpen || Boolean(editing)} collection={editing} onClose={() => { setCreateOpen(false); setEditing(null); }}
-        onSaved={(created) => { setCreateOpen(false); setEditing(null); if (created) setActiveId(created.id); void refresh(); }} />
+      <CollectionModal
+        open={createOpen || Boolean(editing)}
+        collection={editing}
+        documents={docs}
+        onClose={() => { setCreateOpen(false); setEditing(null); }}
+        onSaved={(created) => {
+          setCreateOpen(false);
+          setEditing(null);
+          if (created) {
+            setActiveId(created.id);
+            setUploadColIds([created.id]);
+          }
+          void refresh();
+        }}
+      />
+      <ManageCollectionDocsModal
+        collection={managingCol}
+        documents={docs}
+        onClose={() => setManagingCol(null)}
+        onSaved={({ count, vectorSyncedCount }) => {
+          const name = managingCol?.name ?? "Collection";
+          setManagingCol(null);
+          setNotice({
+            tone: "ok",
+            text: `Updated "${name}" (${count} ${count === 1 ? "document" : "documents"} assigned${vectorSyncedCount > 0 ? ` · ${vectorSyncedCount} Milvus vectors synced` : ""}).`,
+          });
+          void refresh();
+        }}
+      />
+      <AssignDocCollectionsModal
+        document={assigningDoc}
+        collections={collections}
+        onClose={() => setAssigningDoc(null)}
+        onSaved={({ document: updated, vectorSynced, vectorsUpdated }) => {
+          setAssigningDoc(null);
+          setNotice({
+            tone: "ok",
+            text: `Assigned "${updated.name}" to ${updated.collectionNames.join(", ")}${vectorSynced && vectorsUpdated > 0 ? ` (Supabase + ${vectorsUpdated} Milvus vectors synced)` : " (Supabase synced)"}.`,
+          });
+          void refresh();
+        }}
+      />
       <LinkBotsModal collection={sharing} bots={bots} onClose={() => setSharing(null)} onSaved={() => { setSharing(null); setNotice({ tone: "ok", text: "Linked bots updated." }); void refresh(); }} />
       <UrlModal
         open={urlOpen}
-        collectionId={target?.id ?? ""}
-        collectionName={target?.name ?? ""}
+        collections={collections}
+        defaultCollectionIds={effectiveUploadColIds}
         onClose={() => setUrlOpen(false)}
         onAdded={(doc) => {
           setUrlOpen(false);
@@ -552,7 +828,7 @@ export function KnowledgeBase(props: Props) {
             tone: "ok",
             text:
               doc.scrapeMode === "single"
-                ? "Page added. Scraping started — view live logs below."
+                ? `Page added to ${doc.collectionNames.join(", ")}. Scraping started — view live logs below.`
                 : `${SCRAPE_MODE_LABEL[doc.scrapeMode]} scrape started — follow live logs below.`,
           });
           void refresh();
@@ -565,7 +841,7 @@ export function KnowledgeBase(props: Props) {
       </Modal>
       <Modal open={Boolean(delCol)} onClose={() => setDelCol(null)} title="Delete collection?" icon={<IconTile tone="danger" size="md"><Trash2 /></IconTile>}
         footer={<><Button variant="outline" onClick={() => setDelCol(null)}>Cancel</Button><Button variant="danger" onClick={removeCollection} disabled={busy}><Trash2 className="size-4" aria-hidden />Delete</Button></>}>
-        &ldquo;{delCol?.name}&rdquo; and its {delCol?.documents ?? 0} documents will be removed, and bots lose access to them. This cannot be undone.
+        &ldquo;{delCol?.name}&rdquo; will be removed. Documents only in this collection ({delCol?.documents ?? 0} total assigned) will be deleted; documents shared with other collections stay intact. This cannot be undone.
       </Modal>
     </div>
   );

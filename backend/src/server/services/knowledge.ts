@@ -5,7 +5,13 @@ import { ApiError, Errors } from "@backend/lib/http/api";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import type { collectionInput, updateCollectionInput } from "@backend/lib/validation/schemas";
 import { requireWrite, type AuthContext } from "@backend/server/auth/context";
-import { deleteVectors, ensureCollection, pingMilvus, upsertVectors } from "@backend/server/ai/milvus";
+import {
+  deleteVectors,
+  ensureCollection,
+  pingMilvus,
+  updateVectorsCollection,
+  upsertVectors,
+} from "@backend/server/ai/milvus";
 import { embedMany, rateLimit } from "@backend/server/ai/provider";
 import { withUsageScope } from "@backend/server/ai/usage";
 import { chunkText } from "@backend/server/knowledge/chunk";
@@ -34,16 +40,44 @@ const MAX_DOCS_PER_COLLECTION = 200;
 const EMBED_BATCH = 16;
 const MAX_CHUNKS_PER_DOC = 500;
 
+export interface CollectionDocSummary {
+  id: string;
+  name: string;
+  kind: DocKind;
+  status: "uploaded" | "processing" | "indexed" | "failed";
+  chunkCount: number;
+  vectorIndexed: boolean;
+  sizeBytes: number;
+}
 export interface CollectionDto {
   id: string; name: string; description: string; tone: "primary" | "info" | "success" | "amber";
-  documents: number; sizeBytes: number; botIds: string[]; createdAt: string; updatedAt: string;
+  documents: number; sizeBytes: number; botIds: string[];
+  documentIds: string[];
+  documentItems: CollectionDocSummary[];
+  createdAt: string; updatedAt: string;
 }
 export interface DocumentDto {
-  id: string; collectionId: string; collectionName: string; kind: DocKind; name: string; sourceUrl: string | null; sizeBytes: number;
-  status: "uploaded" | "processing" | "indexed" | "failed"; error: string | null; chunkCount: number; vectorIndexed: boolean;
-  scrapeMode: ScrapeMode; scrapeConfig: ScrapeConfig; progressStage: string | null;
-  pagesTotal: number; pagesScraped: number; pagesFailed: number;
-  createdAt: string; indexedAt: string | null;
+  id: string;
+  collectionId: string;
+  collectionName: string;
+  collectionIds: string[];
+  collectionNames: string[];
+  kind: DocKind;
+  name: string;
+  sourceUrl: string | null;
+  sizeBytes: number;
+  status: "uploaded" | "processing" | "indexed" | "failed";
+  error: string | null;
+  chunkCount: number;
+  vectorIndexed: boolean;
+  scrapeMode: ScrapeMode;
+  scrapeConfig: ScrapeConfig;
+  progressStage: string | null;
+  pagesTotal: number;
+  pagesScraped: number;
+  pagesFailed: number;
+  createdAt: string;
+  indexedAt: string | null;
 }
 export interface IngestionLogDto {
   id: string;
@@ -69,14 +103,23 @@ type Row = Record<string, unknown>;
 const DOC_COLUMNS =
   "id, collection_id, kind, name, source_url, size_bytes, status, error, chunk_count, vector_indexed, scrape_mode, scrape_config, progress_stage, pages_total, pages_scraped, pages_failed, created_at, indexed_at";
 
-function toDoc(r: Row, names: Map<string, string>): DocumentDto {
+function toDoc(
+  r: Row,
+  colNames: Map<string, string>,
+  docCollectionIds?: Map<string, string[]>,
+): DocumentDto {
   const rawMode = r.scrape_mode as string | undefined;
   const scrapeMode: ScrapeMode = rawMode === "sitemap" || rawMode === "subpages" ? rawMode : "single";
   const rawCfg = r.scrape_config && typeof r.scrape_config === "object" ? (r.scrape_config as ScrapeConfig) : {};
+  const primaryId = r.collection_id as string;
+  const linked = docCollectionIds?.get(r.id as string) ?? [];
+  const uniqueIds = [primaryId, ...linked.filter((cid) => cid !== primaryId)].filter(Boolean);
   return {
     id: r.id as string,
-    collectionId: r.collection_id as string,
-    collectionName: names.get(r.collection_id as string) ?? "",
+    collectionId: primaryId,
+    collectionName: colNames.get(primaryId) ?? "",
+    collectionIds: uniqueIds,
+    collectionNames: uniqueIds.map((cid) => colNames.get(cid) ?? "").filter(Boolean),
     kind: r.kind as DocKind,
     name: r.name as string,
     sourceUrl: (r.source_url as string | null) ?? null,
@@ -135,21 +178,127 @@ async function writeIngestionLog(
   }
 }
 
+/**
+ * Syncs a document's primary `collection_id` across Supabase (`kb_documents`, `kb_chunks`) and Milvus Vector DB.
+ * Uses in-place Milvus query+upsert so existing embeddings stay intact without re-calling the embedding model;
+ * if vectors are missing for an indexed vector document, gracefully re-embeds them from `kb_chunks`.
+ */
+async function syncPrimaryCollectionEverywhere(
+  admin: ReturnType<typeof createAdminClient>,
+  workspaceId: string,
+  documentId: string,
+  newPrimaryCollectionId: string,
+): Promise<{ vectorSynced: boolean; vectorsUpdated: number }> {
+  await Promise.all([
+    admin.from("kb_documents").update({ collection_id: newPrimaryCollectionId }).eq("id", documentId).eq("workspace_id", workspaceId),
+    admin.from("kb_chunks").update({ collection_id: newPrimaryCollectionId }).eq("document_id", documentId).eq("workspace_id", workspaceId),
+  ]);
+
+  if (!milvusConfig()) {
+    return { vectorSynced: false, vectorsUpdated: 0 };
+  }
+
+  try {
+    const res = await updateVectorsCollection(workspaceId, documentId, newPrimaryCollectionId);
+    if (res.updated > 0) {
+      return { vectorSynced: true, vectorsUpdated: res.updated };
+    }
+    // If document is marked vector_indexed (or has chunks while Milvus is enabled), check if we should upsert from kb_chunks.
+    const { data: docRow } = await admin
+      .from("kb_documents")
+      .select("status, vector_indexed")
+      .eq("id", documentId)
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    if (docRow?.status === "indexed" && docRow.vector_indexed) {
+      const { data: chunkRows } = await admin
+        .from("kb_chunks")
+        .select("id, content")
+        .eq("document_id", documentId)
+        .eq("workspace_id", workspaceId)
+        .order("position", { ascending: true });
+      if (chunkRows?.length) {
+        const model = await kbEmbedModel();
+        const vectors: number[][] = [];
+        for (let i = 0; i < chunkRows.length; i += EMBED_BATCH) {
+          vectors.push(
+            ...(await embedMany(model, chunkRows.slice(i, i + EMBED_BATCH).map((c) => String(c.content)), "passage")).vectors,
+          );
+        }
+        await ensureCollection(vectors[0]!.length);
+        await upsertVectors(
+          chunkRows.map((c, idx) => ({
+            id: c.id as string,
+            vector: vectors[idx]!,
+            workspace_id: workspaceId,
+            collection_id: newPrimaryCollectionId,
+            document_id: documentId,
+          })),
+        );
+        return { vectorSynced: true, vectorsUpdated: chunkRows.length };
+      }
+    }
+    return { vectorSynced: true, vectorsUpdated: 0 };
+  } catch (e) {
+    console.error("[knowledge] Milvus collection sync failed:", e instanceof Error ? e.message : "unknown");
+    return { vectorSynced: false, vectorsUpdated: 0 };
+  }
+}
+
 // ---------- collections ----------
 export async function listCollections(ctx: AuthContext): Promise<CollectionDto[]> {
-  const [cols, docs, links] = await Promise.all([
+  const [cols, docs, docLinks, botLinks] = await Promise.all([
     ctx.supabase.from("kb_collections").select("id, name, description, tone, created_at, updated_at").eq("workspace_id", ctx.workspaceId).order("updated_at", { ascending: false }),
-    ctx.supabase.from("kb_documents").select("collection_id, size_bytes").eq("workspace_id", ctx.workspaceId),
+    ctx.supabase.from("kb_documents").select("id, collection_id, name, kind, status, chunk_count, vector_indexed, size_bytes, created_at").eq("workspace_id", ctx.workspaceId).order("created_at", { ascending: false }),
+    ctx.supabase.from("kb_collection_documents").select("collection_id, document_id").eq("workspace_id", ctx.workspaceId),
     ctx.supabase.from("kb_bot_links").select("collection_id, bot_id").eq("workspace_id", ctx.workspaceId),
   ]);
-  if (cols.error || docs.error || links.error) throw new Error("Failed to load collections");
+  if (cols.error || docs.error || botLinks.error) throw new Error("Failed to load collections");
+
+  const docById = new Map<string, CollectionDocSummary>();
+  const colToDocIds = new Map<string, Set<string>>();
+  for (const d of docs.data ?? []) {
+    const id = d.id as string;
+    const cid = d.collection_id as string;
+    docById.set(id, {
+      id,
+      name: String(d.name ?? ""),
+      kind: d.kind as DocKind,
+      status: d.status as CollectionDocSummary["status"],
+      chunkCount: Number(d.chunk_count ?? 0),
+      vectorIndexed: Boolean(d.vector_indexed),
+      sizeBytes: Number(d.size_bytes ?? 0),
+    });
+    if (cid) {
+      let set = colToDocIds.get(cid);
+      if (!set) { set = new Set(); colToDocIds.set(cid, set); }
+      set.add(id);
+    }
+  }
+  for (const l of docLinks.data ?? []) {
+    const cid = l.collection_id as string;
+    const did = l.document_id as string;
+    if (!docById.has(did)) continue;
+    let set = colToDocIds.get(cid);
+    if (!set) { set = new Set(); colToDocIds.set(cid, set); }
+    set.add(did);
+  }
+
   return (cols.data ?? []).map((c) => {
-    const mine = (docs.data ?? []).filter((d) => d.collection_id === c.id);
+    const ids = [...(colToDocIds.get(c.id as string) ?? [])];
+    const items = ids.map((id) => docById.get(id)!).filter(Boolean);
     return {
-      id: c.id as string, name: c.name as string, description: c.description as string, tone: c.tone as CollectionDto["tone"],
-      documents: mine.length, sizeBytes: mine.reduce((s, d) => s + Number(d.size_bytes ?? 0), 0),
-      botIds: (links.data ?? []).filter((l) => l.collection_id === c.id).map((l) => l.bot_id as string),
-      createdAt: c.created_at as string, updatedAt: c.updated_at as string,
+      id: c.id as string,
+      name: c.name as string,
+      description: c.description as string,
+      tone: c.tone as CollectionDto["tone"],
+      documents: items.length,
+      sizeBytes: items.reduce((s, d) => s + d.sizeBytes, 0),
+      botIds: (botLinks.data ?? []).filter((l) => l.collection_id === c.id).map((l) => l.bot_id as string),
+      documentIds: items.map((d) => d.id),
+      documentItems: items,
+      createdAt: c.created_at as string,
+      updatedAt: c.updated_at as string,
     };
   });
 }
@@ -158,6 +307,13 @@ async function ownCollection(ctx: AuthContext, id: string): Promise<{ id: string
   const { data } = await ctx.supabase.from("kb_collections").select("id, name").eq("id", id).eq("workspace_id", ctx.workspaceId).maybeSingle();
   if (!data) throw Errors.notFound("Collection");
   return data as { id: string; name: string };
+}
+
+async function ownCollections(ctx: AuthContext, ids: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)];
+  const { data } = await ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId).in("id", unique);
+  if ((data ?? []).length !== unique.length) throw Errors.invalid("One of the selected collections was not found.");
+  return new Map((data ?? []).map((c) => [c.id as string, c.name as string]));
 }
 
 export async function createCollection(ctx: AuthContext, input: z.infer<typeof collectionInput>): Promise<CollectionDto> {
@@ -169,23 +325,48 @@ export async function createCollection(ctx: AuthContext, input: z.infer<typeof c
     if (error.code === "23505") throw Errors.conflict("A collection with this name already exists.");
     throw new Error("Failed to create the collection");
   }
+  const initialDocIds = [...new Set(input.documentIds ?? [])];
+  if (initialDocIds.length > 0) {
+    await setCollectionDocuments(ctx, data.id as string, initialDocIds);
+  }
   await notify({
     workspaceId: ctx.workspaceId,
     userId: ctx.userId,
     kind: "kb_collection_created",
     title: `Knowledge collection created: ${data.name as string}`,
-    body: "Upload PDF, Word, Excel, CSV, PowerPoint, Markdown, TXT, JSON, HTML files or crawl websites & sitemaps.",
+    body: initialDocIds.length
+      ? `Created with ${initialDocIds.length} assigned knowledge ${initialDocIds.length === 1 ? "document" : "documents"}.`
+      : "Upload PDF, Word, Excel, CSV, PowerPoint, Markdown, TXT, JSON, HTML files or crawl websites & sitemaps.",
   });
-  return { id: data.id, name: data.name, description: data.description, tone: data.tone, documents: 0, sizeBytes: 0, botIds: [], createdAt: data.created_at, updatedAt: data.updated_at };
+  const fresh = (await listCollections(ctx)).find((c) => c.id === data.id);
+  return fresh ?? {
+    id: data.id,
+    name: data.name,
+    description: data.description,
+    tone: data.tone,
+    documents: 0,
+    sizeBytes: 0,
+    botIds: [],
+    documentIds: [],
+    documentItems: [],
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
 }
 
 export async function updateCollection(ctx: AuthContext, id: string, input: z.infer<typeof updateCollectionInput>): Promise<void> {
   requireWrite(ctx);
   await ownCollection(ctx, id);
-  const { error } = await ctx.supabase.from("kb_collections").update({ ...input, updated_at: new Date().toISOString() }).eq("id", id).eq("workspace_id", ctx.workspaceId);
-  if (error) {
-    if (error.code === "23505") throw Errors.conflict("A collection with this name already exists.");
-    throw new Error("Failed to update the collection");
+  const { documentIds, ...fields } = input;
+  if (Object.keys(fields).length > 0) {
+    const { error } = await ctx.supabase.from("kb_collections").update({ ...fields, updated_at: new Date().toISOString() }).eq("id", id).eq("workspace_id", ctx.workspaceId);
+    if (error) {
+      if (error.code === "23505") throw Errors.conflict("A collection with this name already exists.");
+      throw new Error("Failed to update the collection");
+    }
+  }
+  if (documentIds !== undefined) {
+    await setCollectionDocuments(ctx, id, documentIds);
   }
 }
 
@@ -193,18 +374,40 @@ export async function deleteCollection(ctx: AuthContext, id: string): Promise<vo
   requireWrite(ctx);
   const col = await ownCollection(ctx, id);
   const admin = createAdminClient();
-  const { data: docs } = await admin.from("kb_documents").select("storage_path").eq("collection_id", id).eq("workspace_id", ctx.workspaceId);
-  await deleteVectors("collection_id", id).catch((e) => console.error("[knowledge] vector cleanup failed:", e instanceof Error ? e.message : "unknown"));
+  const [{ data: primaryDocs }, { data: allLinks }] = await Promise.all([
+    admin.from("kb_documents").select("id, storage_path").eq("collection_id", id).eq("workspace_id", ctx.workspaceId),
+    admin.from("kb_collection_documents").select("collection_id, document_id").eq("workspace_id", ctx.workspaceId),
+  ]);
+
+  const otherColByDoc = new Map<string, string>();
+  for (const l of allLinks ?? []) {
+    const cid = l.collection_id as string;
+    const did = l.document_id as string;
+    if (cid !== id && !otherColByDoc.has(did)) otherColByDoc.set(did, cid);
+  }
+
+  const exclusivePaths: string[] = [];
+  for (const d of primaryDocs ?? []) {
+    const docId = d.id as string;
+    const fallbackCol = otherColByDoc.get(docId);
+    if (fallbackCol) {
+      // Preserve shared documents by promoting another assigned collection to primary in Supabase + Milvus.
+      await syncPrimaryCollectionEverywhere(admin, ctx.workspaceId, docId, fallbackCol);
+    } else {
+      await deleteVectors("document_id", docId).catch((e) => console.error("[knowledge] vector cleanup failed:", e instanceof Error ? e.message : "unknown"));
+      if (d.storage_path) exclusivePaths.push(d.storage_path as string);
+    }
+  }
+
   const { error } = await ctx.supabase.from("kb_collections").delete().eq("id", id).eq("workspace_id", ctx.workspaceId);
   if (error) throw new Error("Failed to delete the collection");
-  const paths = (docs ?? []).map((d) => d.storage_path as string | null).filter((p): p is string => Boolean(p));
-  if (paths.length) await admin.storage.from(BUCKET).remove(paths).catch(() => undefined);
+  if (exclusivePaths.length) await admin.storage.from(BUCKET).remove(exclusivePaths).catch(() => undefined);
   await notify({
     workspaceId: ctx.workspaceId,
     userId: ctx.userId,
     kind: "kb_collection_deleted",
     title: `Knowledge collection deleted: ${col.name}`,
-    body: "The collection, its indexed chunks, and stored files were removed.",
+    body: "The collection and its exclusive documents were removed; shared documents remain in their other collections.",
   });
 }
 
@@ -232,6 +435,189 @@ export async function setCollectionBots(ctx: AuthContext, id: string, botIds: st
   return unique;
 }
 
+/**
+ * Assigns/unassigns which knowledge documents belong to a collection/project.
+ * Keeps `kb_collection_documents`, `kb_documents`, `kb_chunks`, and Milvus vector DB fully in sync.
+ */
+export async function setCollectionDocuments(
+  ctx: AuthContext,
+  collectionId: string,
+  documentIds: string[],
+): Promise<{ documentIds: string[]; vectorSyncedCount: number }> {
+  requireWrite(ctx);
+  const col = await ownCollection(ctx, collectionId);
+  const unique = [...new Set(documentIds)];
+  if (unique.length > MAX_DOCS_PER_COLLECTION) {
+    throw Errors.invalid(`A collection holds up to ${MAX_DOCS_PER_COLLECTION} documents.`);
+  }
+
+  const admin = createAdminClient();
+  if (unique.length) {
+    const { data } = await admin.from("kb_documents").select("id").eq("workspace_id", ctx.workspaceId).in("id", unique);
+    if ((data ?? []).length !== unique.length) throw Errors.invalid("One of the selected documents was not found.");
+  }
+
+  const [{ data: allLinks }, { data: allDocs }] = await Promise.all([
+    admin.from("kb_collection_documents").select("collection_id, document_id").eq("workspace_id", ctx.workspaceId),
+    admin.from("kb_documents").select("id, name, collection_id").eq("workspace_id", ctx.workspaceId),
+  ]);
+
+  const docMeta = new Map((allDocs ?? []).map((d) => [d.id as string, { name: String(d.name), primaryId: d.collection_id as string }]));
+  const docToCols = new Map<string, Set<string>>();
+  for (const d of allDocs ?? []) {
+    docToCols.set(d.id as string, new Set([d.collection_id as string]));
+  }
+  for (const l of allLinks ?? []) {
+    const set = docToCols.get(l.document_id as string);
+    if (set) set.add(l.collection_id as string);
+  }
+
+  const currentInCol = new Set<string>();
+  for (const [did, cols] of docToCols.entries()) {
+    if (cols.has(collectionId)) currentInCol.add(did);
+  }
+
+  const add = unique.filter((did) => !currentInCol.has(did));
+  const drop = [...currentInCol].filter((did) => !unique.includes(did));
+
+  // Verify none of the removed documents would become orphaned (0 collections).
+  for (const did of drop) {
+    const cols = docToCols.get(did) ?? new Set();
+    const others = [...cols].filter((c) => c !== collectionId);
+    if (others.length === 0) {
+      const name = docMeta.get(did)?.name ?? "document";
+      throw Errors.invalid(
+        `"${name}" only belongs to "${col.name}". Assign it to another collection first before removing it here.`,
+      );
+    }
+  }
+
+  const touchedCollections = new Set<string>([collectionId]);
+  let vectorSyncedCount = 0;
+
+  if (add.length) {
+    const { error } = await admin
+      .from("kb_collection_documents")
+      .upsert(
+        add.map((document_id) => ({ collection_id: collectionId, document_id, workspace_id: ctx.workspaceId })),
+        { onConflict: "collection_id,document_id" },
+      );
+    if (error) throw new Error("Failed to assign documents to collection");
+    for (const did of add) {
+      await writeIngestionLog(admin, ctx.workspaceId, did, "info", "assign", `Assigned to collection "${col.name}".`);
+    }
+  }
+
+  if (drop.length) {
+    for (const did of drop) {
+      const meta = docMeta.get(did);
+      const others = [...(docToCols.get(did) ?? [])].filter((c) => c !== collectionId);
+      const nextPrimary = others[0]!;
+      if (meta?.primaryId === collectionId) {
+        const sync = await syncPrimaryCollectionEverywhere(admin, ctx.workspaceId, did, nextPrimary);
+        if (sync.vectorSynced) vectorSyncedCount += sync.vectorsUpdated;
+        touchedCollections.add(nextPrimary);
+      }
+      await admin
+        .from("kb_collection_documents")
+        .delete()
+        .eq("collection_id", collectionId)
+        .eq("document_id", did)
+        .eq("workspace_id", ctx.workspaceId);
+      await writeIngestionLog(admin, ctx.workspaceId, did, "info", "assign", `Removed from collection "${col.name}".`);
+    }
+  }
+
+  const now = new Date().toISOString();
+  await admin.from("kb_collections").update({ updated_at: now }).in("id", [...touchedCollections]).eq("workspace_id", ctx.workspaceId);
+  return { documentIds: unique, vectorSyncedCount };
+}
+
+/**
+ * Moves or assigns a single document to one or more collections/projects.
+ * Synchronizes Supabase (`kb_collection_documents`, `kb_documents`, `kb_chunks`) and Milvus Vector DB in-place.
+ */
+export async function updateDocumentCollections(
+  ctx: AuthContext,
+  documentId: string,
+  collectionIds: string[],
+): Promise<{ document: DocumentDto; vectorSynced: boolean; vectorsUpdated: number }> {
+  requireWrite(ctx);
+  const doc = await loadDoc(ctx, documentId);
+  const unique = [...new Set(collectionIds)];
+  if (!unique.length) throw Errors.invalid("Assign this document to at least one collection.");
+
+  const colNames = await ownCollections(ctx, unique);
+  const admin = createAdminClient();
+
+  const { data: existingLinks } = await admin
+    .from("kb_collection_documents")
+    .select("collection_id")
+    .eq("document_id", documentId)
+    .eq("workspace_id", ctx.workspaceId);
+
+  const prevSet = new Set<string>([doc.collection_id as string, ...(existingLinks ?? []).map((r) => r.collection_id as string)]);
+  const add = unique.filter((cid) => !prevSet.has(cid));
+  const drop = [...prevSet].filter((cid) => !unique.includes(cid));
+
+  for (const cid of add) {
+    await assertRoom(ctx, cid);
+  }
+
+  const newPrimary = unique[0]!;
+  const primaryChanged = newPrimary !== (doc.collection_id as string);
+
+  if (add.length) {
+    const { error } = await admin
+      .from("kb_collection_documents")
+      .upsert(
+        add.map((collection_id) => ({ collection_id, document_id: documentId, workspace_id: ctx.workspaceId })),
+        { onConflict: "collection_id,document_id" },
+      );
+    if (error) throw new Error("Failed to assign collections");
+  }
+  if (drop.length) {
+    const { error } = await admin
+      .from("kb_collection_documents")
+      .delete()
+      .eq("document_id", documentId)
+      .eq("workspace_id", ctx.workspaceId)
+      .in("collection_id", drop);
+    if (error) throw new Error("Failed to remove old collection assignments");
+  }
+  // Ensure primary link always exists in kb_collection_documents
+  await admin
+    .from("kb_collection_documents")
+    .upsert({ collection_id: newPrimary, document_id: documentId, workspace_id: ctx.workspaceId }, { onConflict: "collection_id,document_id" });
+
+  let vectorSynced = false;
+  let vectorsUpdated = 0;
+  if (primaryChanged) {
+    const sync = await syncPrimaryCollectionEverywhere(admin, ctx.workspaceId, documentId, newPrimary);
+    vectorSynced = sync.vectorSynced;
+    vectorsUpdated = sync.vectorsUpdated;
+  } else if (milvusConfig()) {
+    vectorSynced = true;
+  }
+
+  const affected = [...new Set([...prevSet, ...unique])];
+  await admin.from("kb_collections").update({ updated_at: new Date().toISOString() }).in("id", affected).eq("workspace_id", ctx.workspaceId);
+
+  const assignedLabels = unique.map((cid) => colNames.get(cid) ?? cid).join(", ");
+  await writeIngestionLog(
+    admin,
+    ctx.workspaceId,
+    documentId,
+    "success",
+    "assign",
+    `Updated collection assignment -> [${assignedLabels}]${primaryChanged && vectorSynced ? ` (Supabase + ${vectorsUpdated} Milvus vector${vectorsUpdated === 1 ? "" : "s"} synced)` : " (Supabase synced)"}.`,
+  );
+
+  const freshDoc = (await listDocuments(ctx)).find((d) => d.id === documentId);
+  if (!freshDoc) throw Errors.notFound("Document");
+  return { document: freshDoc, vectorSynced, vectorsUpdated };
+}
+
 /** Bots a collection can be shared with. Bots that belong to an AI agent are labelled so the picker can group them. */
 export async function listLinkableBots(ctx: AuthContext): Promise<LinkableBotDto[]> {
   const [bots, agents] = await Promise.all([
@@ -244,33 +630,55 @@ export async function listLinkableBots(ctx: AuthContext): Promise<LinkableBotDto
 
 // ---------- documents ----------
 export async function listDocuments(ctx: AuthContext, collectionId?: string): Promise<DocumentDto[]> {
-  let q = ctx.supabase.from("kb_documents").select(DOC_COLUMNS).eq("workspace_id", ctx.workspaceId).order("created_at", { ascending: false }).limit(500);
-  if (collectionId) q = q.eq("collection_id", collectionId);
-  const [docs, cols] = await Promise.all([q, ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId)]);
+  const [docs, cols, links] = await Promise.all([
+    ctx.supabase.from("kb_documents").select(DOC_COLUMNS).eq("workspace_id", ctx.workspaceId).order("created_at", { ascending: false }).limit(500),
+    ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId),
+    ctx.supabase.from("kb_collection_documents").select("collection_id, document_id").eq("workspace_id", ctx.workspaceId),
+  ]);
   if (docs.error) throw new Error("Failed to load documents");
   const names = new Map((cols.data ?? []).map((c) => [c.id as string, c.name as string]));
-  return (docs.data ?? []).map((d) => toDoc(d as unknown as Row, names));
+  const docColMap = new Map<string, string[]>();
+  for (const l of links.data ?? []) {
+    const did = l.document_id as string;
+    const cid = l.collection_id as string;
+    const arr = docColMap.get(did) ?? [];
+    if (!arr.includes(cid)) arr.push(cid);
+    docColMap.set(did, arr);
+  }
+  const all = (docs.data ?? []).map((d) => toDoc(d as unknown as Row, names, docColMap));
+  return collectionId ? all.filter((d) => d.collectionIds.includes(collectionId)) : all;
 }
 
 async function assertRoom(ctx: AuthContext, collectionId: string) {
-  const { count } = await ctx.supabase.from("kb_documents").select("id", { count: "exact", head: true }).eq("collection_id", collectionId);
+  const { count } = await ctx.supabase
+    .from("kb_collection_documents")
+    .select("document_id", { count: "exact", head: true })
+    .eq("collection_id", collectionId)
+    .eq("workspace_id", ctx.workspaceId);
   if ((count ?? 0) >= MAX_DOCS_PER_COLLECTION) throw Errors.invalid(`A collection holds up to ${MAX_DOCS_PER_COLLECTION} documents.`);
 }
 
 const safeName = (s: string) => s.replace(/[^\w.\- ]+/g, "_").slice(0, 120) || "file";
 
-/** Stores an uploaded file and creates its document row. Call processDocument afterwards (it can run after the response). */
-export async function createFileDocument(ctx: AuthContext, collectionId: string, file: File): Promise<DocumentDto> {
+/** Stores an uploaded file and assigns it to one or more collections. Call processDocument afterwards. */
+export async function createFileDocument(
+  ctx: AuthContext,
+  collectionId: string,
+  file: File,
+  extraCollectionIds?: string[],
+): Promise<DocumentDto> {
   requireWrite(ctx);
   rateLimit(`kb-upload:${ctx.userId}`, 30, 60_000);
-  const col = await ownCollection(ctx, collectionId);
+  const allColIds = [...new Set([collectionId, ...(extraCollectionIds ?? [])])];
+  const colNames = await ownCollections(ctx, allColIds);
   const kind = kindFromFilename(file.name);
   if (!kind || kind === "url") {
     throw Errors.invalid("Unsupported file type. Upload PDF, Word (.docx/.doc/.odt/.rtf), Excel (.xlsx/.xls/.ods), CSV/TSV, PowerPoint (.pptx/.odp), TXT, Markdown, JSON/YAML/XML, or HTML.");
   }
   if (file.size === 0) throw Errors.invalid("This file is empty.");
   if (file.size > MAX_FILE_BYTES) throw new ApiError(413, "PAYLOAD_TOO_LARGE", "Files can be up to 10 MB.");
-  await assertRoom(ctx, collectionId);
+  for (const cid of allColIds) await assertRoom(ctx, cid);
+
   const admin = createAdminClient();
   const id = crypto.randomUUID();
   const path = `${ctx.workspaceId}/${id}/${safeName(file.name)}`;
@@ -280,7 +688,7 @@ export async function createFileDocument(ctx: AuthContext, collectionId: string,
     .insert({
       id,
       workspace_id: ctx.workspaceId,
-      collection_id: collectionId,
+      collection_id: allColIds[0]!,
       kind,
       name: file.name.slice(0, 300),
       storage_path: path,
@@ -296,26 +704,42 @@ export async function createFileDocument(ctx: AuthContext, collectionId: string,
     await admin.storage.from(BUCKET).remove([path]).catch(() => undefined);
     throw new Error("Failed to save the document");
   }
-  await writeIngestionLog(admin, ctx.workspaceId, id, "info", "queued", `Uploaded "${file.name}" (${(file.size / 1024).toFixed(1)} KB, ${kind.toUpperCase()}). Queued for text extraction.`);
-  return toDoc(data as unknown as Row, new Map([[collectionId, col.name]]));
+  await admin
+    .from("kb_collection_documents")
+    .upsert(
+      allColIds.map((cid) => ({ collection_id: cid, document_id: id, workspace_id: ctx.workspaceId })),
+      { onConflict: "collection_id,document_id" },
+    );
+  const assignedNames = allColIds.map((cid) => colNames.get(cid) ?? cid).join(", ");
+  await writeIngestionLog(
+    admin,
+    ctx.workspaceId,
+    id,
+    "info",
+    "queued",
+    `Uploaded "${file.name}" (${(file.size / 1024).toFixed(1)} KB, ${kind.toUpperCase()}) into [${assignedNames}]. Queued for text extraction.`,
+  );
+  return toDoc(data as unknown as Row, colNames, new Map([[id, allColIds]]));
 }
 
 export async function createUrlDocument(
   ctx: AuthContext,
   collectionId: string,
   rawUrl: string,
-  options: { mode?: ScrapeMode; config?: ScrapeConfig } = {},
+  options: { mode?: ScrapeMode; config?: ScrapeConfig; extraCollectionIds?: string[] } = {},
 ): Promise<DocumentDto> {
   requireWrite(ctx);
   rateLimit(`kb-upload:${ctx.userId}`, 30, 60_000);
-  const col = await ownCollection(ctx, collectionId);
+  const allColIds = [...new Set([collectionId, ...(options.extraCollectionIds ?? [])])];
+  const colNames = await ownCollections(ctx, allColIds);
   let parsed: URL;
   try {
     parsed = normalizePublicUrl(rawUrl);
   } catch (e) {
     throw Errors.invalid(e instanceof Error ? e.message : "Enter a valid public HTTPS URL.");
   }
-  await assertRoom(ctx, collectionId);
+  for (const cid of allColIds) await assertRoom(ctx, cid);
+
   const mode: ScrapeMode = options.mode ?? "single";
   const cfg: ScrapeConfig = {
     ...(options.config?.maxPages ? { maxPages: Math.min(50, Math.max(1, options.config.maxPages)) } : {}),
@@ -330,7 +754,7 @@ export async function createUrlDocument(
   const { data, error } = await admin.from("kb_documents")
     .insert({
       workspace_id: ctx.workspaceId,
-      collection_id: collectionId,
+      collection_id: allColIds[0]!,
       kind: "url",
       name: initialName.slice(0, 300),
       source_url: parsed.toString(),
@@ -345,14 +769,22 @@ export async function createUrlDocument(
     })
     .select(DOC_COLUMNS).single();
   if (error) throw new Error("Failed to save the document");
+  const docId = data.id as string;
+  await admin
+    .from("kb_collection_documents")
+    .upsert(
+      allColIds.map((cid) => ({ collection_id: cid, document_id: docId, workspace_id: ctx.workspaceId })),
+      { onConflict: "collection_id,document_id" },
+    );
+  const assignedNames = allColIds.map((cid) => colNames.get(cid) ?? cid).join(", ");
   const modeDesc =
     mode === "sitemap"
       ? `sitemap scrape (up to ${cfg.maxPages ?? 15} pages)`
       : mode === "subpages"
         ? `subpages crawl (up to ${cfg.maxPages ?? 15} pages, depth ${cfg.maxDepth ?? 2})`
         : "single page scrape";
-  await writeIngestionLog(admin, ctx.workspaceId, data.id as string, "info", "queued", `Queued ${modeDesc} for ${parsed.toString()}.`, parsed.toString());
-  return toDoc(data as unknown as Row, new Map([[collectionId, col.name]]));
+  await writeIngestionLog(admin, ctx.workspaceId, docId, "info", "queued", `Queued ${modeDesc} for ${parsed.toString()} into [${assignedNames}].`, parsed.toString());
+  return toDoc(data as unknown as Row, colNames, new Map([[docId, allColIds]]));
 }
 
 async function loadDoc(ctx: AuthContext, id: string) {
@@ -365,11 +797,13 @@ export async function deleteDocument(ctx: AuthContext, id: string): Promise<void
   requireWrite(ctx);
   const doc = await loadDoc(ctx, id);
   const admin = createAdminClient();
+  const { data: links } = await admin.from("kb_collection_documents").select("collection_id").eq("document_id", id).eq("workspace_id", ctx.workspaceId);
+  const affectedCols = [...new Set([doc.collection_id as string, ...(links ?? []).map((l) => l.collection_id as string)])];
   await deleteVectors("document_id", id).catch((e) => console.error("[knowledge] vector cleanup failed:", e instanceof Error ? e.message : "unknown"));
   const { error } = await admin.from("kb_documents").delete().eq("id", id).eq("workspace_id", ctx.workspaceId);
   if (error) throw new Error("Failed to delete the document");
   if (doc.storage_path) await admin.storage.from(BUCKET).remove([doc.storage_path as string]).catch(() => undefined);
-  await admin.from("kb_collections").update({ updated_at: new Date().toISOString() }).eq("id", doc.collection_id as string);
+  await admin.from("kb_collections").update({ updated_at: new Date().toISOString() }).in("id", affectedCols);
 }
 
 /** Marks a document as processing again so the caller can schedule processDocument. */
@@ -395,8 +829,12 @@ export async function prepareReindex(ctx: AuthContext, id: string): Promise<Docu
     .single();
   if (error) throw new Error("Failed to restart indexing");
   await writeIngestionLog(admin, ctx.workspaceId, id, "info", "queued", `Restarting processing for "${existing.name as string}"...`, (existing.source_url as string | null) ?? null);
-  const { data: col } = await ctx.supabase.from("kb_collections").select("id, name").eq("id", data.collection_id).maybeSingle();
-  return toDoc(data as unknown as Row, new Map(col ? [[col.id as string, col.name as string]] : []));
+  const [{ data: cols }, { data: links }] = await Promise.all([
+    ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId),
+    ctx.supabase.from("kb_collection_documents").select("collection_id").eq("document_id", id),
+  ]);
+  const colNames = new Map((cols ?? []).map((c) => [c.id as string, c.name as string]));
+  return toDoc(data as unknown as Row, colNames, new Map([[id, (links ?? []).map((l) => l.collection_id as string)]]));
 }
 
 export async function previewDocument(
@@ -409,11 +847,12 @@ export async function previewDocument(
   pages: Array<{ url: string; title: string; chunks: number }>;
 }> {
   const doc = await loadDoc(ctx, id);
-  const [{ data: chunks }, { data: allPageRows }, { data: logs }, { data: col }] = await Promise.all([
+  const [{ data: chunks }, { data: allPageRows }, { data: logs }, { data: cols }, { data: links }] = await Promise.all([
     ctx.supabase.from("kb_chunks").select("position, content, source_url, page_title").eq("document_id", id).order("position").limit(20),
     ctx.supabase.from("kb_chunks").select("source_url, page_title").eq("document_id", id).not("source_url", "is", null).limit(500),
     ctx.supabase.from("kb_ingestion_logs").select("id, document_id, level, stage, message, url, meta, created_at").eq("document_id", id).order("created_at", { ascending: true }).limit(250),
-    ctx.supabase.from("kb_collections").select("id, name").eq("id", doc.collection_id as string).maybeSingle(),
+    ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId),
+    ctx.supabase.from("kb_collection_documents").select("collection_id").eq("document_id", id),
   ]);
   const pageMap = new Map<string, { url: string; title: string; chunks: number }>();
   for (const r of allPageRows ?? []) {
@@ -423,8 +862,9 @@ export async function previewDocument(
     if (cur) cur.chunks++;
     else pageMap.set(u, { url: u, title: (r.page_title as string | null) ?? u, chunks: 1 });
   }
+  const colNames = new Map((cols ?? []).map((c) => [c.id as string, c.name as string]));
   return {
-    document: toDoc(doc, new Map(col ? [[col.id as string, col.name as string]] : [])),
+    document: toDoc(doc, colNames, new Map([[id, (links ?? []).map((l) => l.collection_id as string)]])),
     chunks: (chunks ?? []).map((c) => ({
       position: Number(c.position ?? 0),
       content: String(c.content ?? ""),
@@ -441,7 +881,7 @@ export async function listDocumentLogs(
   documentId: string,
 ): Promise<{ document: DocumentDto; logs: IngestionLogDto[] }> {
   const doc = await loadDoc(ctx, documentId);
-  const [{ data: logs }, { data: col }] = await Promise.all([
+  const [{ data: logs }, { data: cols }, { data: links }] = await Promise.all([
     ctx.supabase
       .from("kb_ingestion_logs")
       .select("id, document_id, level, stage, message, url, meta, created_at")
@@ -449,10 +889,12 @@ export async function listDocumentLogs(
       .eq("workspace_id", ctx.workspaceId)
       .order("created_at", { ascending: true })
       .limit(300),
-    ctx.supabase.from("kb_collections").select("id, name").eq("id", doc.collection_id as string).maybeSingle(),
+    ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId),
+    ctx.supabase.from("kb_collection_documents").select("collection_id").eq("document_id", documentId),
   ]);
+  const colNames = new Map((cols ?? []).map((c) => [c.id as string, c.name as string]));
   return {
-    document: toDoc(doc, new Map(col ? [[col.id as string, col.name as string]] : [])),
+    document: toDoc(doc, colNames, new Map([[documentId, (links ?? []).map((l) => l.collection_id as string)]])),
     logs: (logs ?? []).map((l) => toLogDto(l as unknown as Row)),
   };
 }
@@ -472,17 +914,11 @@ export async function listWorkspaceKnowledgeLogs(
     logQuery = logQuery.order("created_at", { ascending: false }).limit(limit);
   }
 
-  const [logsRes, docsRes, colsRes] = await Promise.all([
-    logQuery,
-    ctx.supabase.from("kb_documents").select(DOC_COLUMNS).eq("workspace_id", ctx.workspaceId).order("created_at", { ascending: false }).limit(50),
-    ctx.supabase.from("kb_collections").select("id, name").eq("workspace_id", ctx.workspaceId),
-  ]);
+  const [logsRes, docs] = await Promise.all([logQuery, listDocuments(ctx)]);
   if (logsRes.error) throw new Error("Failed to load knowledge logs");
-  const colNames = new Map((colsRes.data ?? []).map((c) => [c.id as string, c.name as string]));
-  const docs = (docsRes.data ?? []).map((d) => toDoc(d as unknown as Row, colNames));
   const docNames = new Map(docs.map((d) => [d.id, d.name]));
   const rows = (logsRes.data ?? []).map((l) => toLogDto(l as unknown as Row, docNames));
-  if (!options.documentId) rows.reverse(); // chronological order for log console
+  if (!options.documentId) rows.reverse();
   return { logs: rows, documents: docs };
 }
 
@@ -497,11 +933,6 @@ export async function documentDownloadUrl(ctx: AuthContext, id: string): Promise
 }
 
 // ---------- indexing ----------
-/**
- * Reads a document (or crawls a URL / sitemap / subpages), splits it into chunks, stores them in Supabase and,
- * when Milvus is configured, embeds and upserts them. Streams structured progress & logs to `kb_ingestion_logs`.
- * Runs with the service role and never throws: the outcome is written to the document row.
- */
 export function processDocument(workspaceId: string, documentId: string): Promise<void> {
   return withUsageScope({ workspaceId, origin: "knowledge" }, () => processDocumentInner(workspaceId, documentId));
 }
@@ -606,15 +1037,23 @@ async function processDocumentInner(workspaceId: string, documentId: string): Pr
       );
     }
 
+    // Re-read current primary collection_id in case the user reassigned it while scraping was in progress!
+    const { data: latestDoc } = await admin
+      .from("kb_documents")
+      .select("collection_id")
+      .eq("id", documentId)
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    const activeCollectionId = (latestDoc?.collection_id as string | undefined) ?? (doc.collection_id as string);
+
     await log("info", "chunk", `Prepared ${chunkEntries.length} searchable chunk(s). Saving to database...`);
 
-    // Start clean so a retry never duplicates chunks.
     await deleteVectors("document_id", documentId).catch(() => undefined);
     await admin.from("kb_chunks").delete().eq("document_id", documentId);
     const rows = chunkEntries.map((entry, position) => ({
       id: crypto.randomUUID(),
       workspace_id: workspaceId,
-      collection_id: doc.collection_id as string,
+      collection_id: activeCollectionId,
       document_id: documentId,
       position,
       content: entry.content,
@@ -643,11 +1082,10 @@ async function processDocumentInner(workspaceId: string, documentId: string): Pr
           }
         }
         await ensureCollection(vectors[0]!.length);
-        await upsertVectors(rows.map((r, i) => ({ id: r.id, vector: vectors[i]!, workspace_id: workspaceId, collection_id: r.collection_id, document_id: documentId })));
+        await upsertVectors(rows.map((r, i) => ({ id: r.id, vector: vectors[i]!, workspace_id: workspaceId, collection_id: activeCollectionId, document_id: documentId })));
         vectorIndexed = true;
         await log("success", "embed", `Upserted ${rows.length} vector embedding(s) into Milvus.`);
       } catch (e) {
-        // Keep the document usable through keyword search and say what went wrong.
         note = `Searchable by keywords. Vector indexing failed: ${e instanceof ApiError ? e.message : "unexpected error"}`.slice(0, 480);
         await log("warn", "embed", note);
         console.error("[knowledge] vector indexing failed:", e instanceof Error ? e.message : "unknown");
@@ -669,7 +1107,9 @@ async function processDocumentInner(workspaceId: string, documentId: string): Pr
       ...(computedBytes !== undefined ? { size_bytes: computedBytes } : {}),
       ...(doc.kind === "url" ? { pages_total: pagesTotal, pages_scraped: pagesScraped, pages_failed: pagesFailed } : {}),
     });
-    await admin.from("kb_collections").update({ updated_at: new Date().toISOString() }).eq("id", doc.collection_id as string);
+    const { data: assignedLinks } = await admin.from("kb_collection_documents").select("collection_id").eq("document_id", documentId);
+    const colsToTouch = [...new Set([activeCollectionId, ...(assignedLinks ?? []).map((l) => l.collection_id as string)])];
+    await admin.from("kb_collections").update({ updated_at: new Date().toISOString() }).in("id", colsToTouch);
     await log(
       "success",
       "done",

@@ -83,20 +83,85 @@ export async function upsertVectors(rows: VectorRow[]): Promise<void> {
 /** Ids come from our own database (uuid), but they are still validated because they are placed inside a filter string. */
 const quote = (ids: string[]) => ids.filter((i) => UUID.test(i)).map((i) => `"${i}"`).join(", ");
 
-export async function searchVectors(vector: number[], workspaceId: string, collectionIds: string[], limit: number): Promise<VectorHit[]> {
+/**
+ * Searches vectors scoped to the workspace.
+ * When `documentIds` is provided (resolved from `kb_collection_documents`), filters by `document_id in [...]`
+ * so documents shared across multiple collections are found cleanly with a single vector copy.
+ */
+export async function searchVectors(
+  vector: number[],
+  workspaceId: string,
+  collectionIds: string[],
+  limit: number,
+  documentIds?: string[],
+): Promise<VectorHit[]> {
   const cfg = milvusConfig()!;
-  if (!UUID.test(workspaceId) || !quote(collectionIds)) return [];
+  if (!UUID.test(workspaceId)) return [];
+  const docList = documentIds ? quote(documentIds) : "";
+  const colList = quote(collectionIds);
+  if (documentIds && !docList) return [];
+  if (!documentIds && !colList) return [];
   const has = (await call("/v2/vectordb/collections/has", { collectionName: cfg.collection })).data as { has?: boolean } | undefined;
   if (!has?.has) return [];
+  const filter = docList
+    ? `workspace_id == "${workspaceId}" and document_id in [${docList}]`
+    : `workspace_id == "${workspaceId}" and collection_id in [${colList}]`;
   const r = await call("/v2/vectordb/entities/search", {
     collectionName: cfg.collection,
     data: [vector],
     annsField: "vector",
     limit,
-    filter: `workspace_id == "${workspaceId}" and collection_id in [${quote(collectionIds)}]`,
+    filter,
     outputFields: ["id"],
   });
   return ((r.data as { id?: string; distance?: number }[] | undefined) ?? []).filter((h) => typeof h.id === "string").map((h) => ({ id: h.id!, score: Number(h.distance ?? 0) }));
+}
+
+/**
+ * Updates `collection_id` on all Milvus vector rows belonging to a document in-place (query + upsert)
+ * without re-calling the embedding model. Keeps Milvus metadata 100% in sync with Supabase.
+ */
+export async function updateVectorsCollection(
+  workspaceId: string,
+  documentId: string,
+  newCollectionId: string,
+): Promise<{ updated: number }> {
+  const cfg = milvusConfig();
+  if (!cfg || !UUID.test(workspaceId) || !UUID.test(documentId) || !UUID.test(newCollectionId)) {
+    return { updated: 0 };
+  }
+  const has = (await call("/v2/vectordb/collections/has", { collectionName: cfg.collection })).data as { has?: boolean } | undefined;
+  if (!has?.has) return { updated: 0 };
+
+  const allRows: VectorRow[] = [];
+  const pageSize = 100;
+  for (let offset = 0; offset < 1000; offset += pageSize) {
+    const q = await call("/v2/vectordb/entities/query", {
+      collectionName: cfg.collection,
+      filter: `workspace_id == "${workspaceId}" and document_id == "${documentId}"`,
+      outputFields: ["id", "vector", "workspace_id", "collection_id", "document_id"],
+      limit: pageSize,
+      offset,
+    });
+    const batch = (q.data as Array<Partial<VectorRow>> | undefined) ?? [];
+    for (const r of batch) {
+      if (typeof r.id === "string" && Array.isArray(r.vector) && r.vector.length > 0) {
+        allRows.push({
+          id: r.id,
+          vector: r.vector,
+          workspace_id: workspaceId,
+          collection_id: newCollectionId,
+          document_id: documentId,
+        });
+      }
+    }
+    if (batch.length < pageSize) break;
+  }
+
+  if (allRows.length > 0) {
+    await upsertVectors(allRows);
+  }
+  return { updated: allRows.length };
 }
 
 /** Removes vectors by one of the scope columns. A missing collection means there is nothing to delete. */

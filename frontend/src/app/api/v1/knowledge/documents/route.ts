@@ -12,9 +12,22 @@ export const GET = route(async (req, _ctx, requestId) => {
   return ok(await listDocuments(ctx, collection ? uuid.parse(collection) : undefined), {}, 200, requestId);
 });
 
+function parseExtraCollectionIds(raw: FormDataEntryValue | null): string[] | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  let list: string[];
+  try {
+    const parsed = JSON.parse(raw);
+    list = Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  const valid = list.map((id) => uuid.parse(id));
+  return valid.length ? valid : undefined;
+}
+
 /**
- * multipart/form-data with `file` and `collectionId` uploads a file (PDF, Word, Excel, CSV, PPTX, TXT, MD, JSON, HTML);
- * JSON `{ collectionId, url, mode?, maxPages?, maxDepth?, samePathPrefix?, pathPrefix?, excludePatterns? }` scrapes a page, sitemap, or subpages.
+ * multipart/form-data with `file`, `collectionId` (and optional `collectionIds`) uploads a file;
+ * JSON `{ collectionId, collectionIds?, url, mode?, maxPages?, maxDepth?, samePathPrefix?, pathPrefix?, excludePatterns? }` scrapes a page, sitemap, or subpages.
  */
 export const POST = route(async (req, _ctx, requestId) => {
   const ctx = await requireAuth();
@@ -25,13 +38,16 @@ export const POST = route(async (req, _ctx, requestId) => {
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) throw Errors.invalid("Choose a file to upload.");
-    const doc = await createFileDocument(ctx, uuid.parse(form.get("collectionId")), file);
+    const primaryColId = uuid.parse(form.get("collectionId"));
+    const extraColIds = parseExtraCollectionIds(form.get("collectionIds"));
+    const doc = await createFileDocument(ctx, primaryColId, file, extraColIds);
     after(() => processDocument(ctx.workspaceId, doc.id));
     return ok(doc, {}, 201, requestId);
   }
   const input = urlDocumentInput.parse(await readJson(req));
   const doc = await createUrlDocument(ctx, input.collectionId, input.url, {
     mode: input.mode,
+    extraCollectionIds: input.collectionIds,
     config: {
       maxPages: input.maxPages,
       maxDepth: input.maxDepth,

@@ -1,7 +1,12 @@
 import { describe, it } from "node:test";
 import { strToU8, zipSync } from "fflate";
 import { expect } from "./expect";
-import { urlDocumentInput } from "../src/lib/validation/schemas";
+import {
+  collectionDocumentsInput,
+  collectionInput,
+  documentCollectionsInput,
+  urlDocumentInput,
+} from "../src/lib/validation/schemas";
 import { buildCitationSources, buildSystemPrompt, DEFAULT_TOOLS, type AgentConfig } from "../src/server/ai/agent";
 import {
   extractCitedIndices,
@@ -152,6 +157,7 @@ describe("extraction helpers", () => {
     expect(normalizePublicUrl("www.nseindia.in/all-reports").toString()).toBe("https://www.nseindia.in/all-reports");
     const parsedInput = urlDocumentInput.parse({
       collectionId: "f4c876fe-a98e-407e-a3f2-a130baf5ec3a",
+      collectionIds: ["f4c876fe-a98e-407e-a3f2-a130baf5ec3a", "a698bf2d-e7a6-403e-91ad-99e55f015a76"],
       url: "https://www.nseindia.in/all-reports",
       mode: "sitemap",
       maxPages: 20,
@@ -159,6 +165,16 @@ describe("extraction helpers", () => {
     });
     expect(parsedInput.mode).toBe("sitemap");
     expect(parsedInput.maxPages).toBe(20);
+    expect(parsedInput.collectionIds?.length).toBe(2);
+
+    const colCreate = collectionInput.parse({
+      name: "Market Research",
+      documentIds: ["9e1a28db-da6b-4731-b857-5c00e8445974"],
+    });
+    expect(colCreate.documentIds?.length).toBe(1);
+    expect(collectionDocumentsInput.parse({ documentIds: ["9e1a28db-da6b-4731-b857-5c00e8445974"] }).documentIds.length).toBe(1);
+    expect(documentCollectionsInput.parse({ collectionIds: ["f4c876fe-a98e-407e-a3f2-a130baf5ec3a"] }).collectionIds.length).toBe(1);
+    expect(() => documentCollectionsInput.parse({ collectionIds: [] })).toThrow();
   });
 });
 
