@@ -5,10 +5,9 @@ import {
   shouldDeliverNotification,
   type EmailNotificationKey,
 } from "@backend/lib/notifications";
-import { escapeHtml } from "@backend/lib/security/phishing";
 import { createAdminClient } from "@backend/lib/supabase/admin";
 import { sendEmail } from "@backend/server/email/mailer";
-import { emailFooterHtml } from "@backend/server/email/templates";
+import { notificationEmail } from "@backend/server/email/templates";
 import { logEvent } from "@backend/server/logger";
 import { getNotificationSettingsForUserId } from "@backend/server/services/notification-settings";
 
@@ -29,7 +28,7 @@ export interface NotifyInput {
   /** Optional structured JSON metadata stored alongside the notification. */
   metadata?: Record<string, unknown>;
   /** Optional custom email subject/HTML/tags (still gated by user notification preferences). */
-  emailPayload?: { subject: string; html: string; tags?: string[] };
+  emailPayload?: { subject: string; html: string; text?: string; tags?: string[] };
 }
 
 export interface NotifyResult {
@@ -107,38 +106,46 @@ export async function notify(a: NotifyInput): Promise<NotifyResult> {
     }
 
     if (decision.sendEmail) {
-      const { data: u } = await db.auth.admin.getUserById(a.userId);
+      const [{ data: u }, { data: ws }] = await Promise.all([
+        db.auth.admin.getUserById(a.userId),
+        db.from("workspaces").select("name").eq("id", a.workspaceId).maybeSingle(),
+      ]);
       const email = u.user?.email;
       if (email) {
+        const userMeta = (u.user?.user_metadata ?? {}) as { full_name?: string; name?: string };
+        const recipientName = userMeta.full_name?.trim() || userMeta.name?.trim() || undefined;
+        const workspaceName = typeof ws?.name === "string" ? ws.name : undefined;
         const appUrl = publicEnv().NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
         if (a.emailPayload) {
-          await sendEmail({
-            to: { email },
+          emailSent = await sendEmail({
+            to: { email, ...(recipientName ? { name: recipientName } : {}) },
             subject: a.emailPayload.subject,
             html: a.emailPayload.html,
+            ...(a.emailPayload.text ? { text: a.emailPayload.text } : {}),
             tags: a.emailPayload.tags ?? ["notification", a.kind],
           });
         } else {
-          const targetHref = `${appUrl}${actionUrl.startsWith("/") ? actionUrl : "/settings/notifications"}`;
-          await sendEmail({
-            to: { email },
-            subject: `[RelayNest] ${a.title}`,
-            html: `<div style="background:#08081A;padding:32px 16px;font-family:'Plus Jakarta Sans','Segoe UI',Arial,sans-serif;">
-              <div style="max-width:560px;margin:0 auto;padding:28px 32px;border-radius:18px;background:#131130;color:#F8F8FF;border:1px solid #2D2868;">
-                <p style="margin:0 0 8px;color:#A78BFA;font-weight:800;letter-spacing:0.3px;">RelayNest</p>
-                <h2 style="margin:0 0 12px;color:#F8F8FF;">${escapeHtml(a.title)}</h2>
-                <p style="margin:0 0 20px;color:#D2CFF0;line-height:1.6;">${escapeHtml(a.body ?? "")}</p>
-                <a href="${escapeHtml(targetHref)}" style="display:inline-block;padding:12px 22px;border-radius:12px;background:linear-gradient(135deg,#7C5CFF,#06B6D4);color:#ffffff;text-decoration:none;font-weight:700;">Open RelayNest</a>
-                <p style="margin:18px 0 0;font-size:12px;color:#9E9AC4;">Manage these alerts anytime in <a href="${escapeHtml(appUrl)}/settings/notifications" style="color:#A78BFA;text-decoration:none;">Notification settings</a>.</p>
-              </div>
-              <div style="max-width:560px;margin:20px auto 0;text-align:center;">
-                ${emailFooterHtml(appUrl)}
-              </div>
-            </div>`,
+          const rendered = notificationEmail({
+            kind: a.kind,
+            category: decision.category,
+            title: a.title,
+            body: a.body ?? null,
+            recipientEmail: email,
+            recipientName,
+            workspaceName,
+            actionUrl,
+            appUrl,
+            timezone: prefs.timezone,
+            metadata: a.metadata,
+          });
+          emailSent = await sendEmail({
+            to: { email, ...(recipientName ? { name: recipientName } : {}) },
+            subject: rendered.subject,
+            html: rendered.html,
+            text: rendered.text,
             tags: ["notification", a.kind],
           });
         }
-        emailSent = true;
       }
     }
 

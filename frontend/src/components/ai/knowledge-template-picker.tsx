@@ -108,17 +108,14 @@ export function KnowledgeTemplateModal({
           Ready-to-customize Markdown reference sources formatted for accurate Telegram answers and inline citations. Load one into the editor, replace {"{{Placeholders}}"}, and click Add source.
         </p>
 
-        <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-          <div className="flex-1">
-            <Input
-              aria-label="Search knowledge templates"
-              icon={<Search />}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search refund policy, shipping, pricing, FAQ, rules, API..."
-              className="h-9 text-xs"
-            />
-          </div>
+        <div className="flex flex-col gap-2.5">
+          <Input
+            aria-label="Search knowledge templates"
+            icon={<Search />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search refund policy, shipping, pricing, FAQ, rules, API..."
+          />
           <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Knowledge template categories">
             {categories.map((c) => (
               <button

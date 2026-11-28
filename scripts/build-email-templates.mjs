@@ -1,5 +1,5 @@
 // Generates all Supabase Auth & account lifecycle HTML email templates in supabase/templates/*.html
-// using one synced Aurora dark theme optimized for Outlook (Windows VML/MSO), Gmail, Apple Mail, and Yahoo Mail.
+// using one synced Aurora dark theme optimized for Outlook (Windows VML/MSO & Outlook Web), Gmail, Apple Mail, and Yahoo Mail.
 // Run: pnpm emails  (or: EMAIL_ASSET_URL=https://app.yourdomain.com node scripts/build-email-templates.mjs)
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -7,15 +7,17 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(rootDir, "supabase", "templates");
+const DEFAULT_PUBLIC_LOGO =
+  "https://crqrisksouijdrvlnekp.supabase.co/storage/v1/object/public/brand/logo-icon-128.png";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim().replace(/\/$/, "");
 const customAssetBase = process.env.EMAIL_ASSET_URL?.trim().replace(/\/$/, "");
 const LOGO =
   process.env.EMAIL_LOGO_URL?.trim() ||
   (customAssetBase
     ? `${customAssetBase}/brand/logo-icon-128.png`
-    : supabaseUrl
+    : supabaseUrl && /^https:\/\//i.test(supabaseUrl)
       ? `${supabaseUrl}/storage/v1/object/public/brand/logo-icon-128.png`
-      : "{{ .SiteURL }}/brand/logo-icon-128.png");
+      : DEFAULT_PUBLIC_LOGO);
 const FONT = "'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif";
 const MSO_FONT = "'Segoe UI',Helvetica,Arial,sans-serif";
 const SUPPORT = "ishanrock1234@gmail.com";
@@ -23,7 +25,7 @@ const GITHUB = "https://github.com/Ishan96Dev/relaynest";
 
 const badgeChip = (label) => `                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 0 14px;">
                       <tr>
-                        <td bgcolor="#1F1B4D" style="padding:4px 12px;border-radius:999px;background-color:#1F1B4D;border:1px solid #4B3FA8;font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#C4B5FD;line-height:16px;mso-line-height-rule:exactly;">
+                        <td bgcolor="#1F1B4D" style="padding:5px 12px;border-radius:999px;background-color:#1F1B4D;border:1px solid #4B3FA8;font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#C4B5FD;line-height:16px;mso-line-height-rule:exactly;">
                           ${label}
                         </td>
                       </tr>
@@ -32,11 +34,32 @@ const badgeChip = (label) => `                    <table role="presentation" cel
 const p = (text) =>
   `                    <p class="rn-text" style="margin:0 0 14px;font-family:${FONT};font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D2CFF0;">${text}</p>`;
 
+const detailsTable = (title, rows) => {
+  const trs = rows
+    .map(
+      ([label, val], idx) => `                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;${idx > 0 ? "border-top:1px solid #1E1A4A;" : ""}font-family:${FONT};font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">${label}</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;${idx > 0 ? "border-top:1px solid #1E1A4A;" : ""}font-family:${FONT};font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;">${val}</td>
+                        </tr>`,
+    )
+    .join("\n");
+  return `              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:18px 0 6px;">
+                <tr>
+                  <td bgcolor="#0B0A22" style="padding:16px 20px;background-color:#0B0A22;border:1px solid #29245E;border-radius:14px;">
+                    <div style="margin:0 0 8px;font-family:${FONT};font-size:11px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;line-height:16px;mso-line-height-rule:exactly;color:#A78BFA;">${title}</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+${trs}
+                    </table>
+                  </td>
+                </tr>
+              </table>`;
+};
+
 const button = (label, href) => `              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:26px 0 20px;">
                 <tr>
                   <td align="center">
                     <!--[if mso]>
-                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${href}" style="height:48px;v-text-anchor:middle;width:280px;" arcsize="25%" stroke="f" fillcolor="#6C47FF">
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${href}" style="height:48px;v-text-anchor:middle;width:290px;" arcsize="25%" stroke="f" fillcolor="#6C47FF">
                       <w:anchorlock/>
                       <center style="color:#ffffff;font-family:${MSO_FONT};font-size:15px;font-weight:bold;">${label}</center>
                     </v:roundrect>
@@ -45,7 +68,7 @@ const button = (label, href) => `              <table role="presentation" cellpa
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
                       <tr>
                         <td class="rn-btn-cell" align="center" bgcolor="#6C47FF" style="border-radius:12px;background-color:#6C47FF;background-image:linear-gradient(135deg,#7C5CFF 0%,#5B34F0 55%,#06B6D4 100%);">
-                          <a href="${href}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 36px;font-family:${FONT};font-size:15px;font-weight:700;line-height:20px;mso-line-height-rule:exactly;color:#ffffff;text-decoration:none;border-radius:12px;">${label}</a>
+                          <a href="${href}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 36px;font-family:${FONT};font-size:15px;font-weight:700;line-height:20px;mso-line-height-rule:exactly;color:#ffffff;background-color:#6C47FF;background-image:linear-gradient(135deg,#7C5CFF 0%,#5B34F0 55%,#06B6D4 100%);border:1px solid #7C5CFF;text-decoration:none;border-radius:12px;">${label}</a>
                         </td>
                       </tr>
                     </table>
@@ -73,9 +96,9 @@ const code = (value) => `              <table role="presentation" cellpadding="0
                 </tr>
               </table>`;
 
-const notice = (text) => `              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:22px 0 0;">
+const notice = (text, accent = "#6C47FF") => `              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:22px 0 0;">
                 <tr>
-                  <td class="rn-notice" bgcolor="#0D0C26" style="padding:14px 18px;background-color:#0D0C26;border:1px solid #29245E;border-left:4px solid #6C47FF;border-radius:10px;font-family:${FONT};font-size:13px;line-height:21px;mso-line-height-rule:exactly;color:#C9C6EC;">
+                  <td class="rn-notice" bgcolor="#0D0C26" style="padding:14px 18px;background-color:#0D0C26;border:1px solid #29245E;border-left:4px solid ${accent};border-radius:10px;font-family:${FONT};font-size:13px;line-height:21px;mso-line-height-rule:exactly;color:#C9C6EC;">
                     ${text}
                   </td>
                 </tr>
@@ -127,6 +150,9 @@ function layout({ preheader, badge, title, body }) {
       .rn-wrap { width:100% !important; max-width:100% !important; }
       .rn-outer { padding:24px 12px 28px !important; }
       .rn-inner { padding:26px 20px 28px !important; }
+      .rn-kv-key, .rn-kv-val { display:block !important; width:100% !important; padding-left:0 !important; padding-right:0 !important; }
+      .rn-kv-key { padding-bottom:2px !important; }
+      .rn-kv-val { padding-top:0 !important; }
       .rn-btn-cell, .rn-btn-cell a { display:block !important; width:100% !important; box-sizing:border-box !important; text-align:center !important; }
     }
   </style>
@@ -144,17 +170,19 @@ function layout({ preheader, badge, title, body }) {
         <table role="presentation" class="rn-wrap" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;max-width:580px;margin:0 auto;">
           <tr>
             <td align="center" style="padding:0 0 24px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
-                <tr>
-                  <td valign="middle" style="padding-right:12px;vertical-align:middle;">
-                    <img src="${LOGO}" width="44" height="44" border="0" alt="RelayNest logo" style="display:block;width:44px;height:44px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:12px;">
-                  </td>
-                  <td valign="middle" style="vertical-align:middle;text-align:left;">
-                    <div style="font-family:${FONT};font-size:24px;font-weight:800;line-height:26px;mso-line-height-rule:exactly;letter-spacing:-0.4px;color:#F8F8FF;">RelayNest</div>
-                    <div style="font-family:${FONT};font-size:11px;font-weight:600;line-height:15px;mso-line-height-rule:exactly;letter-spacing:0.4px;text-transform:uppercase;color:#A78BFA;">Telegram Bot &amp; AI Platform</div>
-                  </td>
-                </tr>
-              </table>
+              <a href="{{ .SiteURL }}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+                  <tr>
+                    <td valign="middle" style="padding-right:14px;vertical-align:middle;">
+                      <img src="${LOGO}" width="48" height="48" border="0" alt="RelayNest logo" style="display:block;width:48px;height:48px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:12px;background-color:#131130;color:#A78BFA;font-family:${FONT};font-size:12px;font-weight:800;text-align:center;line-height:48px;">
+                    </td>
+                    <td valign="middle" style="vertical-align:middle;text-align:left;">
+                      <div style="font-family:${FONT};font-size:24px;font-weight:800;line-height:26px;mso-line-height-rule:exactly;letter-spacing:-0.4px;color:#F8F8FF;">RelayNest</div>
+                      <div style="font-family:${FONT};font-size:11px;font-weight:600;line-height:15px;mso-line-height-rule:exactly;letter-spacing:0.4px;text-transform:uppercase;color:#A78BFA;">Telegram Bot &amp; AI Platform</div>
+                    </td>
+                  </tr>
+                </table>
+              </a>
             </td>
           </tr>
           <tr>
@@ -208,10 +236,15 @@ const resetPasswordTemplate = layout({
   badge: "Reset Password",
   title: "Reset your password",
   body: [
-    p('We received a request to reset the password for <strong style="color:#F8F8FF;">{{ .Email }}</strong>. Choose a new password using the button below.'),
+    p('We received a request to reset the password for your RelayNest account (<strong style="color:#F8F8FF;">{{ .Email }}</strong>). Use the secure button below to choose a new strong password.'),
+    detailsTable("Recovery Request", [
+      ["Account", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+      ["Link Policy", "Single-use recovery token (expires shortly)"],
+      ["Current Password", "Remains unchanged until you submit a new password"],
+    ]),
     button("Reset password", "{{ .ConfirmationURL }}"),
     fallbackLink("{{ .ConfirmationURL }}"),
-    notice("If you did not request a reset, you can safely ignore this email. Your password stays the same."),
+    notice("If you did not request a password reset, you can safely ignore this email. Your existing password and active workspace bots remain untouched."),
   ].join("\n"),
 });
 
@@ -221,7 +254,12 @@ const templates = {
     badge: "Account Verification",
     title: "Confirm your email address",
     body: [
-      p('Welcome to RelayNest! Confirm that <strong style="color:#F8F8FF;">{{ .Email }}</strong> is your email address to activate your account and start building Telegram bots.'),
+      p('Welcome to RelayNest! Confirm that <strong style="color:#F8F8FF;">{{ .Email }}</strong> belongs to you so we can provision your workspace and unlock no-code Telegram bots, AI agents, and visual automations.'),
+      detailsTable("Account Summary", [
+        ["Email Address", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Workspace Access", "Telegram Bots, AI Agents, Knowledge Base &amp; Workflows"],
+        ["Verification", "One-click activation link (single-use)"],
+      ]),
       button("Confirm email address", "{{ .ConfirmationURL }}"),
       fallbackLink("{{ .ConfirmationURL }}"),
       notice(`If you did not create a RelayNest account, you can safely ignore this email or contact us at <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`),
@@ -232,8 +270,13 @@ const templates = {
     badge: "Workspace Invitation",
     title: "You've been invited to RelayNest",
     body: [
-      p("You have been invited to create an account on RelayNest and collaborate on Telegram bots and automations."),
-      p("Accept the invitation to choose your password and join the workspace."),
+      p("A teammate invited you to join their workspace on RelayNest—the no-code Telegram bot builder, AI agent studio, and workflow automation platform."),
+      p("Accept the invitation below to set your account password and start collaborating on shared bots, knowledge collections, and automations."),
+      detailsTable("Invitation Details", [
+        ["Invited Email", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Capabilities", "Shared Telegram bots, AI agents, workflows &amp; execution logs"],
+        ["Onboarding", "Set password &amp; join workspace immediately"],
+      ]),
       button("Accept invitation", "{{ .ConfirmationURL }}"),
       fallbackLink("{{ .ConfirmationURL }}"),
       notice(`Not expecting this invitation? Ignore this email or contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`),
@@ -244,12 +287,17 @@ const templates = {
     badge: "Magic Sign-In",
     title: "Sign in to RelayNest",
     body: [
-      p('Use the button below to sign in as <strong style="color:#F8F8FF;">{{ .Email }}</strong>. The link works once and expires soon.'),
+      p('Use the secure button below to sign directly in to RelayNest as <strong style="color:#F8F8FF;">{{ .Email }}</strong>. For your protection, this link can only be used once and expires shortly.'),
+      detailsTable("Sign-In Request", [
+        ["Account", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Method", "Passwordless Magic Link / One-Time Code"],
+        ["Validity", "Single-use session link"],
+      ]),
       button("Sign in to RelayNest", "{{ .ConfirmationURL }}"),
-      p("Or enter this one-time code on the sign-in screen:"),
+      p("Prefer entering a verification code? Type this one-time passcode on the sign-in screen:"),
       code("{{ .Token }}"),
       fallbackLink("{{ .ConfirmationURL }}"),
-      notice("If you did not request this sign-in link, you can safely ignore this email."),
+      notice("If you did not request this sign-in link, do not forward this email—you can safely ignore it.", "#F59E0B"),
     ].join("\n"),
   }),
   email_change: layout({
@@ -257,10 +305,15 @@ const templates = {
     badge: "Email Update",
     title: "Confirm your new email address",
     body: [
-      p('You asked to change the email address on your RelayNest account from <strong style="color:#F8F8FF;">{{ .Email }}</strong> to <strong style="color:#22D3EE;">{{ .NewEmail }}</strong>.'),
+      p('We received a request to update the login email address on your RelayNest account from <strong style="color:#F8F8FF;">{{ .Email }}</strong> to <strong style="color:#22D3EE;">{{ .NewEmail }}</strong>.'),
+      detailsTable("Email Change Request", [
+        ["Current Email", "{{ .Email }}"],
+        ["New Email", '<span style="color:#22D3EE;">{{ .NewEmail }}</span>'],
+        ["Status", "Pending your confirmation"],
+      ]),
       button("Confirm new email address", "{{ .ConfirmationURL }}"),
       fallbackLink("{{ .ConfirmationURL }}"),
-      notice(`If you did not request this change, ignore this email and contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a> immediately.`),
+      notice(`If you did not request this change, do not click the button and contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a> immediately.`, "#EF4444"),
     ].join("\n"),
   }),
   recovery: resetPasswordTemplate,
@@ -270,9 +323,14 @@ const templates = {
     badge: "Re-Authentication",
     title: "Confirm it's you",
     body: [
-      p("Enter this verification code to confirm deleting your account or completing a sensitive security action in RelayNest. The code expires shortly."),
+      p("Enter the 6-digit security verification code below to confirm a sensitive account action in RelayNest (such as deleting an account, rotating credentials, or updating security settings)."),
+      detailsTable("Security Check", [
+        ["Account", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Verification Type", "Sensitive Action Step-Up Code"],
+        ["Expiry", "Expires in a few minutes · Never share this code"],
+      ]),
       code("{{ .Token }}"),
-      notice(`Did not initiate this check? Do not share this code and contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a> right away.`),
+      notice(`Did not initiate this check? Do not share this code and contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a> right away.`, "#EF4444"),
     ].join("\n"),
   }),
   password_changed: layout({
@@ -280,8 +338,13 @@ const templates = {
     badge: "Security Notification",
     title: "Your password was changed",
     body: [
-      p('The password for <strong style="color:#F8F8FF;">{{ .Email }}</strong> was just updated. You can continue using RelayNest as usual.'),
-      notice(`If you did not make this change, reset your password immediately and contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`),
+      p('This is an automated security confirmation that the login password for <strong style="color:#F8F8FF;">{{ .Email }}</strong> was just updated.'),
+      detailsTable("Security Event", [
+        ["Account", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Action", "Account Password Updated"],
+        ["Workspace Impact", "Bots, encrypted tokens &amp; automations remain active"],
+      ]),
+      notice(`If you did not make this change, reset your password immediately and contact <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`, "#EF4444"),
       button("Reset password", "{{ .SiteURL }}/forgot-password"),
     ].join("\n"),
   }),
@@ -290,8 +353,13 @@ const templates = {
     badge: "Security Notification",
     title: "Your email address was changed",
     body: [
-      p('Your RelayNest login email address was changed from <strong style="color:#F8F8FF;">{{ .OldEmail }}</strong> to <strong style="color:#22D3EE;">{{ .Email }}</strong>.'),
-      notice(`If you did not authorize this change, contact Help &amp; Support immediately at <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`),
+      p('The primary login email address on your RelayNest account has been updated from <strong style="color:#F8F8FF;">{{ .OldEmail }}</strong> to <strong style="color:#22D3EE;">{{ .Email }}</strong>. Future sign-ins and security alerts will use the new address.'),
+      detailsTable("Updated Login Details", [
+        ["Previous Email", "{{ .OldEmail }}"],
+        ["Active Email", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Status", "Confirmed &amp; Active"],
+      ]),
+      notice(`If you did not authorize this change, contact Help &amp; Support immediately at <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`, "#EF4444"),
     ].join("\n"),
   }),
   account_deleted: layout({
@@ -300,8 +368,13 @@ const templates = {
     title: "Your RelayNest account has been deleted",
     body: [
       p('This confirms that your RelayNest account for <strong style="color:#F8F8FF;">{{ .Email }}</strong> has been permanently deleted.'),
-      p("All owned workspaces, Telegram bot connections, encrypted tokens, API keys, automation workflows, and uploaded files have been permanently removed from our servers."),
-      notice(`If you did not authorize this deletion, contact Help &amp; Support immediately at <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`),
+      p("All owned workspaces, Telegram bot connections, encrypted tokens, API keys, automation workflows, knowledge base collections, and uploaded files have been permanently removed from our servers."),
+      detailsTable("Deletion Summary", [
+        ["Deleted Account", '<span style="color:#22D3EE;">{{ .Email }}</span>'],
+        ["Status", '<span style="color:#F87171;font-weight:700;">Permanently Erased</span>'],
+        ["Purged Scope", "Workspaces, bots, webhooks, encrypted keys &amp; storage"],
+      ]),
+      notice(`If you did not authorize this deletion, contact Help &amp; Support immediately at <a href="mailto:${SUPPORT}" style="color:#22D3EE;font-weight:700;text-decoration:none;">${SUPPORT}</a>.`, "#EF4444"),
       button("Create New Account", "{{ .SiteURL }}/signup"),
     ].join("\n"),
   }),

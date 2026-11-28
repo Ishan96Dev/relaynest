@@ -4,6 +4,9 @@
   "main": "cloudflare/worker.ts",
   "compatibility_date": "2026-11-23",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "alias": {
+    "sharp": "./cloudflare/sharp-shim.ts"
+  },
   "keep_vars": true,
   "assets": {
     "directory": "frontend/.open-next/assets",
@@ -18,6 +21,9 @@
       "service": "relaynest"
     }
   ],
+  "ai": {
+    "binding": "AI"
+  },
   "durable_objects": {
     "bindings": [
       {

@@ -81,6 +81,8 @@ describe("agent templates", () => {
   });
 
   it("are suggested from the catalog for image and vision models", () => {
+    expect(templateForModel("flux-3-image-klein")?.id).toBe("image-studio");
+    expect(templateForModel("flux-2-klein-4b")?.id).toBe("image-studio");
     expect(templateForModel("flux-1-schnell")?.id).toBe("image-studio");
     expect(templateForModel("paligemma")?.id).toBe("photo-describer");
   });

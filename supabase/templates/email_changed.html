@@ -28,6 +28,9 @@
       .rn-wrap { width:100% !important; max-width:100% !important; }
       .rn-outer { padding:24px 12px 28px !important; }
       .rn-inner { padding:26px 20px 28px !important; }
+      .rn-kv-key, .rn-kv-val { display:block !important; width:100% !important; padding-left:0 !important; padding-right:0 !important; }
+      .rn-kv-key { padding-bottom:2px !important; }
+      .rn-kv-val { padding-top:0 !important; }
       .rn-btn-cell, .rn-btn-cell a { display:block !important; width:100% !important; box-sizing:border-box !important; text-align:center !important; }
     }
   </style>
@@ -45,17 +48,19 @@
         <table role="presentation" class="rn-wrap" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;max-width:580px;margin:0 auto;">
           <tr>
             <td align="center" style="padding:0 0 24px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
-                <tr>
-                  <td valign="middle" style="padding-right:12px;vertical-align:middle;">
-                    <img src="https://crqrisksouijdrvlnekp.supabase.co/storage/v1/object/public/brand/logo-icon-128.png" width="44" height="44" border="0" alt="RelayNest logo" style="display:block;width:44px;height:44px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:12px;">
-                  </td>
-                  <td valign="middle" style="vertical-align:middle;text-align:left;">
-                    <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:24px;font-weight:800;line-height:26px;mso-line-height-rule:exactly;letter-spacing:-0.4px;color:#F8F8FF;">RelayNest</div>
-                    <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;line-height:15px;mso-line-height-rule:exactly;letter-spacing:0.4px;text-transform:uppercase;color:#A78BFA;">Telegram Bot &amp; AI Platform</div>
-                  </td>
-                </tr>
-              </table>
+              <a href="{{ .SiteURL }}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+                  <tr>
+                    <td valign="middle" style="padding-right:14px;vertical-align:middle;">
+                      <img src="https://crqrisksouijdrvlnekp.supabase.co/storage/v1/object/public/brand/logo-icon-128.png" width="48" height="48" border="0" alt="RelayNest logo" style="display:block;width:48px;height:48px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:12px;background-color:#131130;color:#A78BFA;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:800;text-align:center;line-height:48px;">
+                    </td>
+                    <td valign="middle" style="vertical-align:middle;text-align:left;">
+                      <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:24px;font-weight:800;line-height:26px;mso-line-height-rule:exactly;letter-spacing:-0.4px;color:#F8F8FF;">RelayNest</div>
+                      <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;line-height:15px;mso-line-height-rule:exactly;letter-spacing:0.4px;text-transform:uppercase;color:#A78BFA;">Telegram Bot &amp; AI Platform</div>
+                    </td>
+                  </tr>
+                </table>
+              </a>
             </td>
           </tr>
           <tr>
@@ -68,16 +73,37 @@
                   <td class="rn-inner" bgcolor="#131130" style="padding:36px 38px 38px;background-color:#131130;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;">
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 0 14px;">
                       <tr>
-                        <td bgcolor="#1F1B4D" style="padding:4px 12px;border-radius:999px;background-color:#1F1B4D;border:1px solid #4B3FA8;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#C4B5FD;line-height:16px;mso-line-height-rule:exactly;">
+                        <td bgcolor="#1F1B4D" style="padding:5px 12px;border-radius:999px;background-color:#1F1B4D;border:1px solid #4B3FA8;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#C4B5FD;line-height:16px;mso-line-height-rule:exactly;">
                           Security Notification
                         </td>
                       </tr>
                     </table>
                     <h1 style="margin:0 0 14px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:25px;line-height:32px;mso-line-height-rule:exactly;font-weight:800;letter-spacing:-0.4px;color:#F8F8FF;">Your email address was changed</h1>
-                    <p class="rn-text" style="margin:0 0 14px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D2CFF0;">Your RelayNest login email address was changed from <strong style="color:#F8F8FF;">{{ .OldEmail }}</strong> to <strong style="color:#22D3EE;">{{ .Email }}</strong>.</p>
+                    <p class="rn-text" style="margin:0 0 14px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D2CFF0;">The primary login email address on your RelayNest account has been updated from <strong style="color:#F8F8FF;">{{ .OldEmail }}</strong> to <strong style="color:#22D3EE;">{{ .Email }}</strong>. Future sign-ins and security alerts will use the new address.</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:18px 0 6px;">
+                <tr>
+                  <td bgcolor="#0B0A22" style="padding:16px 20px;background-color:#0B0A22;border:1px solid #29245E;border-radius:14px;">
+                    <div style="margin:0 0 8px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;line-height:16px;mso-line-height-rule:exactly;color:#A78BFA;">Updated Login Details</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">Previous Email</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;">{{ .OldEmail }}</td>
+                        </tr>
+                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">Active Email</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;"><span style="color:#22D3EE;">{{ .Email }}</span></td>
+                        </tr>
+                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">Status</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;">Confirmed &amp; Active</td>
+                        </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:22px 0 0;">
                 <tr>
-                  <td class="rn-notice" bgcolor="#0D0C26" style="padding:14px 18px;background-color:#0D0C26;border:1px solid #29245E;border-left:4px solid #6C47FF;border-radius:10px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:21px;mso-line-height-rule:exactly;color:#C9C6EC;">
+                  <td class="rn-notice" bgcolor="#0D0C26" style="padding:14px 18px;background-color:#0D0C26;border:1px solid #29245E;border-left:4px solid #EF4444;border-radius:10px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:21px;mso-line-height-rule:exactly;color:#C9C6EC;">
                     If you did not authorize this change, contact Help &amp; Support immediately at <a href="mailto:ishanrock1234@gmail.com" style="color:#22D3EE;font-weight:700;text-decoration:none;">ishanrock1234@gmail.com</a>.
                   </td>
                 </tr>

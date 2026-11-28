@@ -15,6 +15,7 @@ import {
 import {
   base64ToBytes,
   cleanRawImagePrompt,
+  generateImage,
   hasImageFilterRisk,
   isFilteredOrBlankImage,
   pickImageDimensions,
@@ -22,7 +23,8 @@ import {
   stripThinkTags,
   ThinkStreamParser,
 } from "../src/server/ai/provider";
-import { resolveModelFromDb } from "../src/server/services/ai-models";
+import { __setTestCloudflareBindings } from "../src/server/cloudflare/bindings";
+import { clearModelRegistryCache, getDbDefaultImageModel, getDbImageModels, resolveModelFromDb } from "../src/server/services/ai-models";
 import { diffAiAgentUpdate, type AiAgentDto } from "../src/server/services/ai-agents";
 import { updateAiAgentInput, updateBotInput } from "../src/lib/validation/schemas";
 
@@ -87,10 +89,52 @@ describe("model execution", () => {
     const resolved = await resolveModelFromDb({ slug: "gemma-4-31b-it", source: "nvidia", apiModelId: "google/gemma-4-31b-it" });
     expect(resolved.model.slug).toBe("nemotron-3-5-super-vl-120b-a12b");
     expect(resolved.provider.chatBaseUrl).toContain("integrate.api.nvidia.com");
+
+    // Legacy FLUX.1 Schnell and Cosmos3 Nano transparently route to active FLUX 3 Image Klein, backed by FLUX.2 Klein 4B.
+    expect(by("flux-3-image-klein").isActive).toBe(true);
+    expect(by("flux-2-klein-4b").isActive).toBe(true);
+    expect(by("flux-1-schnell").isActive).toBe(false);
+    expect(by("cosmos3-nano").isActive).toBe(false);
+    const resolvedFlux1 = await resolveModelFromDb({ slug: "flux-1-schnell", source: "nvidia", apiModelId: "black-forest-labs/flux.1-schnell" });
+    expect(resolvedFlux1.model.slug).toBe("flux-3-image-klein");
+    const activeImg = await getDbImageModels();
+    expect(activeImg.map((m) => m.slug)).toEqual(["flux-3-image-klein", "flux-2-klein-4b"]);
+    expect((await getDbDefaultImageModel())?.slug).toBe("flux-3-image-klein");
+
     expect(stripThinkTags("<think>internal plan</think>\nFinal answer.")).toBe("Final answer.");
     expect(sniffImageMime("iVBORw0KGgo")).toEqual({ mime: "image/png", ext: "png" });
     expect(sniffImageMime("/9j/4AAQ")).toEqual({ mime: "image/jpeg", ext: "jpg" });
     expect(base64ToBytes("SGk=").length).toBe(2);
+  });
+
+  it("recovers via Cloudflare Workers AI edge FLUX when upstream image API key is absent or unavailable", async () => {
+    clearModelRegistryCache();
+    const prevKey = process.env.NVIDIA_API_KEY;
+    delete process.env.NVIDIA_API_KEY;
+    const fakeJpegBase64 = "/9j/" + "A".repeat(18_000);
+    const aiCalls: Array<{ model: string; inputs: Record<string, unknown> }> = [];
+    __setTestCloudflareBindings({
+      AI: {
+        async run(model, inputs) {
+          aiCalls.push({ model, inputs });
+          return { image: fakeJpegBase64 };
+        },
+      },
+    });
+    try {
+      const res = await generateImage(
+        { slug: "flux-1-schnell", source: "nvidia", apiModelId: "black-forest-labs/flux.1-schnell" },
+        "a red fox in snow",
+        { maxBudgetMs: 15_000, attemptTimeoutMs: 6_000 },
+      );
+      expect(res.imageBase64).toBe(fakeJpegBase64);
+      expect(res.usedFallback).toBe(true);
+      expect(res.modelUsed).toBe("@cf/black-forest-labs/flux-1-schnell");
+      expect(aiCalls.length).toBe(1);
+    } finally {
+      __setTestCloudflareBindings(undefined);
+      if (prevKey !== undefined) process.env.NVIDIA_API_KEY = prevKey;
+    }
   });
 
   it("guards against CONTENT_FILTERED black frames, cleans image prompts, and picks aspect dimensions", () => {

@@ -98,6 +98,12 @@ export const POST = route(async (req, _ctx, requestId) =>
     const body = postInput.parse(await readJson(req));
     if ("event" in body) {
       const e = EVENTS[body.event];
+      const ip =
+        req.headers.get("cf-connecting-ip")?.trim() ||
+        req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+        req.headers.get("x-real-ip")?.trim() ||
+        undefined;
+      const userAgent = req.headers.get("user-agent")?.slice(0, 240) || undefined;
       const result = await notify({
         workspaceId: ctx.workspaceId,
         userId: ctx.userId,
@@ -107,6 +113,11 @@ export const POST = route(async (req, _ctx, requestId) =>
         emailKey: e.emailKey,
         actionUrl: e.actionUrl,
         dedupeHours: body.event === "login_detected" ? 1 : 0.02,
+        metadata: {
+          ...(body.event === "login_detected" ? { method: "password" } : {}),
+          ...(ip ? { ip } : {}),
+          ...(userAgent ? { userAgent } : {}),
+        },
       });
       return ok({ done: true, delivered: result.inapp || result.email, ...result }, {}, 200, requestId);
     }

@@ -139,21 +139,18 @@ export function ResponseTemplateModal({
             : "Natural welcome greetings and calm outage fallback messages crafted for AI-powered Telegram agents."}
         </p>
 
-        <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-          <div className="flex-1">
-            <Input
-              aria-label="Search response templates"
-              icon={<Search />}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={
-                scope === "standard"
-                  ? "Search support, FAQ, community, store, booking, alerts..."
-                  : "Search support, FAQ, sales, community, tutor, studio..."
-              }
-              className="h-9 text-xs"
-            />
-          </div>
+        <div className="flex flex-col gap-2.5">
+          <Input
+            aria-label="Search response templates"
+            icon={<Search />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={
+              scope === "standard"
+                ? "Search support, FAQ, community, store, booking, alerts..."
+                : "Search support, FAQ, sales, community, tutor, studio..."
+            }
+          />
           <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Response template categories">
             {categories.map((c) => (
               <button

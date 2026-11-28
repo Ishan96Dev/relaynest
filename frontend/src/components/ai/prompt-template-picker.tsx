@@ -92,17 +92,14 @@ export function PromptTemplateModal({
             : "Mobile-first Telegram agent prompts built for scannable replies, Knowledge Base grounding, safe boundaries, and human escalation."}
         </p>
 
-        <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-          <div className="flex-1">
-            <Input
-              aria-label="Search prompt templates"
-              icon={<Search />}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={scope === "playground" ? "Search coding, research, SQL, copywriting, JSON..." : "Search support, sales, FAQ, community, booking..."}
-              className="h-9 text-xs"
-            />
-          </div>
+        <div className="flex flex-col gap-2.5">
+          <Input
+            aria-label="Search prompt templates"
+            icon={<Search />}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={scope === "playground" ? "Search coding, research, SQL, copywriting, JSON..." : "Search support, sales, FAQ, community, booking..."}
+          />
           <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Template categories">
             {categories.map((c) => (
               <button

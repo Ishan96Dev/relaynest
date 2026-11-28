@@ -613,13 +613,13 @@ You are an Indian Agriculture & Mandi Commodity Research Agent serving agri-trad
     temperature: 0.5, maxTokens: 1024, memoryTurns: 10,
   },
   {
-    id: "image-studio", name: "Image Studio", tagline: "Draws pictures on command with FLUX.1 Schnell.", category: "Entertainment", language: "English",
+    id: "image-studio", name: "Image Studio", tagline: "Draws pictures on command with FLUX 3 Image Klein.", category: "Entertainment", language: "English",
     description: "Creates images from your text. Send /imagine followed by what you want to see.",
     instructions: "You are a friendly creative assistant. Help people write better image descriptions. When someone asks for a picture, tell them to use /imagine followed by a description, and suggest subject, style, lighting and mood. Keep answers short.",
     welcomeMessage: "Hi! I draw pictures. Try: /imagine a red fox in a snowy forest, watercolor style",
     fallbackMessage: "Sorry, I couldn't make that picture. Please try a different description.",
     temperature: 0.7, maxTokens: 1024, memoryTurns: 6,
-    modelSlug: "nemotron-3-5-lightning-30b-a3b", imageModelSlug: "flux-1-schnell", matchesModels: ["flux-1-schnell", "cosmos3-nano"],
+    modelSlug: "nemotron-3-5-lightning-30b-a3b", imageModelSlug: "flux-3-image-klein", matchesModels: ["flux-3-image-klein", "flux-2-klein-4b", "flux-1-schnell", "cosmos3-nano"],
     commands: [
       cmd("imagine", "Generate an image from a description", "image"),
       cmd("logo", "Design a simple logo", "image", "A clean, minimalist vector logo of {input}, flat design, centered, white background"),
@@ -686,7 +686,7 @@ You are an Indian Agriculture & Mandi Commodity Research Agent serving agri-trad
     welcomeMessage: "Hi! Try /post, /email or /cover for a matching picture.",
     fallbackMessage: "Sorry, I couldn't write that right now.",
     temperature: 0.8, maxTokens: 1024, memoryTurns: 6,
-    modelSlug: "nemotron-3-5-lightning-30b-a3b", imageModelSlug: "flux-1-schnell", matchesModels: [],
+    modelSlug: "nemotron-3-5-lightning-30b-a3b", imageModelSlug: "flux-3-image-klein", matchesModels: [],
     commands: [
       cmd("post", "Write a short social media post", "chat", "Write a short, engaging social media post about the topic. Include 2 relevant hashtags."),
       cmd("email", "Draft a short email", "chat", "Draft a short, polite email about the topic with a subject line."),

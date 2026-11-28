@@ -43,15 +43,30 @@ export async function GET(req: NextRequest) {
             .limit(1)
             .maybeSingle();
           if (member?.workspace_id) {
+            const clientIp =
+              req.headers.get("cf-connecting-ip")?.trim() ||
+              req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+              req.headers.get("x-real-ip")?.trim() ||
+              undefined;
+            const ua = req.headers.get("user-agent")?.slice(0, 240) || undefined;
+            const provider = String(data.user?.app_metadata?.provider ?? "").toLowerCase();
+            const isGoogle = provider === "google";
             await notify({
               workspaceId: member.workspace_id as string,
               userId: data.user!.id,
               kind: "login_detected",
               title: "New sign-in detected",
-              body: "You signed in to your RelayNest account via OAuth or email link.",
+              body: isGoogle
+                ? "You signed in to your RelayNest account with Google OAuth."
+                : "You signed in to your RelayNest account via magic link or email verification.",
               emailKey: "login",
               dedupeHours: 1,
-              metadata: { method: "callback" },
+              metadata: {
+                method: isGoogle ? "google" : "callback",
+                authMethod: isGoogle ? "Google OAuth (SSO)" : "Magic Link / Email Verification",
+                ...(clientIp ? { ip: clientIp } : {}),
+                ...(ua ? { userAgent: ua } : {}),
+              },
             });
           }
         })().catch(() => undefined);

@@ -40,9 +40,14 @@ export interface CloudflareQueueBinding {
   ): Promise<void>;
 }
 
+export interface CloudflareAiBinding {
+  run(model: string, inputs: Record<string, unknown>): Promise<unknown>;
+}
+
 export interface CloudflareRuntimeBindings {
   RELAYNEST_STATE?: RelayNestStateNamespace;
   RELAYNEST_QUEUE?: CloudflareQueueBinding;
+  AI?: CloudflareAiBinding;
 }
 
 interface CloudflareExecutionCtx {
@@ -66,7 +71,7 @@ export function getCloudflareBindings(): CloudflareRuntimeBindings | null {
   const ctx = (globalThis as Record<symbol, { env?: CloudflareRuntimeBindings } | undefined>)[CLOUDFLARE_CONTEXT_SYMBOL];
   const env = ctx?.env;
   if (!env || typeof env !== "object") return null;
-  if (!env.RELAYNEST_STATE && !env.RELAYNEST_QUEUE) return null;
+  if (!env.RELAYNEST_STATE && !env.RELAYNEST_QUEUE && !env.AI) return null;
   return env;
 }
 
@@ -95,6 +100,12 @@ export function getCloudflareQueue(): CloudflareQueueBinding | null {
   const q = getCloudflareBindings()?.RELAYNEST_QUEUE;
   if (!q || typeof q.send !== "function") return null;
   return q;
+}
+
+export function getCloudflareAi(): CloudflareAiBinding | null {
+  const ai = getCloudflareBindings()?.AI;
+  if (!ai || typeof ai.run !== "function") return null;
+  return ai;
 }
 
 export function isCloudflareStateConfigured(): boolean {

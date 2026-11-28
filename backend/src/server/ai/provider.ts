@@ -1,13 +1,13 @@
 import "server-only";
 import { ApiError, Errors } from "@backend/lib/http/api";
-import { runInCloudflareWaitUntil } from "@backend/server/cloudflare/bindings";
+import { getCloudflareAi, runInCloudflareWaitUntil } from "@backend/server/cloudflare/bindings";
 import { logEvent } from "@backend/server/logger";
 import { rateLimit } from "@backend/server/security/rate-limit";
 import {
   getDbConfiguredFallback,
-  getDbDefaultImageModel,
   getDbFallbackModels,
   getDbFastChatModel,
+  getDbImageModels,
   getDbVisionModels,
   resolveModelFromDb,
   type DbRunnableModel,
@@ -1002,50 +1002,130 @@ async function postFluxOnce(
 }
 
 export interface GenerateImageOptions {
-  /** Total wall-clock budget across prompt expansion, retries, and safety rewrites. Defaults to 45 s. */
+  /** Total wall-clock budget across prompt expansion, model fail-over, and safety rewrites. Defaults to 45 s. */
   maxBudgetMs?: number;
-  /** Per-attempt HTTP timeout against the image endpoint. Defaults to 12 s. */
+  /** Per-attempt HTTP timeout against an upstream image endpoint. Defaults to 12 s. */
   attemptTimeoutMs?: number;
 }
 
-async function callImageEndpoint(
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  return btoa(bin);
+}
+
+async function extractCloudflareAiImageBase64(raw: unknown): Promise<string | null> {
+  if (!raw) return null;
+  if (typeof raw === "object" && "image" in (raw as Record<string, unknown>)) {
+    const img = (raw as { image?: unknown }).image;
+    if (typeof img === "string" && img.length > 64) {
+      return img.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+    }
+  }
+  if (raw instanceof Uint8Array) {
+    return raw.length > 512 ? bytesToBase64(raw) : null;
+  }
+  if (raw instanceof ArrayBuffer) {
+    return raw.byteLength > 512 ? bytesToBase64(new Uint8Array(raw)) : null;
+  }
+  if (typeof ReadableStream !== "undefined" && raw instanceof ReadableStream) {
+    const buf = new Uint8Array(await new Response(raw).arrayBuffer());
+    return buf.length > 512 ? bytesToBase64(buf) : null;
+  }
+  return null;
+}
+
+const CF_EDGE_IMAGE_MODELS = [
+  "@cf/black-forest-labs/flux-1-schnell",
+  "@cf/black-forest-labs/flux-2-klein-4b",
+] as const;
+
+async function generateImageViaCloudflareAi(
+  prompt: string,
+  deadlineMs: number,
+): Promise<{ imageBase64: string; modelUsed: string } | null> {
+  const ai = getCloudflareAi();
+  if (!ai) return null;
+
+  for (const cfModel of CF_EDGE_IMAGE_MODELS) {
+    const remaining = deadlineMs - Date.now();
+    if (remaining < 3_000) break;
+    const timeoutMs = Math.min(12_000, remaining);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const raw = await Promise.race([
+        ai.run(cfModel, { prompt: prompt.slice(0, 2000), steps: 4 }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new ApiError(502, "PROVIDER_TIMEOUT", "Edge image model timed out.")),
+            timeoutMs,
+          );
+        }),
+      ]);
+      const base64 = await extractCloudflareAiImageBase64(raw);
+      if (base64 && !isFilteredOrBlankImage({}, base64).blocked) {
+        return { imageBase64: base64, modelUsed: cfModel };
+      }
+    } catch (e) {
+      logEvent("llm", "warn", `Cloudflare Workers AI ${cfModel} fallback failed: ${e instanceof Error ? e.message : "error"}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+interface ImageAttemptContext {
+  rawPrompt: string;
+  activePrompt: string;
+  dims: { width: number; height: number };
+  deadlineMs: number;
+  attemptMs: number;
+  maxAttempts: number;
+}
+
+async function callImageCandidate(
   model: RunnableModel,
   provider: ProviderRecord,
-  rawPrompt: string,
-  startedAt: number,
-  opts: GenerateImageOptions = {},
-): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed: string; modelSlug: string; source: "nvidia" | "vercel"; width?: number; height?: number }> {
+  ctx: ImageAttemptContext,
+): Promise<{
+  imageBase64: string;
+  activePrompt: string;
+  modelUsed: string;
+  modelSlug: string;
+  source: "nvidia" | "vercel";
+  width?: number;
+  height?: number;
+}> {
   const base = provider.mediaBaseUrl || provider.chatBaseUrl;
-  const noTokens: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const isFlux = model.apiModelId.includes("flux") || (model.endpointPath ?? "").includes("/genai/");
   const path = model.endpointPath || (isFlux ? `/genai/${model.apiModelId}` : `/cosmos/${model.apiModelId}`);
   const url = `${base}${path}`;
-  const budgetMs = Math.max(12_000, opts.maxBudgetMs ?? IMAGE_DEFAULT_BUDGET_MS);
-  const attemptMs = Math.max(6_000, opts.attemptTimeoutMs ?? IMAGE_ATTEMPT_MS);
-  const deadlineMs = startedAt + budgetMs;
 
   if (isFlux) {
-    const dims = pickImageDimensions(rawPrompt);
-    let activePrompt = await enhanceImagePrompt(rawPrompt, "expand", Math.min(5_000, Math.max(2_500, deadlineMs - Date.now() - 8_000)));
-    let attempt = await postFluxOnce(url, provider, activePrompt, dims, deadlineMs, attemptMs, IMAGE_ATTEMPTS);
+    let activePrompt = ctx.activePrompt;
+    let attempt = await postFluxOnce(url, provider, activePrompt, ctx.dims, ctx.deadlineMs, ctx.attemptMs, ctx.maxAttempts);
 
-    // If NVIDIA's safety/trademark filter still produced a CONTENT_FILTERED black frame, rewrite strictly and retry.
-    if (attempt.blocked && deadlineMs - Date.now() > 7_000) {
+    // If NVIDIA's safety/trademark filter produced a CONTENT_FILTERED black frame, rewrite strictly and retry.
+    if (attempt.blocked && ctx.deadlineMs - Date.now() > 6_500) {
       logEvent("llm", "warn", `Image generation blocked (${attempt.reason ?? "FILTERED"}) on ${model.apiModelId}; rewriting prompt for visual retry`);
-      const rewritten = await enhanceImagePrompt(rawPrompt, "strict", Math.min(4_500, Math.max(2_500, deadlineMs - Date.now() - 5_000)));
-      if (rewritten !== activePrompt && deadlineMs - Date.now() > 4_000) {
+      const rewritten = await enhanceImagePrompt(ctx.rawPrompt, "strict", Math.min(4_500, Math.max(2_500, ctx.deadlineMs - Date.now() - 4_500)));
+      if (rewritten !== activePrompt && ctx.deadlineMs - Date.now() > 4_000) {
         activePrompt = rewritten;
-        attempt = await postFluxOnce(url, provider, activePrompt, dims, deadlineMs, attemptMs, 2);
+        ctx.activePrompt = rewritten;
+        attempt = await postFluxOnce(url, provider, activePrompt, ctx.dims, ctx.deadlineMs, ctx.attemptMs, 1);
       }
     }
 
     // Final safety-classifier false-positive recovery: soften into an editorial illustration at 896x896 if budget allows.
-    if (attempt.blocked && deadlineMs - Date.now() > 7_000) {
+    if (attempt.blocked && ctx.deadlineMs - Date.now() > 6_500) {
       logEvent("llm", "warn", `Image generation blocked again (${attempt.reason ?? "FILTERED"}) on ${model.apiModelId}; retrying with calm editorial framing`);
-      const editorial = await enhanceImagePrompt(rawPrompt, "editorial", Math.min(4_000, Math.max(2_500, deadlineMs - Date.now() - 5_000)));
-      if (editorial && deadlineMs - Date.now() > 4_000) {
+      const editorial = await enhanceImagePrompt(ctx.rawPrompt, "editorial", Math.min(4_000, Math.max(2_500, ctx.deadlineMs - Date.now() - 4_500)));
+      if (editorial && ctx.deadlineMs - Date.now() > 4_000) {
         activePrompt = editorial;
-        attempt = await postFluxOnce(url, provider, activePrompt, { width: 896, height: 896 }, deadlineMs, attemptMs, 1);
+        ctx.activePrompt = editorial;
+        attempt = await postFluxOnce(url, provider, activePrompt, { width: 896, height: 896 }, ctx.deadlineMs, ctx.attemptMs, 1);
       }
     }
 
@@ -1057,10 +1137,9 @@ async function callImageEndpoint(
       );
     }
 
-    meterNonBlocking(model, "image", noTokens, startedAt);
     return {
       imageBase64: attempt.base64,
-      revisedPrompt: activePrompt !== rawPrompt.trim() ? activePrompt : undefined,
+      activePrompt,
       modelUsed: model.apiModelId,
       modelSlug: model.slug,
       source: model.source,
@@ -1069,47 +1148,162 @@ async function callImageEndpoint(
     };
   }
 
-  const remaining = Math.max(5_000, deadlineMs - Date.now());
-  const json = await postWithRetry(url, provider, { model_mode: "text2image", prompt: rawPrompt, resolution: "480_1_1", num_frames: 1 }, 1, Math.min(attemptMs, remaining));
+  const remaining = Math.max(4_500, ctx.deadlineMs - Date.now());
+  const json = await postWithRetry(
+    url,
+    provider,
+    { model_mode: "text2image", prompt: ctx.activePrompt, resolution: "480_1_1", num_frames: 1 },
+    1,
+    Math.min(ctx.attemptMs, remaining),
+  );
   const { base64 } = extractImageArtifact(json);
   const check = isFilteredOrBlankImage(json, base64);
   if (check.blocked || !base64) {
     throw new ApiError(422, "IMAGE_CONTENT_FILTERED", "The image model could not generate this prompt. Try describing the scene in visual detail.");
   }
-  meterNonBlocking(model, "image", noTokens, startedAt);
-  return { imageBase64: base64, modelUsed: model.apiModelId, modelSlug: model.slug, source: model.source };
+  return { imageBase64: base64, activePrompt: ctx.activePrompt, modelUsed: model.apiModelId, modelSlug: model.slug, source: model.source };
 }
 
 /**
- * Text-to-image driven by Supabase `ai_providers` + `ai_models`.
- * Follows the DB-configured `fallback_model_slug` (or the top active DB image model) if the selected model returns 404/410/503,
- * enhances short prompts for high visual detailing, and guards against CONTENT_FILTERED black frames.
+ * Text-to-image driven by Supabase `ai_providers` + `ai_models`, with multi-model fail-over and
+ * Cloudflare Workers AI edge FLUX backup so `/imagine` still succeeds even if an upstream NIM endpoint stalls or 504s.
  */
 export async function generateImage(
   model: RunnableModel,
   prompt: string,
   opts: GenerateImageOptions = {},
-): Promise<{ imageBase64: string; revisedPrompt?: string; modelUsed?: string; modelSlug?: string; source?: "nvidia" | "vercel"; width?: number; height?: number; usedFallback?: boolean }> {
+): Promise<{
+  imageBase64: string;
+  revisedPrompt?: string;
+  modelUsed?: string;
+  modelSlug?: string;
+  source?: "nvidia" | "vercel";
+  width?: number;
+  height?: number;
+  usedFallback?: boolean;
+}> {
   const startedAt = Date.now();
   const cleanPrompt = prompt.trim().slice(0, 2000);
   if (!cleanPrompt) throw Errors.invalid("Describe the image you want to generate.");
 
-  const { model: resolved, provider } = await resolveModelFromDb(model);
-  if (!provider.mediaBaseUrl && resolved.source !== "nvidia") {
+  const noTokens: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const totalBudgetMs = Math.max(12_000, opts.maxBudgetMs ?? IMAGE_DEFAULT_BUDGET_MS);
+  const totalDeadlineMs = startedAt + totalBudgetMs;
+  const baseAttemptMs = Math.max(5_000, opts.attemptTimeoutMs ?? IMAGE_ATTEMPT_MS);
+
+  const primary = await resolveModelFromDb(model);
+  const configuredFb = await getDbConfiguredFallback(primary.model.slug);
+  const otherActive = await getDbImageModels([
+    primary.model.slug,
+    ...(configuredFb ? [configuredFb.slug] : []),
+  ]);
+
+  const candidates: Array<{ model: RunnableModel; provider: ProviderRecord }> = [];
+  const seenSlugs = new Set<string>();
+  const pushCandidate = async (m: RunnableModel | null | undefined) => {
+    if (!m || seenSlugs.has(m.slug)) return;
+    const resolved = m.slug === primary.model.slug ? primary : await resolveModelFromDb(m);
+    if (seenSlugs.has(resolved.model.slug)) return;
+    if (!resolved.provider.mediaBaseUrl && resolved.model.source !== "nvidia") return;
+    seenSlugs.add(resolved.model.slug);
+    candidates.push(resolved);
+  };
+
+  await pushCandidate(primary.model);
+  await pushCandidate(configuredFb);
+  for (const alt of otherActive) {
+    await pushCandidate(alt);
+  }
+
+  const hasEdgeFallback = Boolean(getCloudflareAi());
+  if (!candidates.length && !hasEdgeFallback) {
     throw Errors.invalid("Image generation is not available for this model.");
   }
 
-  try {
-    return await callImageEndpoint(resolved, provider, cleanPrompt, startedAt, opts);
-  } catch (e) {
-    if (!isFallbackableError(e)) throw e;
-    const dbFallback = (await getDbConfiguredFallback(resolved.slug)) ?? (await getDbDefaultImageModel(resolved.slug));
-    if (!dbFallback || dbFallback.slug === resolved.slug) throw e;
-    const fb = await resolveModelFromDb(dbFallback);
-    logEvent("llm", "warn", `${resolved.apiModelId} unavailable for image gen (${e instanceof ApiError ? e.code : "error"}), routing via DB fallback ${fb.model.apiModelId}`);
-    const fbRes = await callImageEndpoint(fb.model, fb.provider, cleanPrompt, startedAt, opts);
-    return { ...fbRes, usedFallback: true };
+  const dims = pickImageDimensions(cleanPrompt);
+  const activePrompt = await enhanceImagePrompt(
+    cleanPrompt,
+    "expand",
+    Math.min(4_500, Math.max(2_500, totalDeadlineMs - Date.now() - 8_000)),
+  );
+  const sharedCtx = { rawPrompt: cleanPrompt, activePrompt };
+
+  let lastErr: unknown = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const remaining = totalDeadlineMs - Date.now();
+    if (remaining < 4_000) break;
+
+    const cand = candidates[i]!;
+    const hasMoreAfterThis = i < candidates.length - 1 || hasEdgeFallback;
+    // Fail over quickly (single 10 s attempt) when healthy fallback models are waiting behind this candidate,
+    // so one stalled/504 endpoint never consumes the entire wall-clock budget.
+    const candAttemptMs = hasMoreAfterThis ? Math.min(baseAttemptMs, 10_000) : baseAttemptMs;
+    const candMaxAttempts = hasMoreAfterThis ? 1 : 2;
+    const candDeadlineMs = hasMoreAfterThis
+      ? Math.min(totalDeadlineMs - 4_000, Date.now() + candAttemptMs + 9_000)
+      : totalDeadlineMs;
+
+    try {
+      const res = await callImageCandidate(cand.model, cand.provider, {
+        rawPrompt: sharedCtx.rawPrompt,
+        activePrompt: sharedCtx.activePrompt,
+        dims,
+        deadlineMs: Math.max(Date.now() + 4_000, candDeadlineMs),
+        attemptMs: candAttemptMs,
+        maxAttempts: candMaxAttempts,
+      });
+      meterNonBlocking(cand.model, "image", noTokens, startedAt);
+      const usedFallback = i > 0 || cand.model.slug !== model.slug;
+      return {
+        imageBase64: res.imageBase64,
+        ...(res.activePrompt !== cleanPrompt ? { revisedPrompt: res.activePrompt } : {}),
+        modelUsed: res.modelUsed,
+        modelSlug: res.modelSlug,
+        source: res.source,
+        width: res.width,
+        height: res.height,
+        ...(usedFallback ? { usedFallback: true } : {}),
+      };
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof ApiError && e.code === "IMAGE_CONTENT_FILTERED") {
+        // Content safety block already ran strict + editorial prompt rewrites; don't retry unless edge FLUX can render the safe rewrite.
+        break;
+      }
+      const canFallback =
+        isFallbackableError(e) ||
+        (e instanceof ApiError && (e.code === "PROVIDER_NOT_CONFIGURED" || e.code === "PROVIDER_AUTH" || e.code === "PROVIDER_CREDITS"));
+      if (!canFallback) throw e;
+      if (i + 1 < candidates.length) {
+        logEvent(
+          "llm",
+          "warn",
+          `${cand.model.apiModelId} unavailable for image gen (${e instanceof ApiError ? e.code : "error"}), failing over to ${candidates[i + 1]!.model.apiModelId}`,
+        );
+      }
+    }
   }
+
+  // Last-resort edge GPU fallback on Cloudflare Workers AI (`env.AI`) if upstream NIM endpoints timed out or errored.
+  if (hasEdgeFallback && !(lastErr instanceof ApiError && lastErr.code === "IMAGE_CONTENT_FILTERED")) {
+    const edgeRes = await generateImageViaCloudflareAi(sharedCtx.activePrompt, totalDeadlineMs);
+    if (edgeRes) {
+      logEvent("llm", "info", `Recovered image generation via Cloudflare Workers AI (${edgeRes.modelUsed})`);
+      meterNonBlocking(primary.model, "image", noTokens, startedAt);
+      return {
+        imageBase64: edgeRes.imageBase64,
+        ...(sharedCtx.activePrompt !== cleanPrompt ? { revisedPrompt: sharedCtx.activePrompt } : {}),
+        modelUsed: edgeRes.modelUsed,
+        modelSlug: primary.model.slug,
+        source: primary.model.source,
+        width: 1024,
+        height: 1024,
+        usedFallback: true,
+      };
+    }
+  }
+
+  throw lastErr ?? new ApiError(502, "PROVIDER_TIMEOUT", "Image generation did not finish in time. Try again in a moment.");
 }
 
 /** Yes/no question about a text, answered by a Decisions API model configured in Supabase `ai_providers` + `ai_models`. */

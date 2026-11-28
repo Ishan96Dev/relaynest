@@ -23,6 +23,7 @@ export { RelayNestState };
 
 interface RelayNestWorkerEnv {
   ASSETS?: AssetsFetcher;
+  AI?: { run(model: string, inputs: Record<string, unknown>): Promise<unknown> };
   RELAYNEST_STATE?: DurableObjectNamespace<RelayNestState>;
   RELAYNEST_QUEUE?: Queue;
   CRON_SECRET?: string;

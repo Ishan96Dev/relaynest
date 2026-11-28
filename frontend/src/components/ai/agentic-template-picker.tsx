@@ -74,14 +74,15 @@ export function AgenticTemplateModal({
       onClose={onClose}
       title="Agentic & AI Agent Templates — Test in Playground"
       icon={<Sparkles className="mt-1 size-5 text-lavender" aria-hidden />}
-      className="max-w-5xl"
+      className="max-w-5xl p-4 sm:p-5 md:h-[min(88dvh,780px)]"
+      bodyClassName="mt-2.5 flex flex-col md:overflow-hidden"
     >
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs text-muted">
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <p className="min-w-[240px] flex-1 text-xs leading-relaxed text-muted">
             Test any Telegram AI Agent template live in Playground with autonomous web search, NSE/BSE/MSE market feeds, slash commands &amp; starter prompts — then deploy to Telegram in 1 click.
           </p>
-          <div className="flex rounded-lg border border-border bg-surface-2/60 p-0.5 text-[11px] font-semibold">
+          <div className="flex shrink-0 rounded-lg border border-border bg-surface-2/60 p-0.5 text-[11px] font-semibold">
             {(
               [
                 ["all", `All (${AGENT_TEMPLATES.length})`],
@@ -104,16 +105,19 @@ export function AgenticTemplateModal({
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+        <div className="flex shrink-0 flex-col gap-2">
           <Input
             aria-label="Search agent templates"
             icon={<Search />}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search NSE, BSE, MSE, broker, land, student, exam, cricket, gaming, mandi, tax..."
-            className="h-9 text-xs"
           />
-          <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Agent template categories">
+          <div
+            className="flex gap-1 overflow-x-auto pb-0.5 md:flex-wrap md:overflow-visible md:pb-0"
+            role="tablist"
+            aria-label="Agent template categories"
+          >
             {categories.map((c) => (
               <button
                 key={c}
@@ -122,7 +126,7 @@ export function AgenticTemplateModal({
                 aria-selected={category === c}
                 onClick={() => setCategory(c)}
                 className={cn(
-                  "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition",
+                  "shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition",
                   category === c
                     ? "border-lavender bg-primary/20 text-foreground"
                     : "border-border bg-surface-2/60 text-muted hover:border-lavender/50 hover:text-foreground",
@@ -134,8 +138,11 @@ export function AgenticTemplateModal({
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-[minmax(0,290px)_minmax(0,1fr)]">
-          <ul className="max-h-[48vh] space-y-1.5 overflow-y-auto pr-1" aria-label="Agentic templates">
+        <div className="grid min-h-0 flex-1 gap-3 md:grid-cols-[minmax(0,285px)_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
+          <ul
+            className="max-h-56 space-y-1.5 overflow-y-auto pr-1 md:h-full md:max-h-none md:min-h-0"
+            aria-label="Agentic templates"
+          >
             {filtered.length === 0 ? (
               <li className="rounded-xl border border-border bg-surface-2/50 p-4 text-center text-xs text-muted">
                 No templates match &ldquo;{query}&rdquo;.
@@ -183,10 +190,10 @@ export function AgenticTemplateModal({
             )}
           </ul>
 
-          <div className="flex min-h-[300px] flex-col rounded-xl border border-border bg-surface-2/60 p-4">
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface-2/60 p-3.5 sm:p-4 md:h-full">
             {selected ? (
               <>
-                <div className="border-b border-border/70 pb-3">
+                <div className="shrink-0 border-b border-border/70 pb-2.5">
                   <div className="flex flex-wrap items-center gap-2">
                     <Bot className="size-4 text-lavender" aria-hidden />
                     <h3 className="text-sm font-extrabold text-foreground">{selected.name}</h3>
@@ -213,7 +220,7 @@ export function AgenticTemplateModal({
                   </div>
                 </div>
 
-                <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1 text-xs">
+                <div className="mt-2.5 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 text-xs">
                   {selected.commands && selected.commands.length > 0 && (
                     <div>
                       <p className="mb-1.5 font-bold text-foreground/85">Slash Commands (work in Playground &amp; Telegram)</p>
@@ -244,13 +251,13 @@ export function AgenticTemplateModal({
 
                   <div>
                     <p className="mb-1 font-bold text-foreground/85">Agent Instructions</p>
-                    <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border/70 bg-surface/80 p-2.5 font-mono text-[11px] leading-relaxed text-foreground/85">
+                    <pre className="whitespace-pre-wrap rounded-lg border border-border/70 bg-surface/80 p-2.5 font-mono text-[11px] leading-relaxed text-foreground/85">
                       {selected.instructions}
                     </pre>
                   </div>
                 </div>
 
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
+                <div className="mt-2.5 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2.5">
                   <ButtonLink href={`/bots/new?type=ai&template=${selected.id}`} variant="outline" size="sm">
                     Deploy to Telegram <ArrowRight className="size-3.5" aria-hidden />
                   </ButtonLink>
@@ -268,7 +275,7 @@ export function AgenticTemplateModal({
                 </div>
               </>
             ) : (
-              <div className="grid flex-1 place-items-center text-xs text-muted">
+              <div className="grid flex-1 place-items-center py-10 text-xs text-muted">
                 Select a template on the left to inspect it.
               </div>
             )}

@@ -438,7 +438,9 @@ export function KnowledgeBase(props: Props) {
               <Tabs label="Document view" value={lower} onChange={(v) => setLower(v as "docs" | "bots")} tabs={[{ id: "docs", label: "Documents", icon: <FileText /> }, { id: "bots", label: "Linked Bots", icon: <Link2 /> }]} className="!p-1" />
               {lower === "docs" && (
                 <>
-                  <Input aria-label="Search documents" icon={<Search />} placeholder="Search documents..." value={query} onChange={(e) => setQuery(e.target.value)} className="h-10 max-w-xs flex-1" />
+                  <div className="min-w-[200px] max-w-xs flex-1">
+                    <Input aria-label="Search documents" icon={<Search />} placeholder="Search documents..." value={query} onChange={(e) => setQuery(e.target.value)} className="h-10" />
+                  </div>
                   <Select aria-label="Type" className="w-36" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
                     <option value="all">All Types</option>
                     <option value="pdf">PDF</option>

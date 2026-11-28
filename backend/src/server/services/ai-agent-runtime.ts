@@ -531,6 +531,12 @@ export async function handleAgentUpdate(bot: BotRef, update: TelegramUpdate): Pr
               "fallback_reply",
               "telegram.fallback_sent",
             ).catch(() => undefined);
+          } else if (isImageTrigger) {
+            await send(
+              "Image generation is temporarily unavailable right now — please try your /imagine prompt again in a moment.",
+              "fallback_reply",
+              "telegram.fallback_sent",
+            ).catch(() => undefined);
           } else {
             await send(config.fallbackMessage ?? "Sorry, I couldn't answer that right now. Please try again in a moment.", "fallback_reply", "telegram.fallback_sent").catch(() => undefined);
           }

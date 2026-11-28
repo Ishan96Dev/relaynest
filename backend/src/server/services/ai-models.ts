@@ -218,13 +218,18 @@ export async function getDbVisionModels(): Promise<DbRunnableModel[]> {
   return getDbFallbackModels({ modelTypes: ["multimodal"], requireImage: true, limit: 3 });
 }
 
+/** Ordered active image generation models from Supabase `public.ai_models` by `sort_order`. */
+export async function getDbImageModels(excludeSlugs: string[] = []): Promise<DbRunnableModel[]> {
+  return getDbFallbackModels({
+    modelTypes: ["image_generation"],
+    excludeSlugs,
+    limit: 5,
+  });
+}
+
 /** Highest-priority active image generation model from Supabase `public.ai_models`. */
 export async function getDbDefaultImageModel(excludeSlug?: string): Promise<DbRunnableModel | null> {
-  const list = await getDbFallbackModels({
-    modelTypes: ["image_generation"],
-    excludeSlugs: excludeSlug ? [excludeSlug] : [],
-    limit: 1,
-  });
+  const list = await getDbImageModels(excludeSlug ? [excludeSlug] : []);
   return list[0] ?? null;
 }
 

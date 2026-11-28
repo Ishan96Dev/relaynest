@@ -28,6 +28,9 @@
       .rn-wrap { width:100% !important; max-width:100% !important; }
       .rn-outer { padding:24px 12px 28px !important; }
       .rn-inner { padding:26px 20px 28px !important; }
+      .rn-kv-key, .rn-kv-val { display:block !important; width:100% !important; padding-left:0 !important; padding-right:0 !important; }
+      .rn-kv-key { padding-bottom:2px !important; }
+      .rn-kv-val { padding-top:0 !important; }
       .rn-btn-cell, .rn-btn-cell a { display:block !important; width:100% !important; box-sizing:border-box !important; text-align:center !important; }
     }
   </style>
@@ -45,17 +48,19 @@
         <table role="presentation" class="rn-wrap" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;max-width:580px;margin:0 auto;">
           <tr>
             <td align="center" style="padding:0 0 24px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
-                <tr>
-                  <td valign="middle" style="padding-right:12px;vertical-align:middle;">
-                    <img src="https://crqrisksouijdrvlnekp.supabase.co/storage/v1/object/public/brand/logo-icon-128.png" width="44" height="44" border="0" alt="RelayNest logo" style="display:block;width:44px;height:44px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:12px;">
-                  </td>
-                  <td valign="middle" style="vertical-align:middle;text-align:left;">
-                    <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:24px;font-weight:800;line-height:26px;mso-line-height-rule:exactly;letter-spacing:-0.4px;color:#F8F8FF;">RelayNest</div>
-                    <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;line-height:15px;mso-line-height-rule:exactly;letter-spacing:0.4px;text-transform:uppercase;color:#A78BFA;">Telegram Bot &amp; AI Platform</div>
-                  </td>
-                </tr>
-              </table>
+              <a href="{{ .SiteURL }}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+                  <tr>
+                    <td valign="middle" style="padding-right:14px;vertical-align:middle;">
+                      <img src="https://crqrisksouijdrvlnekp.supabase.co/storage/v1/object/public/brand/logo-icon-128.png" width="48" height="48" border="0" alt="RelayNest logo" style="display:block;width:48px;height:48px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:12px;background-color:#131130;color:#A78BFA;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:800;text-align:center;line-height:48px;">
+                    </td>
+                    <td valign="middle" style="vertical-align:middle;text-align:left;">
+                      <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:24px;font-weight:800;line-height:26px;mso-line-height-rule:exactly;letter-spacing:-0.4px;color:#F8F8FF;">RelayNest</div>
+                      <div style="font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:600;line-height:15px;mso-line-height-rule:exactly;letter-spacing:0.4px;text-transform:uppercase;color:#A78BFA;">Telegram Bot &amp; AI Platform</div>
+                    </td>
+                  </tr>
+                </table>
+              </a>
             </td>
           </tr>
           <tr>
@@ -68,18 +73,39 @@
                   <td class="rn-inner" bgcolor="#131130" style="padding:36px 38px 38px;background-color:#131130;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;">
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 0 14px;">
                       <tr>
-                        <td bgcolor="#1F1B4D" style="padding:4px 12px;border-radius:999px;background-color:#1F1B4D;border:1px solid #4B3FA8;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#C4B5FD;line-height:16px;mso-line-height-rule:exactly;">
+                        <td bgcolor="#1F1B4D" style="padding:5px 12px;border-radius:999px;background-color:#1F1B4D;border:1px solid #4B3FA8;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#C4B5FD;line-height:16px;mso-line-height-rule:exactly;">
                           Account Verification
                         </td>
                       </tr>
                     </table>
                     <h1 style="margin:0 0 14px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:25px;line-height:32px;mso-line-height-rule:exactly;font-weight:800;letter-spacing:-0.4px;color:#F8F8FF;">Confirm your email address</h1>
-                    <p class="rn-text" style="margin:0 0 14px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D2CFF0;">Welcome to RelayNest! Confirm that <strong style="color:#F8F8FF;">{{ .Email }}</strong> is your email address to activate your account and start building Telegram bots.</p>
+                    <p class="rn-text" style="margin:0 0 14px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;mso-line-height-rule:exactly;color:#D2CFF0;">Welcome to RelayNest! Confirm that <strong style="color:#F8F8FF;">{{ .Email }}</strong> belongs to you so we can provision your workspace and unlock no-code Telegram bots, AI agents, and visual automations.</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:18px 0 6px;">
+                <tr>
+                  <td bgcolor="#0B0A22" style="padding:16px 20px;background-color:#0B0A22;border:1px solid #29245E;border-radius:14px;">
+                    <div style="margin:0 0 8px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;line-height:16px;mso-line-height-rule:exactly;color:#A78BFA;">Account Summary</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">Email Address</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;"><span style="color:#22D3EE;">{{ .Email }}</span></td>
+                        </tr>
+                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">Workspace Access</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;">Telegram Bots, AI Agents, Knowledge Base &amp; Workflows</td>
+                        </tr>
+                        <tr>
+                          <td class="rn-kv-key" valign="top" width="144" style="width:144px;padding:10px 12px 10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;line-height:18px;mso-line-height-rule:exactly;color:#9E9AC4;">Verification</td>
+                          <td class="rn-kv-val" valign="top" style="padding:10px 0;border-top:1px solid #1E1A4A;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:20px;mso-line-height-rule:exactly;color:#F8F8FF;word-break:break-word;">One-click activation link (single-use)</td>
+                        </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:26px 0 20px;">
                 <tr>
                   <td align="center">
                     <!--[if mso]>
-                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ .ConfirmationURL }}" style="height:48px;v-text-anchor:middle;width:280px;" arcsize="25%" stroke="f" fillcolor="#6C47FF">
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ .ConfirmationURL }}" style="height:48px;v-text-anchor:middle;width:290px;" arcsize="25%" stroke="f" fillcolor="#6C47FF">
                       <w:anchorlock/>
                       <center style="color:#ffffff;font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:bold;">Confirm email address</center>
                     </v:roundrect>
@@ -88,7 +114,7 @@
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
                       <tr>
                         <td class="rn-btn-cell" align="center" bgcolor="#6C47FF" style="border-radius:12px;background-color:#6C47FF;background-image:linear-gradient(135deg,#7C5CFF 0%,#5B34F0 55%,#06B6D4 100%);">
-                          <a href="{{ .ConfirmationURL }}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 36px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;line-height:20px;mso-line-height-rule:exactly;color:#ffffff;text-decoration:none;border-radius:12px;">Confirm email address</a>
+                          <a href="{{ .ConfirmationURL }}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 36px;font-family:'Plus Jakarta Sans','Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;line-height:20px;mso-line-height-rule:exactly;color:#ffffff;background-color:#6C47FF;background-image:linear-gradient(135deg,#7C5CFF 0%,#5B34F0 55%,#06B6D4 100%);border:1px solid #7C5CFF;text-decoration:none;border-radius:12px;">Confirm email address</a>
                         </td>
                       </tr>
                     </table>

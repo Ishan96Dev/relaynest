@@ -142,9 +142,17 @@ export function StepModel({ form, patch, models, imageModels, error, errors }: {
       </div>
       <p className="text-xs text-muted">Only chat and multimodal language models can power an agent. <Link href="/ai/models" className="font-semibold text-lavender hover:underline">Browse the full catalog</Link></p>
       {imageModels.length > 0 && (
-        <Field label="Image model (optional)" htmlFor="agent-image-model" hint="Used by /imagine and image commands. Defaults to FLUX.1 Schnell automatically if left on Auto.">
-          <Select id="agent-image-model" value={form.imageModelSlug ?? ""} onChange={(e) => patch({ imageModelSlug: e.target.value || null })}>
-            <option value="">Auto (FLUX.1 Schnell)</option>
+        <Field
+          label="Image model (optional)"
+          htmlFor="agent-image-model"
+          hint={`Used by /imagine and image commands. Defaults to ${imageModels[0]?.name ?? "FLUX 3 Image Klein"} automatically if left on Auto.`}
+        >
+          <Select
+            id="agent-image-model"
+            value={imageModels.some((m) => m.slug === form.imageModelSlug) ? (form.imageModelSlug ?? "") : ""}
+            onChange={(e) => patch({ imageModelSlug: e.target.value || null })}
+          >
+            <option value="">Auto ({imageModels[0]?.name ?? "FLUX 3 Image Klein"})</option>
             {imageModels.map((m) => <option key={m.slug} value={m.slug}>{m.name} ({m.providerName})</option>)}
           </Select>
         </Field>
@@ -464,7 +472,7 @@ const PRESETS: AgentCommand[] = [
 
 function CommandsEditor({ form, patch, imageModels = [] }: { form: AgentForm; patch: Patch; imageModels?: ModelDto[] }) {
   const problem = validateCommands(form.commands);
-  const defaultImgSlug = imageModels.find((m) => m.slug === "flux-1-schnell")?.slug ?? imageModels[0]?.slug ?? null;
+  const defaultImgSlug = imageModels.find((m) => m.slug === "flux-3-image-klein")?.slug ?? imageModels[0]?.slug ?? null;
   const set = (i: number, p: Partial<AgentCommand>) => {
     const nextCmds = form.commands.map((c, j) => (j === i ? { ...c, ...p } : c));
     patch({
